@@ -26,8 +26,10 @@ const timeline = new Timeline(project);
 const playback = new Playback(project.duration);
 
 const params = new URLSearchParams(location.search);
+const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 if (params.has('t')) playback.seek(Number(params.get('t')));
-if (params.get('paused') === '1') playback.playing = false;
+else if (reduceMotion) playback.seek(project.duration); // open on the finished model, paused
+if (params.get('paused') === '1' || (reduceMotion && !params.has('t'))) playback.playing = false;
 
 hydrateIcons();
 renderHeaderDrawing($('headerDrawing'), project, project.stages[0].sheet);
@@ -45,7 +47,7 @@ const view = {
   style: 'ink+paint' as RenderStyle,
   colour: false,
   ghost: true,
-  autoRotate: params.get('rotate') !== '0',
+  autoRotate: params.get('rotate') !== '0' && !reduceMotion,
   orbit: true,
   presetIndex: 0,
   stageMask: 255,
@@ -240,29 +242,77 @@ bind('btnLogClose', () => document.querySelector('.log')!.classList.toggle('coll
 $<HTMLSelectElement>('selStyle').addEventListener('change', (e) => setStyle((e.target as HTMLSelectElement).value as RenderStyle));
 viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncButtons), { passive: true });
 
-bind('btnDownload', () => {
-  const data = {
-    project: { id: project.id, name: project.name, rev: project.rev, height: project.height, totalMassKg: Math.round(project.totalMassKg) },
-    stages: project.stages,
-    steps: project.steps.map((s) => ({
-      id: s.id,
-      stage: s.stage,
-      tier: s.tier,
-      member: s.member,
-      code: s.code,
-      qty: s.partCount,
-      material: s.material,
-      spec: s.spec,
-      massKg: Math.round(s.massKg),
-      centroid: s.centroid.map((v) => +v.toFixed(3)),
-      t0: +s.t0.toFixed(3),
-      t1: +s.t1.toFixed(3),
-    })),
-  };
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-  const a = Object.assign(document.createElement('a'), { href: url, download: `${project.id}-sequence.json` });
+// ── Save sequence ──────────────────────────────────────────────────────────
+// Inside a claude.ai artifact the frame blocks page-started downloads, so the
+// save goes through the `downloads` capability (the viewer confirms it).
+// Standalone (dev server, saved copy) it falls back to a normal download.
+type DownloadsNS = { save(req: { filename: string; data: string }): Promise<{ status: 'saved' | 'delivered' }> };
+type ClaudeHost = { use(name: 'downloads'): Promise<DownloadsNS | null> };
+const host = (window as unknown as { claude?: ClaudeHost }).claude;
+const downloadsReady: Promise<DownloadsNS | null> | null = typeof host?.use === 'function' ? host.use('downloads') : null;
+downloadsReady?.then(
+  (d) => ($('btnDownload').hidden = !d),
+  () => ($('btnDownload').hidden = true),
+);
+
+let toastTimer = 0;
+function toast(msg: string) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (el.hidden = true), 3200);
+}
+
+function sequenceJson(): string {
+  return JSON.stringify(
+    {
+      project: { id: project.id, name: project.name, rev: project.rev, height: project.height, totalMassKg: Math.round(project.totalMassKg) },
+      stages: project.stages,
+      steps: project.steps.map((s) => ({
+        id: s.id,
+        stage: s.stage,
+        tier: s.tier,
+        member: s.member,
+        code: s.code,
+        qty: s.partCount,
+        material: s.material,
+        spec: s.spec,
+        massKg: Math.round(s.massKg),
+        centroid: s.centroid.map((v) => +v.toFixed(3)),
+        t0: +s.t0.toFixed(3),
+        t1: +s.t1.toFixed(3),
+      })),
+    },
+    null,
+    2,
+  );
+}
+
+bind('btnDownload', async () => {
+  const filename = `${project.id}-sequence.json`;
+  if (downloadsReady) {
+    const downloads = await downloadsReady.catch(() => null);
+    if (!downloads) return;
+    try {
+      const res = await downloads.save({ filename, data: sequenceJson() });
+      if (res.status === 'saved') toast(`Saved ${filename}`);
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === 'declined') return;
+      if (code === 'rate_limited') toast('A save prompt is already open.');
+      else {
+        toast('Saving files is not available in this view.');
+        $('btnDownload').hidden = true;
+      }
+    }
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([sequenceJson()], { type: 'application/json' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Downloading ${filename}`);
 });
 
 // ── Keyboard ───────────────────────────────────────────────────────────────

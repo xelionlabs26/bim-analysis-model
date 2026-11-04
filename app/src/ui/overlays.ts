@@ -150,6 +150,9 @@ export class Overlays {
       const { c, rank } = p;
       const op = RANK_OPACITY[rank];
       const fresh = this.frameNo - c.seen < 2;
+      c.el.className = `callout rank-${rank}`;
+      c.line.setAttribute('class', `rank-${rank}`);
+      c.ring.setAttribute('class', `rank-${rank}`);
       c.el.style.opacity = fresh ? '0' : String(op);
       c.el.style.color = rank === 0 ? 'var(--ink)' : '#9a9089';
       (c.el.lastElementChild as HTMLElement).style.color = rank === 0 ? 'var(--brand)' : '#c79aa1';

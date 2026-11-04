@@ -13,6 +13,17 @@ npm run build      # typecheck + production bundle in dist/
 
 URL parameters for reproducible stills: `?t=5.0&paused=1&rotate=0&az=211&el=19`.
 
+## Hosted build (claude.ai artifact)
+
+```bash
+npm run build:artifact   # → dist-artifact/pagoda-build.html (one ~86 KB page)
+```
+
+This variant loads three.js `0.170.0` from jsDelivr through an import map, and the fonts from Google Fonts.
+Everything else is inlined. It's published privately at https://claude.ai/artifact/1yPva9DgurUare4n5wF7j5
+(share it from the page's Share menu). Inside the artifact frame, "Save the sequence as JSON" goes through
+the viewer's save prompt (the `downloads` capability); standalone it falls back to a normal download.
+
 ## What's in this build
 
 | Milestone | Scope | Where |

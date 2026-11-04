@@ -4,7 +4,7 @@ import type { Project } from '../data/types';
 export function renderHeaderDrawing(el: HTMLElement, p: Project, sheet: string) {
   const H = p.height.toFixed(2);
   el.innerHTML = `
-    <svg viewBox="0 0 260 80" width="260" aria-label="Mini elevation" fill="none" stroke="currentColor" stroke-width="1.3">
+    <svg class="hd-elev" viewBox="0 0 260 80" width="260" aria-label="Mini elevation" fill="none" stroke="currentColor" stroke-width="1.3">
       <g transform="translate(70 6)">
         <path d="M30 0v14M26 5h8"/>
         <path d="M14 22h32M18 22l-4 4h32l-4-4"/>
@@ -22,7 +22,7 @@ export function renderHeaderDrawing(el: HTMLElement, p: Project, sheet: string) 
       </g>
       <path d="M200 36h34" stroke="#9d1125"/>
     </svg>
-    <svg viewBox="0 0 130 80" width="130" aria-label="Section marker" fill="none" stroke="currentColor" stroke-width="1.3">
+    <svg class="hd-sec" viewBox="0 0 130 80" width="130" aria-label="Section marker" fill="none" stroke="currentColor" stroke-width="1.3">
       <circle cx="28" cy="40" r="17"/>
       <path d="M11 40h34"/>
       <path d="M28 6v12M28 62v14" stroke-dasharray="3 3"/>
@@ -31,7 +31,7 @@ export function renderHeaderDrawing(el: HTMLElement, p: Project, sheet: string) 
       <path d="M60 40h40" stroke="#9d1125" stroke-width="2"/>
       <path d="M100 34l10 6-10 6Z" fill="#9d1125" stroke="none"/>
     </svg>
-    <svg viewBox="0 0 70 80" width="70" aria-label="North arrow" fill="none" stroke="currentColor" stroke-width="1.3">
+    <svg class="hd-north" viewBox="0 0 70 80" width="70" aria-label="North arrow" fill="none" stroke="currentColor" stroke-width="1.3">
       <text x="35" y="10" text-anchor="middle" font-family="Archivo" font-weight="800" font-size="10" fill="currentColor" stroke="none">N</text>
       <circle cx="35" cy="44" r="22"/>
       <path d="M35 18v52M9 44h52"/>

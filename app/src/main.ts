@@ -1,18 +1,21 @@
-import '@fontsource/archivo/600.css';
-import '@fontsource/archivo/800.css';
-import '@fontsource/archivo/900.css';
-import '@fontsource/source-serif-4/400.css';
-import '@fontsource/source-serif-4/400-italic.css';
-import '@fontsource/source-serif-4/600.css';
-import '@fontsource/source-serif-4/700.css';
-import '@fontsource/jetbrains-mono/400.css';
-import '@fontsource/jetbrains-mono/700.css';
+import '@fontsource/big-shoulders-display/700';
+import '@fontsource/big-shoulders-display/800';
+import '@fontsource/big-shoulders-display/900';
+import '@fontsource/instrument-sans/400';
+import '@fontsource/instrument-sans/500';
+import '@fontsource/instrument-sans/600';
+import '@fontsource/instrument-sans/700';
+import '@fontsource/instrument-serif/400';
+import '@fontsource/instrument-serif/400-italic';
+import '@fontsource/geist-mono/400';
+import '@fontsource/geist-mono/500';
+import '@fontsource/geist-mono/700';
 import './styles.css';
 
 import { ACTIVE_HOLD, buildProject } from './data/project';
 import { Timeline } from './engine/timeline';
 import { Playback } from './engine/playback';
-import { VIEW_PRESETS, Viewer, type RenderStyle } from './scene/viewer';
+import { CONTEXT_STAGE, VIEW_PRESETS, Viewer, type RenderStyle } from './scene/viewer';
 import { Overlays, drawingScale, scaleBarLength } from './ui/overlays';
 import { SequenceUI } from './ui/panels';
 import { renderHeaderDrawing, startClock } from './ui/header';
@@ -47,22 +50,24 @@ const view = {
   style: 'ink+paint' as RenderStyle,
   colour: false,
   ghost: true,
+  crane: true,
   autoRotate: params.get('rotate') !== '0' && !reduceMotion,
   orbit: true,
   presetIndex: 0,
-  stageMask: 255,
+  stageMask: 511,
   resolution: 1.5,
   rail: 'model',
   tab: 'seq' as 'seq' | 'members',
 };
 viewer.setResolution(view.resolution);
 viewer.setAutoRotate(view.autoRotate);
-if (params.has('az')) viewer.setView(Number(params.get('az')), Number(params.get('el') ?? 19));
+if (params.has('az')) viewer.setView(Number(params.get('az')), Number(params.get('el') ?? 16));
 
 function syncButtons() {
   $('btnRotate').classList.toggle('on', view.autoRotate);
   $('btnColour').classList.toggle('on', view.colour);
   $('btnGhost').classList.toggle('on', view.ghost);
+  $('btnCrane').classList.toggle('on', view.crane);
   $('btnOrbit').classList.toggle('toggle', true);
   $('btnOrbit').classList.toggle('on', view.orbit);
   $('btnFrame').classList.toggle('on', viewer.autoFrame);
@@ -81,7 +86,7 @@ playback.onChange(syncButtons);
 
 // ── Rail ───────────────────────────────────────────────────────────────────
 const RAIL = [
-  { id: 'model', label: 'Model', sub: '5 TIERS', icon: 'model' },
+  { id: 'model', label: 'Model', sub: `${project.storeys} STOREYS`, icon: 'model' },
   { id: 'layers', label: 'Layers', sub: `${project.stages.length} STAGES`, icon: 'layers' },
   { id: 'parts', label: 'Parts', sub: `${(project.parts.length / 1000).toFixed(1)}K PCS`, icon: 'parts' },
   { id: 'section', label: 'Section', sub: 'A – A', icon: 'section', disabled: true },
@@ -124,7 +129,8 @@ function renderDrawer() {
           (s, i) =>
             `<label><input type="checkbox" data-bit="${i}" ${view.stageMask & (1 << i) ? 'checked' : ''} ${s.available ? '' : 'disabled'} /> ${String(s.n).padStart(2, '0')} · ${s.title}${s.available ? '' : ' <span class="muted">(M5)</span>'}</label>`,
         )
-        .join('');
+        .join('') +
+      `<label><input type="checkbox" data-bit="${CONTEXT_STAGE - 1}" ${view.stageMask & (1 << (CONTEXT_STAGE - 1)) ? 'checked' : ''} /> Context massing</label>`;
     drawer.querySelectorAll<HTMLInputElement>('input').forEach((inp) =>
       inp.addEventListener('change', () => {
         const bit = 1 << Number(inp.dataset.bit);
@@ -214,6 +220,10 @@ const actions: Record<string, () => void> = {
     viewer.setGhost(view.ghost);
     syncButtons();
   },
+  crane: () => {
+    view.crane = !view.crane;
+    syncButtons();
+  },
   orbit: () => {
     view.orbit = !view.orbit;
     viewer.controls.enabled = view.orbit;
@@ -233,6 +243,7 @@ bind('btnSpeed', actions.speed);
 bind('btnView', actions.view);
 bind('btnGhost', actions.ghost);
 bind('btnOrbit', actions.orbit);
+bind('btnCrane', actions.crane);
 bind('btnMenu', () => selectRail(view.rail === 'render' ? 'model' : 'render'));
 bind('stagePrev', () => jumpStage(-1));
 bind('stageNext', () => jumpStage(1));
@@ -267,18 +278,33 @@ function toast(msg: string) {
 function sequenceJson(): string {
   return JSON.stringify(
     {
-      project: { id: project.id, name: project.name, rev: project.rev, height: project.height, totalMassKg: Math.round(project.totalMassKg) },
+      project: {
+        id: project.id,
+        name: project.name,
+        rev: project.rev,
+        storeys: project.storeys,
+        height: +project.height.toFixed(2),
+        gifaM2: Math.round(project.gifa),
+        totalMassKg: Math.round(project.totalMassKg),
+        carbonA1A3Kg: Math.round(project.totalCarbonKg),
+        biogenicStoredKg: Math.round(project.totalBiogenicKg),
+        carbonNote: 'indicative A1–A3 from generic factors, not project EPDs',
+      },
+      crane: { id: project.crane.id, base: project.crane.base, jibM: project.crane.jib, maxKg: project.crane.maxKg, tipKg: project.crane.tipKg },
       stages: project.stages,
       steps: project.steps.map((s) => ({
         id: s.id,
         stage: s.stage,
-        tier: s.tier,
+        zone: s.zone,
         member: s.member,
         code: s.code,
+        method: s.method,
         qty: s.partCount,
         material: s.material,
         spec: s.spec,
         massKg: Math.round(s.massKg),
+        carbonKg: Math.round(s.carbonKg),
+        lift: s.lift ? { radiusM: +s.lift.radius.toFixed(1), pieceKg: Math.round(s.lift.pieceKg), capacityKg: Math.round(s.lift.capacityKg), utilisation: +s.lift.util.toFixed(3) } : null,
         centroid: s.centroid.map((v) => +v.toFixed(3)),
         t0: +s.t0.toFixed(3),
         t1: +s.t1.toFixed(3),
@@ -334,6 +360,7 @@ window.addEventListener('keydown', (e) => {
     f: actions.speed,
     v: actions.view,
     g: actions.ghost,
+    k: actions.crane,
     arrowleft: () => jumpStep(-1),
     arrowright: () => jumpStep(1),
     home: () => playback.seek(0),
@@ -354,11 +381,13 @@ let last = performance.now();
 let firstFrame = true;
 let hudAcc = 0;
 
+const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 function drawSpark(c: HTMLCanvasElement, values: number[], max: number, color: string, band = false) {
   const ctx = c.getContext('2d')!;
   ctx.clearRect(0, 0, c.width, c.height);
   if (band) {
-    ctx.fillStyle = 'rgba(157,17,37,0.12)';
+    ctx.fillStyle = cssVar('--brand-tint');
     ctx.fillRect(0, c.height * 0.3, c.width, c.height * 0.7);
   }
   ctx.strokeStyle = color;
@@ -377,7 +406,7 @@ function loop(now: number) {
   last = now;
   playback.tick(dt);
   const state = timeline.stateAt(playback.t);
-  viewer.frame(state.t, state.builtTop, state.builtHalf, dt, firstFrame);
+  viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame);
   overlays.update(state);
   ui.update(state, view.tab === 'members');
 
@@ -408,13 +437,13 @@ function loop(now: number) {
     $('gpuDraws').textContent = String(st.draws);
     $('gpuTris').textContent = `${Math.round(st.tris / 1000)}k`;
     $('gpuRes').textContent = `${viewer.pixelRatio.toFixed(2)}×`;
-    drawSpark(spark, frameTimes, 40, '#9d1125', true);
+    drawSpark(spark, frameTimes, 40, cssVar('--brand'), true);
     const activity = Array.from({ length: 40 }, (_, i) => {
       const t = state.t - (40 - i) * 0.05;
       const k = timeline.stepIndexAt(t);
       return k >= 0 && t < project.steps[k].t1 ? 1 : 0.15;
     });
-    drawSpark(logSpark, activity, 1.2, '#c8bdb5');
+    drawSpark(logSpark, activity, 1.2, cssVar('--muted'));
   }
 
   if (firstFrame) {
@@ -429,13 +458,14 @@ function makeThumbnails() {
   project.stages.forEach((st, i) => {
     if (!st.available) return;
     const steps = project.steps.filter((s) => s.stage === st.n);
-    const top = Math.max(...steps.map((s) => s.top));
-    ui.setThumbnail(i, viewer.snapshot(st.end - 0.001, top));
+    const top = Math.max(...steps.map((s) => s.top), ...project.steps.filter((s) => s.stage < st.n).map((s) => s.top));
+    const half = Math.max(17, ...steps.map((s) => s.halfExtent));
+    ui.setThumbnail(i, viewer.snapshot(st.end - 0.001, top, half));
   });
   document.body.dataset.ready = '1';
 }
 
 // test / automation hook
-(window as unknown as { pagoda: unknown }).pagoda = { project, timeline, playback, viewer };
+(window as unknown as { arbor: unknown }).arbor = { project, timeline, playback, viewer };
 
 requestAnimationFrame(loop);

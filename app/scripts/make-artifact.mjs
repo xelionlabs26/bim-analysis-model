@@ -27,8 +27,8 @@ if (/@font-face/.test(css)) throw new Error('bundled @font-face rules leaked int
 const cdn = `https://cdn.jsdelivr.net/npm/three@${threeVersion}`;
 const importMap = { imports: { three: `${cdn}/build/three.module.min.js`, 'three/examples/jsm/': `${cdn}/examples/jsm/` } };
 const fonts =
-  'https://fonts.googleapis.com/css2?family=Archivo:wght@600;800;900&family=JetBrains+Mono:wght@400;700' +
-  '&family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&display=swap';
+  'https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Geist+Mono:wght@400;500;700' +
+  '&family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap';
 
 const page = `<title>${title}</title>
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -44,6 +44,6 @@ ${body}
 ${js}
 </script>
 `;
-const out = join(dist, 'pagoda-build.html');
+const out = join(dist, 'arbor-build.html');
 writeFileSync(out, page);
 console.log(`wrote ${out} (${(page.length / 1024).toFixed(1)} KB; three@${threeVersion} from jsDelivr)`);

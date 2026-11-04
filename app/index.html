@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Pagoda Build</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3v4M6 11h20M9 11l-3 4h20l-3-4M8 18h16M6 22h20M10 22v6h12v-6' fill='none' stroke='%239d1125' stroke-width='2'/%3E%3C/svg%3E" />
+    <title>Arbor Build</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M9 29V9h9v20M18 14h6v15M6 29h21M11 13h3M11 17h3M11 21h3' fill='none' stroke='%23b4540f' stroke-width='2'/%3E%3C/svg%3E" />
   </head>
   <body>
     <div class="app" id="app">
@@ -13,16 +13,16 @@
         <div class="brand">
           <span class="logo" data-icon="logo"></span>
           <div>
-            <h1 class="wordmark">PAGODA <em>BUILD</em></h1>
-            <p class="tagline">TIMBER STRUCTURE · ASSEMBLY · SECTION</p>
+            <h1 class="wordmark">ARBOR <em>BUILD</em></h1>
+            <p class="tagline">HYBRID MASS TIMBER · 32 STOREYS · INSTALL ORDER</p>
           </div>
         </div>
         <div class="header-drawing" id="headerDrawing"></div>
         <div class="status card">
-          <span class="status-icon" data-icon="pagoda"></span>
+          <span class="status-icon" data-icon="crane"></span>
           <div class="status-main">
-            <div class="status-phase" id="statusPhase">ASSEMBLY</div>
-            <div class="status-step mono" id="statusStep">STEP 000/191 · 0 PCS</div>
+            <div class="status-phase" id="statusPhase">GROUNDWORKS</div>
+            <div class="status-step mono" id="statusStep">STEP 000/000 · 0 PCS</div>
             <div class="bar"><i id="statusBar"></i></div>
           </div>
           <div class="status-stage"><b id="statusStage">1</b>/<span id="statusStageTotal">8</span></div>
@@ -31,7 +31,7 @@
             <div class="mono time" id="clockTime">--:--:--</div>
             <div class="mono live"><i></i> LIVE · <span id="liveFps">60</span> FPS</div>
           </div>
-          <button class="stamp" title="Project PG-05">PG</button>
+          <button class="stamp" title="Project AR-32">AR</button>
         </div>
       </header>
 
@@ -52,12 +52,12 @@
 
       <!-- VIEWPORT ───────────────────────────────────────────────────────── -->
       <main class="viewport card" id="viewport">
-        <div class="watermark" aria-hidden="true">PAGODA</div>
+        <div class="watermark" aria-hidden="true">ARBOR</div>
         <svg class="overlay" id="overlaySvg"></svg>
         <div class="overlay" id="overlayHtml"></div>
 
         <div class="toolbar">
-          <button class="chip icon-only" id="btnMenu" title="Menu" data-icon="menu"></button>
+          <button class="chip icon-only" id="btnMenu" title="Render style" data-icon="menu"></button>
           <button class="chip" id="btnOrbit"><i class="dot"></i> Orbit Cam</button>
           <label class="chip select">
             <select id="selStyle" aria-label="Render style">
@@ -67,32 +67,30 @@
             </select>
           </label>
           <button class="chip toggle on" id="btnGhost">Ghost</button>
-          <button class="chip music" id="btnMusic" title="No soundtrack in this build" disabled>
-            <span data-icon="music"></span><span class="wave"></span><span>Muted</span>
-          </button>
+          <button class="chip toggle on" id="btnCrane">Crane</button>
         </div>
 
         <section class="caption" id="caption">
-          <h2>Five-Tier Pagoda — Assembly Drawing</h2>
-          <p class="sub">Timber pagoda · built member by member from the drawing</p>
-          <p class="mono red" id="capStep">STEP 000 / 191</p>
+          <h2>Arbor House — Assembly Drawing</h2>
+          <p class="sub">32-storey hybrid timber residential tower · built in install order</p>
+          <p class="mono red" id="capStep">STEP 000 / 000</p>
           <p class="member" id="capMember">—</p>
           <p class="spec" id="capSpec">—</p>
         </section>
 
         <section class="titleblock" id="titleBlock">
-          <div class="tb-row full"><label>DRAWING</label><b>FIVE-TIER PAGODA</b></div>
-          <div class="tb-row"><label>DWG NO.</label><span class="mono" id="tbDwg">PG-05 / A-101</span></div>
-          <div class="tb-row"><label>SCALE</label><span class="mono" id="tbScale">1:200</span></div>
-          <div class="tb-row"><label>PHASE</label><span class="mono red" id="tbPhase">ASSEMBLY</span></div>
+          <div class="tb-row full"><label>DRAWING</label><b>ARBOR HOUSE</b></div>
+          <div class="tb-row"><label>DWG NO.</label><span class="mono" id="tbDwg">AR-32 / A-201</span></div>
+          <div class="tb-row"><label>SCALE</label><span class="mono" id="tbScale">1:500</span></div>
+          <div class="tb-row"><label>PHASE</label><span class="mono red" id="tbPhase">GROUNDWORKS</span></div>
           <div class="tb-row"><label>SHEET</label><span class="mono" id="tbSheet">1 / 8</span></div>
-          <div class="tb-row full"><label>CAMERA</label><span class="mono" id="tbCamera">AZ 211° · EL +19° · 52 mm</span></div>
+          <div class="tb-row full"><label>CAMERA</label><span class="mono" id="tbCamera">AZ 28° · EL +16° · 52 mm</span></div>
         </section>
 
         <div class="scalebar" id="scaleBar">
-          <div class="sb-labels mono"><span>0</span><span id="sbMid">2.5</span><span id="sbEnd">5 m</span></div>
+          <div class="sb-labels mono"><span>0</span><span id="sbMid">10</span><span id="sbEnd">20 m</span></div>
           <div class="sb-bar"><i></i><i></i><i></i><i></i></div>
-          <div class="mono red sb-scale" id="sbScale">SCALE · 1:200</div>
+          <div class="mono red sb-scale" id="sbScale">SCALE · 1:500</div>
         </div>
 
         <div class="scrubber" id="scrubber">
@@ -101,10 +99,10 @@
         </div>
 
         <div class="transport card" id="transport">
-          <button class="tbtn icon" id="btnPrev" title="Previous stage (←)" data-icon="prev"></button>
+          <button class="tbtn icon" id="btnPrev" title="Previous stage" data-icon="prev"></button>
           <button class="tbtn icon" id="btnPlay" title="Play / pause (Space)" data-icon="pause"></button>
-          <button class="tbtn icon" id="btnNext" title="Next stage (→)" data-icon="next"></button>
-          <div class="timecode mono" id="timecode">00:00.0 /<br />00:15</div>
+          <button class="tbtn icon" id="btnNext" title="Next stage" data-icon="next"></button>
+          <div class="timecode mono" id="timecode">00:00.0 /<br />00:00</div>
           <span class="sep"></span>
           <button class="tkey" id="btnRebuild">REBUILD<small>R</small></button>
           <button class="tkey on" id="btnRotate">AUTO-<br />ROTATE<small>A</small></button>
@@ -130,28 +128,34 @@
           <button class="sq red" id="btnPlay2" title="Play / pause" data-icon="pause"></button>
         </div>
         <div class="toast mono" id="toast" role="status" hidden></div>
-        <p class="crumb mono" id="crumb">PG-05 ▸ <b>Assembly</b> · 191 steps · 0 parts</p>
+        <p class="crumb mono" id="crumb">AR-32 ▸ <b>Assembly</b></p>
 
         <div class="tabpane" id="paneSeq">
-          <div class="sec-head"><h4>STAGE TIMELINE</h4><span class="mono" id="ganttTime">0.0 / 15.0 s</span></div>
+          <div class="sec-head"><h4>STAGE TIMELINE</h4><span class="mono" id="ganttTime">0.0 / 0.0 s</span></div>
           <div class="gantt" id="gantt"></div>
 
           <div class="sec-head"><h4>ACTIVE OPERATION</h4><span class="mono" id="opStatus">WAITING</span></div>
           <div class="op" id="op">
-            <div class="op-row full"><label>MEMBER</label><b class="serif" id="opMember">—</b></div>
+            <div class="op-row full"><label>MEMBER</label><b class="member-name" id="opMember">—</b></div>
             <div class="op-row"><label>STEP</label><span class="mono red big" id="opStep">—</span></div>
-            <div class="op-row"><label>STAGE</label><span class="mono big" id="opStage">—</span></div>
+            <div class="op-row"><label>STAGE · ZONE</label><span class="mono big" id="opStage">—</span></div>
             <div class="op-row"><label>QUANTITY</label><span class="mono big" id="opQty">—</span></div>
-            <div class="op-row"><label>MATERIAL</label><span class="mono big" id="opMat">—</span></div>
-            <div class="op-row full"><label>SPECIFICATION</label><span class="mono big ellipsis" id="opSpec">—</span></div>
+            <div class="op-row"><label>MATERIAL</label><span class="mono big ellipsis" id="opMat">—</span></div>
+            <div class="op-row full"><label>LIFT · TOWER CRANE TC-1</label><span class="mono big ellipsis lift" id="opLift" data-level="none">—</span></div>
             <div class="op-row"><label>PLACED AT X · Y · Z</label><span class="mono big" id="opXYZ">—</span></div>
-            <div class="op-row"><label>EST. MASS</label><span class="mono big" id="opMass">—</span></div>
+            <div class="op-row"><label>MASS · CARBON</label><span class="mono big ellipsis" id="opMass">—</span></div>
           </div>
 
-          <div class="sec-head"><h4>STRUCTURE</h4><span class="mono" id="structTotal">0 % · 0.0 t</span></div>
+          <div class="sec-head"><h4>STRUCTURE</h4><span class="mono" id="structTotal">0 % · —</span></div>
           <div class="structure">
-            <div class="pyramid" id="pyramid"></div>
-            <div class="tiers mono" id="tierTable"></div>
+            <div class="zone-stack" id="zoneStack" aria-hidden="true"></div>
+            <div class="zones mono" id="zoneTable"></div>
+          </div>
+          <div class="carbon mono">
+            <div><span>EMBODIED A1–A3</span><b id="carbonEmbodied">—</b></div>
+            <div><span>STORED IN TIMBER</span><b class="green" id="carbonStored">—</b></div>
+            <div><span>INTENSITY</span><b id="carbonIntensity">—</b></div>
+            <p id="carbonNote">Indicative A1–A3 from generic factors</p>
           </div>
         </div>
 
@@ -174,7 +178,7 @@
       <footer class="stages">
         <div class="stages-head">
           <h3>STAGES</h3>
-          <span class="mono muted" id="stagesMeta">8 STAGES · 191 STEPS · 15 SEC SEQUENCE</span>
+          <span class="mono muted" id="stagesMeta">8 STAGES</span>
           <span class="legend mono"><i class="l-placed"></i>PLACED <i class="l-active"></i>ACTIVE <i class="l-ghost"></i>GHOST</span>
         </div>
         <div class="stages-row">

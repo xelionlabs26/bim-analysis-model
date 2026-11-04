@@ -16,8 +16,10 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { MATERIAL_INFO, type Project } from '../data/types';
+import { MATERIAL_INFO, type Motion, type Project } from '../data/types';
 import { ACTIVE_HOLD } from '../data/project';
+import type { CraneState } from '../engine/timeline';
+import { CraneRig } from './crane';
 import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex } from './shaders';
 
 export type RenderStyle = 'ink' | 'ink+paint' | 'paint';
@@ -30,28 +32,33 @@ export interface CameraReadout {
   pxPerMetre: number;
 }
 
+/** South is +Z; azimuth is measured from south towards east. */
 export const VIEW_PRESETS = [
-  { name: 'ISO', az: 211, el: 19 },
-  { name: 'SOUTH ELEV', az: 180, el: 4 },
-  { name: 'EAST ELEV', az: 90, el: 4 },
-  { name: 'LOW', az: 236, el: 6 },
-  { name: 'PLAN', az: 180, el: 86 },
+  { name: 'ISO', az: 28, el: 16 },
+  { name: 'SOUTH ELEV', az: 0, el: 3 },
+  { name: 'EAST ELEV', az: 90, el: 3 },
+  { name: 'STREET', az: 334, el: 5 },
+  { name: 'PLAN', az: 0, el: 86 },
 ];
 
+export const CONTEXT_STAGE = 9;
 const FOV = 26; // ≈ 52 mm on 24 mm film height
+const MODE: Record<Motion, number> = { lower: 0, pour: 1, bore: 2 };
 const css = (name: string) => new Color(getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#000');
 
 export class Viewer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
-  readonly camera = new PerspectiveCamera(FOV, 1, 0.5, 400);
+  readonly camera = new PerspectiveCamera(FOV, 1, 1, 2400);
   readonly controls: OrbitControls;
+  readonly crane: CraneRig;
   private fill: InstancedMesh;
   private ghost: InstancedMesh;
   private fillMat: ShaderMaterial;
   private ghostMat: ShaderMaterial;
-  private target = new Vector3(0, 4, 0);
-  private distance = 40;
+  private target = new Vector3(0, 6, 0);
+  private distance = 90;
+  private maxTop: number;
   autoFrame = true;
   private resolution = 1.5;
   private size = { w: 1, h: 1 };
@@ -61,12 +68,14 @@ export class Viewer {
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.domElement.className = 'gl';
     host.prepend(this.renderer.domElement);
+    this.maxTop = project.height;
 
     const geo = new BoxGeometry(1, 1, 1);
-    const n = project.parts.length;
+    const n = project.parts.length + project.context.length;
     const time = new Float32Array(n * 3);
     const color = new Float32Array(n * 3);
     const stage = new Float32Array(n);
+    const mode = new Float32Array(n);
     const m = new Matrix4();
     const q = new Quaternion();
     const v = new Vector3();
@@ -74,9 +83,10 @@ export class Viewer {
     const c = new Color();
     const uniforms = {
       uTime: { value: 0 },
-      uMask: { value: 255 },
+      uMask: { value: 511 },
       uHold: { value: ACTIVE_HOLD },
       uPaper: { value: css('--part') },
+      uContextFill: { value: css('--context') },
       uInkColor: { value: css('--ink') },
       uActiveFill: { value: css('--active-fill') },
       uActiveInk: { value: css('--brand') },
@@ -87,13 +97,7 @@ export class Viewer {
       uGhost: { value: 1 },
     };
     this.fillMat = new ShaderMaterial({ uniforms, vertexShader: fillVertex, fragmentShader: fillFragment });
-    this.ghostMat = new ShaderMaterial({
-      uniforms,
-      vertexShader: ghostVertex,
-      fragmentShader: ghostFragment,
-      transparent: true,
-      depthWrite: false,
-    });
+    this.ghostMat = new ShaderMaterial({ uniforms, vertexShader: ghostVertex, fragmentShader: ghostFragment, transparent: true, depthWrite: false });
     this.fill = new InstancedMesh(geo, this.fillMat, n);
     project.parts.forEach((p, i) => {
       m.compose(v.set(...p.pos), q.set(...p.quat), s.set(...p.size));
@@ -102,10 +106,22 @@ export class Viewer {
       c.set(MATERIAL_INFO[p.mat].colour);
       color.set([c.r, c.g, c.b], i * 3);
       stage[i] = p.stage;
+      mode[i] = MODE[p.motion];
+    });
+    project.context.forEach((p, k) => {
+      const i = project.parts.length + k;
+      m.compose(v.set(...p.pos), q.set(...p.quat), s.set(...p.size));
+      this.fill.setMatrixAt(i, m);
+      time.set([-100, 0.001, 0], i * 3);
+      c.set(MATERIAL_INFO.context.colour);
+      color.set([c.r, c.g, c.b], i * 3);
+      stage[i] = CONTEXT_STAGE;
+      mode[i] = 3;
     });
     geo.setAttribute('aTime', new InstancedBufferAttribute(time, 3));
     geo.setAttribute('aColor', new InstancedBufferAttribute(color, 3));
     geo.setAttribute('aStage', new InstancedBufferAttribute(stage, 1));
+    geo.setAttribute('aMode', new InstancedBufferAttribute(mode, 1));
     this.fill.instanceMatrix.needsUpdate = true;
     this.ghost = new InstancedMesh(geo, this.ghostMat, n);
     this.ghost.instanceMatrix = this.fill.instanceMatrix;
@@ -114,9 +130,9 @@ export class Viewer {
     this.scene.add(this.fill, this.ghost);
 
     const ground = new Mesh(
-      new PlaneGeometry(44, 44).rotateX(-Math.PI / 2),
+      new PlaneGeometry(200, 200).rotateX(-Math.PI / 2),
       new ShaderMaterial({
-        uniforms: { uLine: { value: css('--brand') } },
+        uniforms: { uLine: { value: css('--ghost') } },
         vertexShader: groundVertex,
         fragmentShader: groundFragment,
         transparent: true,
@@ -128,14 +144,18 @@ export class Viewer {
     ground.renderOrder = 1;
     this.scene.add(ground);
 
+    this.crane = new CraneRig(project.crane, css('--ink'), css('--part'), css('--brand'));
+    this.scene.add(this.crane.group);
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enablePan = false;
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.autoRotate = true;
-    this.controls.autoRotateSpeed = 1.0; // ≈ 6°/s
+    this.controls.autoRotateSpeed = 0.8; // ≈ 5°/s
     this.controls.minPolarAngle = 0.05;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.01;
+    this.controls.maxDistance = 900;
     this.renderer.domElement.addEventListener('wheel', () => (this.autoFrame = false), { passive: true });
     this.setView(VIEW_PRESETS[0].az, VIEW_PRESETS[0].el);
 
@@ -160,6 +180,9 @@ export class Viewer {
     this.renderer.domElement.style.width = `${this.size.w}px`;
     this.renderer.domElement.style.height = `${this.size.h}px`;
     this.camera.aspect = this.size.w / this.size.h;
+    // shift the model a little right of centre, clear of the caption card
+    const shift = this.size.w > 700 ? -0.07 * this.size.w : 0;
+    this.camera.setViewOffset(this.size.w, this.size.h, shift, 0, this.size.w, this.size.h);
     this.camera.updateProjectionMatrix();
   }
 
@@ -192,21 +215,21 @@ export class Viewer {
 
   /** Distance that fits a box of height h and half-width w centred at h/2. */
   private fitDistance(h: number, w: number) {
-    const fov = (FOV * Math.PI) / 180;
-    const aspect = this.camera.aspect;
-    const r = Math.hypot(h / 2, w);
-    const byH = (h / 2 + 4) / Math.tan(fov / 2);
-    const byW = (w * 1.15) / (Math.tan(fov / 2) * aspect);
-    return Math.max(byH, byW, r * 1.2, 14);
+    const t = Math.tan(((FOV * Math.PI) / 180) / 2);
+    const byH = ((h / 2) * 1.32 + 4) / t; // headroom for the toolbar above and the transport below
+    const byW = (w * 1.2) / (t * this.camera.aspect);
+    return Math.max(byH, byW, Math.hypot(h / 2, w) * 1.2, 30);
   }
 
-  /** Per-frame: update sequence time, auto-frame, orbit, render. */
-  frame(t: number, builtTop: number, builtHalf: number, dt: number, snap = false) {
+  /** Per-frame: update sequence time, crane, auto-frame, orbit, render. */
+  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false) {
     this.fillMat.uniforms.uTime.value = t;
+    this.crane.update(crane);
     if (this.autoFrame) {
-      const frameTop = Math.min(Math.max(builtTop * 1.2 + 8, 20), 46);
-      const desiredY = Math.max(3, builtTop * 0.5 + 1.2);
-      const desiredD = this.fitDistance(frameTop, Math.max(builtHalf, 7.5));
+      const withCrane = crane.visible ? crane.mastTop + 4 : 0;
+      const frameTop = Math.max(Math.min(Math.max(builtTop * 1.12 + 10, 28), this.maxTop * 1.08 + 4), withCrane);
+      const desiredY = Math.max(3, Math.min(frameTop * 0.5, builtTop * 0.55 + 4));
+      const desiredD = this.fitDistance(frameTop, Math.max(builtHalf, crane.visible ? 26 : 17));
       const k = snap ? 1 : 1 - Math.exp(-dt * 2.2);
       const off = this.camera.position.clone().sub(this.controls.target);
       this.target.y += (desiredY - this.target.y) * k;
@@ -247,19 +270,21 @@ export class Viewer {
     return { draws: r.calls, tris: r.triangles };
   }
 
-  /** Render a still of the model at time t, fitted to `top`, as a data URL. */
-  snapshot(t: number, top: number, w = 360, h = 200): string {
+  /** Render a still of the model at time t, fitted to `top` × `half`, as a data URL. */
+  snapshot(t: number, top: number, half: number, w = 360, h = 200): string {
     const rt = new WebGLRenderTarget(w * 2, h * 2, { samples: 4 });
-    const cam = new PerspectiveCamera(FOV, w / h, 0.5, 400);
-    const frameTop = Math.max(top + 1.5, 6);
-    const fov = (FOV * Math.PI) / 180;
-    const d = Math.max((frameTop / 2 + 0.6) / Math.tan(fov / 2), (8.5 * 1.05) / (Math.tan(fov / 2) * (w / h)));
-    const az = (211 * Math.PI) / 180;
-    const el = (20 * Math.PI) / 180;
-    const ty = frameTop * 0.5;
+    const cam = new PerspectiveCamera(FOV, w / h, 1, 2400);
+    const frameTop = Math.max(top + 3, 10);
+    const tn = Math.tan(((FOV * Math.PI) / 180) / 2);
+    const d = Math.max((frameTop / 2 + 1) / tn, (half * 1.1) / (tn * (w / h)));
+    const az = (VIEW_PRESETS[0].az * Math.PI) / 180;
+    const el = (18 * Math.PI) / 180;
+    const ty = frameTop * 0.48;
     cam.position.set(Math.sin(az) * Math.cos(el) * d, ty + Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
     cam.lookAt(0, ty, 0);
     const prev = this.fillMat.uniforms.uTime.value;
+    const craneVisible = this.crane.group.visible;
+    this.crane.group.visible = false;
     this.fillMat.uniforms.uTime.value = t;
     this.renderer.setRenderTarget(rt);
     this.renderer.clear();
@@ -268,6 +293,7 @@ export class Viewer {
     this.renderer.readRenderTargetPixels(rt, 0, 0, w * 2, h * 2, buf);
     this.renderer.setRenderTarget(null);
     this.fillMat.uniforms.uTime.value = prev;
+    this.crane.group.visible = craneVisible;
     rt.dispose();
     const canvas = document.createElement('canvas');
     canvas.width = w * 2;

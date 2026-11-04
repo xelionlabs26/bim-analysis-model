@@ -2,8 +2,8 @@ import type { SequenceState, Timeline } from '../engine/timeline';
 import type { Project, Step } from '../data/types';
 import type { Viewer } from '../scene/viewer';
 
-const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500];
-const BAR_LENGTHS = [1, 2, 2.5, 5, 10, 20];
+const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000];
+const BAR_LENGTHS = [1, 2, 2.5, 5, 10, 20, 25, 50];
 const RANK_OPACITY = [1, 0.62, 0.34, 0.14];
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -39,19 +39,19 @@ export class Overlays {
     private timeline: Timeline,
     private viewer: Viewer,
   ) {
-    this.rulerLine = this.svgEl('line', { stroke: '#9d1125', 'stroke-width': '1.4' });
+    this.rulerLine = this.svgEl('line', { style: 'stroke: var(--brand)', 'stroke-width': '1.4' });
     for (const lv of project.levels) {
       const code = document.createElement('div');
       code.className = 'datum';
       code.innerHTML = `<span class="code">${lv.code}</span><span class="val">${lv.y === 0 ? '±0.00' : `+${lv.y.toFixed(2)}`}</span>`;
       html.append(code);
-      const tick = this.svgEl('path', { stroke: '#9d1125', 'stroke-width': '1.4', fill: 'none' });
-      const dash = this.svgEl('line', { stroke: '#8b8178', 'stroke-width': '1', 'stroke-dasharray': '2 3' });
+      const tick = this.svgEl('path', { style: 'stroke: var(--brand)', 'stroke-width': '1.4', fill: 'none' });
+      const dash = this.svgEl('line', { style: 'stroke: var(--muted)', 'stroke-width': '1', 'stroke-dasharray': '2 3' });
       this.datumEls.push({ code, tick, dash, y: lv.y, level: lv.code });
     }
     this.hbox = document.createElement('div');
     this.hbox.className = 'hbox';
-    this.hbox.textContent = `H = ${project.height.toFixed(2)} m`;
+    this.hbox.textContent = `H = ${project.height.toFixed(1)} m`;
     html.append(this.hbox);
   }
 
@@ -128,16 +128,18 @@ export class Overlays {
         el.innerHTML = `<b>${step.member}</b><span>${step.spec}</span>`;
         el.style.opacity = '0';
         this.html.append(el);
-        c = { el, line: this.svgEl('line', { stroke: '#9d1125', 'stroke-width': '1' }), ring: this.svgEl('circle', { r: '4.5', fill: 'none', stroke: '#9d1125', 'stroke-width': '1.4' }), seen: this.frameNo };
+        c = { el, line: this.svgEl('line', { style: 'stroke: var(--brand)', 'stroke-width': '1' }), ring: this.svgEl('circle', { r: '4.5', fill: 'none', style: 'stroke: var(--brand)', 'stroke-width': '1.4' }), seen: this.frameNo };
         this.callouts.set(step.index, c);
       }
       const a = this.viewer.project(step.centroid);
-      const side = a.x < w * 0.5 ? 'l' : 'r';
+      // the tower sits right of centre; only a wide viewport has room for labels on its right
+      const side = w > 1150 && a.x > w * 0.5 ? 'r' : 'l';
       placed.push({ step, c, ax: a.x, ay: a.y, side, y: a.y - 24, rank });
     });
-    // de-overlap per side
-    const minY = 210;
-    const maxY = h - 200;
+    // de-overlap per side, below the caption card
+    const cap = document.getElementById('caption');
+    const minY = cap && cap.style.visibility !== 'hidden' ? cap.offsetTop + cap.offsetHeight + 16 : 80;
+    const maxY = h - 260; // stay clear of the scale bar and transport
     for (const side of ['l', 'r'] as const) {
       const list = placed.filter((p) => p.side === side).sort((a, b) => a.y - b.y);
       let cursor = minY;
@@ -154,8 +156,8 @@ export class Overlays {
       c.line.setAttribute('class', `rank-${rank}`);
       c.ring.setAttribute('class', `rank-${rank}`);
       c.el.style.opacity = fresh ? '0' : String(op);
-      c.el.style.color = rank === 0 ? 'var(--ink)' : '#9a9089';
-      (c.el.lastElementChild as HTMLElement).style.color = rank === 0 ? 'var(--brand)' : '#c79aa1';
+      c.el.style.color = rank === 0 ? 'var(--ink)' : 'var(--muted)';
+      (c.el.lastElementChild as HTMLElement).style.color = rank === 0 ? 'var(--brand)' : 'var(--brand-soft)';
       const width = c.el.offsetWidth;
       const x = p.side === 'l' ? 24 : w - width - 186;
       c.el.style.transform = `translate(${x}px, ${p.y}px)`;

@@ -1,36 +1,67 @@
 /**
- * Procedural five-tier timber pagoda, authored as an ordered list of install steps.
+ * Arbor House — a 32-storey hybrid mass-timber residential tower, authored as
+ * an ordered list of install steps. Every part is an oriented box.
  *
- * Every part is an oriented box. A side-specific element is built once for the
- * south face (+Z) and rotated about Y for east (+X), north (-Z) and west (-X).
- * Step counts per tier follow the reference recording:
- *   PLINTH 19 · TIER 1 43 · TIER 2–4 29 · TIER 5 28 · SPIRE 14  = 191
+ *   L0–L2   concrete podium (lobby, amenity) on piles + raft
+ *   L3      concrete transfer deck
+ *   L3–L31  glulam frame + CLT floors around a cast-in-place concrete core,
+ *           prefab bathroom pods, unitised façade with parametric terracotta
+ *           fins and staggered planted balconies
+ *   L12–13, L22–23  double-height sky gardens (south-east corner)
+ *   L24+    floors step back one bay on the south side over a planted sky terrace
+ *   roof    green roof, garden trees, PV canopy on a glulam frame, terracotta crown
+ *
+ * Sequencing rules baked in (and checked in tests):
+ *   - the core is poured in jumps and always leads the timber frame by ≥ 2 floors
+ *   - each floor goes columns + beams → bathroom pods → CLT slab above
+ *   - façade units trail the structure by two floors
+ *
+ * Side-specific elements are built for the south face (+Z) and rotated about Y
+ * for east (+X), north (−Z) and west (−X).
  */
 import { Matrix4, Quaternion, Vector3 } from 'three';
-import type { MaterialId, Part, StepDef, TierId, Vec3 } from './types';
+import type { Crane, MaterialId, Method, Motion, Part, StepDef, Vec3, ZoneId } from './types';
 
-export const FLOORS = [1.3, 7.92, 13.04, 17.98, 22.75] as const; // FL of tiers 1–5
-export const APEX = 28.64;
-const CORE = [3.3, 2.9, 2.6, 2.3, 2.0]; // core half-width per tier
-const COL_H = [3.4, 2.6, 2.5, 2.4, 2.3]; // column height per tier
-const OVERHANG = [2.7, 2.5, 2.3, 2.1, 2.0]; // eave projection beyond the core
-const SIDES = ['SOUTH', 'EAST', 'NORTH', 'WEST'] as const;
+export const GRID = 7;
+export const HALF = 14; // structural grid half-width (column lines)
+export const EDGE = 14.15; // slab edge / glass line
+export const CORE = 4.8; // core outer half-width
+export const F2F = 3.3; // timber floor-to-floor
+export const PODIUM_LEVELS = [0, 4.5, 9.0];
+export const TRANSFER = 13.5; // L3
+export const ROOF_LEVEL = 32;
+export const levelY = (L: number) => (L <= 2 ? PODIUM_LEVELS[L] : TRANSFER + (L - 3) * F2F);
+export const ROOF = levelY(ROOF_LEVEL);
+export const SKY_GARDENS = [12, 22]; // garden on this level, void through the next
+export const SETBACK_FROM = 24; // floors from here up step back one bay on the south side
+export const SET_EDGE = 7.15; // south slab edge above the setback
+export const STOREYS = 32; // L0–L31
+
 const SIDE_ANGLE = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
-
 const UP = new Vector3(0, 1, 0);
-const r2 = (n: number) => Math.round(n * 100) / 100;
+const XS = [-14, -7, 0, 7, 14];
+const lv = (L: number) => (L >= ROOF_LEVEL ? 'ROOF' : `L${String(L).padStart(2, '0')}`);
+
+export const CRANE: Crane = {
+  id: 'TC-1',
+  base: [-26, 0, 0],
+  jib: 60,
+  counterJib: 18,
+  maxKg: 12000,
+  tipKg: 2440,
+  capacityAt: (r: number) => Math.min(12000, 12000 * Math.pow(20 / Math.max(r, 1), 1.45)),
+};
 
 class Sink {
   parts: Part[] = [];
 
-  /** Axis-aligned box (optionally yawed) centred at c. */
   box(c: Vec3, size: Vec3, mat: MaterialId, yaw = 0): this {
     const q = new Quaternion().setFromAxisAngle(UP, yaw);
     this.parts.push({ pos: [...c], size: [...size], quat: [q.x, q.y, q.z, q.w], mat });
     return this;
   }
 
-  /** Box running from a to b (local X), with `zHint` steering its width axis. */
+  /** Box running from a to b (local X); `zHint` steers its width axis. */
   beam(a: Vec3, b: Vec3, h: number, w: number, mat: MaterialId, zHint?: Vec3): this {
     const A = new Vector3(...a);
     const B = new Vector3(...b);
@@ -42,14 +73,13 @@ class Sink {
     if (z.lengthSq() < 1e-8) z = new Vector3(0, 0, 1);
     z.sub(x.clone().multiplyScalar(z.dot(x))).normalize();
     const y = new Vector3().crossVectors(z, x).normalize();
-    const m = new Matrix4().makeBasis(x, y, z);
-    const q = new Quaternion().setFromRotationMatrix(m);
+    const q = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(x, y, z));
     const c = A.add(B).multiplyScalar(0.5);
     this.parts.push({ pos: [c.x, c.y, c.z], size: [len, h, w], quat: [q.x, q.y, q.z, q.w], mat });
     return this;
   }
 
-  /** Rotate every part added since `from` about the Y axis. */
+  /** Rotate every part added since `from` about the Y axis (through the origin). */
   yawFrom(from: number, angle: number): this {
     if (!angle) return this;
     const q = new Quaternion().setFromAxisAngle(UP, angle);
@@ -62,460 +92,553 @@ class Sink {
     }
     return this;
   }
+
+  tree(x: number, y: number, z: number, h = 4.2, yaw = 0): this {
+    this.box([x, y + h * 0.3, z], [0.28, h * 0.6, 0.28], 'planting');
+    const c = y + h * 0.62;
+    this.box([x, c, z], [2.4, 1.2, 2.4], 'planting', yaw);
+    this.box([x, c + 0.95, z], [1.8, 1.0, 1.8], 'planting', yaw + Math.PI / 4);
+    this.box([x, c + 1.75, z], [1.0, 0.8, 1.0], 'planting', yaw);
+    return this;
+  }
 }
 
-interface RoofSpec {
-  eaveHalf: number;
-  eaveY: number;
-  innerHalf: number;
-  innerY: number;
-  lift: number;
+/** World position of a side-local point (side-local south face is +Z). */
+function toWorld(x: number, z: number, side: number): [number, number] {
+  const a = SIDE_ANGLE[side];
+  return [x * Math.cos(a) + z * Math.sin(a), -x * Math.sin(a) + z * Math.cos(a)];
 }
 
-/** Point on the south roof face. u: 0 eave → 1 inner. s: -1..1 along the row. */
-function roofPoint(r: RoofSpec, u: number, s: number): Vec3 {
-  const half = r.eaveHalf + (r.innerHalf - r.eaveHalf) * u;
-  const y = r.eaveY + (r.innerY - r.eaveY) * Math.pow(u, 1.5);
-  const lift = r.lift * Math.pow(Math.abs(s), 3) * Math.pow(1 - u, 1.2);
-  return [s * half, y + lift, half];
+/** The south-east corner bay that is left open for the sky gardens. */
+const inSkyCorner = (wx: number, wz: number) => wx > 7 && wz > 7;
+/** Above the setback the south bay (z > 7) is terrace, not building. */
+const setBack = (L: number) => L >= SETBACK_FROM;
+const southEdge = (L: number) => (setBack(L) ? SET_EDGE : EDGE);
+
+interface Opts {
+  zone: ZoneId;
+  member: string;
+  spec: string;
+  code: string;
+  method: Method;
+  motion?: Motion;
+  drop?: number;
+  level?: number;
+  kind?: StepDef['kind'];
+  log?: string;
 }
 
-function sideStep(
-  tier: TierId,
-  member: string,
-  spec: string,
-  code: string,
-  drop: number,
-  build: (s: Sink) => void,
-): StepDef[] {
-  return SIDES.map((side, i) => {
-    const s = new Sink();
-    build(s);
-    s.yawFrom(0, SIDE_ANGLE[i]);
-    return { tier, member: `${member} · ${side}`, spec, code, drop, parts: s.parts };
-  });
-}
-
-function step(tier: TierId, member: string, spec: string, code: string, drop: number, build: (s: Sink) => void): StepDef {
+function step(o: Opts, build: (s: Sink) => void): StepDef {
   const s = new Sink();
   build(s);
-  return { tier, member, spec, code, drop, parts: s.parts };
-}
-
-// ─── Plinth ────────────────────────────────────────────────────────────────
-
-function plinth(): StepDef[] {
-  const T: TierId = 'PLINTH';
-  const steps: StepDef[] = [];
-  steps.push(
-    step(T, 'SITE · SETTING-OUT', 'grid A–E / 1–5 · axis 0,0 · section grid 3.5 m', 'SO-01', 0, (s) => {
-      for (let i = 0; i < 5; i++) {
-        const k = -7 + i * 3.5;
-        s.box([k, 0.01, 0], [0.025, 0.02, 15], 'stringline');
-        s.box([0, 0.01, k], [15, 0.02, 0.025], 'stringline');
-      }
-      for (const x of [-7.5, 7.5]) for (const z of [-7.5, 7.5]) s.box([x, 0.2, z], [0.08, 0.4, 0.08], 'stringline');
-    }),
-  );
-  const course = (half: number, y0: number, h: number, code: string, label: string) =>
-    sideStep(T, `PLINTH · ${label}`, `granite ashlar · ${h.toFixed(2)} m course · 1.2 m blocks`, code, 0.6, (s) => {
-      const n = Math.round((2 * half) / 1.2);
-      const len = (2 * half) / n;
-      for (let i = 0; i < n; i++) {
-        const x = -half + len * (i + 0.5);
-        s.box([x, y0 + h / 2, half - 0.45], [len - 0.03, h - 0.02, 0.9], 'granite');
-      }
-    });
-  steps.push(...course(7.0, 0, 0.6, 'PL-01', 'LOWER COURSE'));
-  steps.push(...course(6.4, 0.6, 0.6, 'PL-02', 'UPPER COURSE'));
-  // paving: 13 × 13 slabs in 6 row bands
-  const n = 13;
-  const slab = 12.8 / n;
-  const bands = [0, 2, 4, 6, 8, 10, 13];
-  for (let b = 0; b < 6; b++) {
-    steps.push(
-      step(T, `PLINTH · PAVING · ROW ${b + 1}`, `stone slabs ${slab.toFixed(2)} × 0.10 m`, 'PV-01', 0.5, (s) => {
-        for (let r = bands[b]; r < bands[b + 1]; r++)
-          for (let c = 0; c < n; c++)
-            s.box([-6.4 + slab * (c + 0.5), 1.25, -6.4 + slab * (r + 0.5)], [slab - 0.03, 0.1, slab - 0.03], 'granite');
-      }),
-    );
-  }
-  steps.push(
-    ...sideStep(T, 'PLINTH · STAIR', '5 risers · 0.26 m · cheek walls', 'ST-01', 0.6, (s) => {
-      for (let i = 0; i < 5; i++) {
-        const depth = 0.38 * (5 - i);
-        s.box([0, 0.13 + i * 0.26, 7.0 + depth / 2], [2.4, 0.26, depth], 'granite');
-      }
-      for (const x of [-1.35, 1.35]) s.box([x, 0.65, 7.0 + 0.95], [0.3, 1.3, 1.9], 'granite');
-    }),
-  );
-  return steps;
-}
-
-// ─── Shared tier elements ─────────────────────────────────────────────────
-
-function colXs(c: number) {
-  return [-c, -c / 3, c / 3, c];
-}
-
-function perimeterColumns(c: number): Vec3[] {
-  const out: Vec3[] = [];
-  const xs = colXs(c);
-  for (const x of xs) for (const z of xs) if (Math.abs(x) === c || Math.abs(z) === c) out.push([x, 0, z]);
-  return out; // 12
-}
-
-function columns(T: TierId, k: number, extraInner: boolean): StepDef {
-  const c = CORE[k];
-  const F = FLOORS[k];
-  const h = COL_H[k];
-  const sec = k === 0 ? 0.42 : 0.32;
-  return step(T, `${T} · COLUMNS`, `hinoki posts · section ${sec} × ${sec} m · ${h.toFixed(1)} m`, 'CL-01', 1.0, (s) => {
-    for (const [x, , z] of perimeterColumns(c)) s.box([x, F + h / 2, z], [sec, h, sec], 'hinoki');
-    if (extraInner) for (const x of [-1.1, 1.1]) for (const z of [-1.1, 1.1]) s.box([x, F + h / 2, z], [0.36, h, 0.36], 'hinoki');
-  });
-}
-
-function centralPillar(T: TierId, y0: number, y1: number): StepDef {
-  return step(T, `${T} · CENTRAL PILLAR`, `shinbashira segment · section 0.60 m · ${(y1 - y0).toFixed(2)} m`, 'CP-01', 1.2, (s) => {
-    s.box([0, (y0 + y1) / 2, 0], [0.6, y1 - y0, 0.6], 'hinoki');
-  });
-}
-
-function sills(T: TierId, k: number): StepDef[] {
-  const c = CORE[k];
-  const F = FLOORS[k];
-  const h = COL_H[k];
-  return sideStep(T, `${T} · SILLS & TIE BEAMS`, 'nageshi · kashiranuki · section 0.25 × 0.25 m', 'TB-01', 0.6, (s) => {
-    for (const y of [F + 0.12, F + 2.0 * (h / 3.4), F + h - 0.15]) s.box([0, y, c], [2 * c + 0.3, 0.25, 0.22], 'hinoki');
-    s.box([0, F + h * 0.35, c], [2 * c, 0.16, 0.18], 'hinoki');
-  });
-}
-
-function doors(T: TierId, k: number): StepDef[] {
-  const c = CORE[k];
-  const F = FLOORS[k];
-  const h = COL_H[k];
-  const bay = (2 * c) / 3;
-  const openH = 2.0 * (h / 3.4) - 0.25;
-  return sideStep(T, `${T} · DOORS & LATTICE WINDOWS`, 'panel doors · renji lattice · lime plaster above', 'DR-01', 0.4, (s) => {
-    // central bay: twin panel doors
-    for (const x of [-bay / 4, bay / 4]) s.box([x, F + 0.25 + openH / 2, c - 0.02], [bay / 2 - 0.06, openH, 0.06], 'keyaki');
-    // side bays: lattice windows
-    for (const cx of [-bay, bay]) {
-      s.box([cx, F + openH * 0.45, c - 0.02], [bay - 0.1, 0.1, 0.12], 'hinoki');
-      for (let i = 0; i < 6; i++) {
-        const x = cx - bay / 2 + (bay / 7) * (i + 1);
-        s.box([x, F + openH * 0.45 + (openH * 0.55) / 2 + 0.05, c - 0.02], [0.05, openH * 0.55, 0.05], 'hinoki');
-      }
-      s.box([cx, F + 0.15 + openH * 0.2, c - 0.04], [bay - 0.1, openH * 0.4, 0.05], 'plaster');
-    }
-    // plaster panels between lintel and head beam
-    const y0 = F + 2.0 * (h / 3.4) + 0.12;
-    const y1 = F + h - 0.27;
-    if (y1 - y0 > 0.1) for (const cx of [-bay, 0, bay]) s.box([cx, (y0 + y1) / 2, c - 0.04], [bay - 0.1, y1 - y0, 0.06], 'plaster');
-  });
-}
-
-function brackets(T: TierId, k: number): StepDef[] {
-  const c = CORE[k];
-  const top = FLOORS[k] + COL_H[k];
-  return sideStep(T, `${T} · BRACKET SETS`, '3-step mitesaki · daito · hijiki · makito', 'BR-01', 0.5, (s) => {
-    for (const x of colXs(c)) {
-      s.box([x, top + 0.12, c], [0.45, 0.24, 0.45], 'keyaki'); // daito
-      s.box([x, top + 0.33, c], [1.1, 0.18, 0.18], 'keyaki'); // hijiki (along wall)
-      for (const dx of [-0.45, 0, 0.45]) s.box([x + dx, top + 0.5, c], [0.22, 0.16, 0.22], 'keyaki');
-      s.box([x, top + 0.42, c + 0.45], [0.18, 0.18, 1.1], 'keyaki'); // projecting arm
-      s.box([x, top + 0.6, c + 0.9], [0.26, 0.18, 0.26], 'keyaki');
-      s.box([x, top + 0.74, c + 0.9], [0.9, 0.14, 0.16], 'keyaki');
-      s.box([x, top + 0.6, c + 0.45], [0.22, 0.16, 0.22], 'keyaki');
-    }
-  });
-}
-
-function levers(T: TierId, k: number): StepDef {
-  const c = CORE[k];
-  const top = FLOORS[k] + COL_H[k];
-  const o = OVERHANG[k];
-  return step(T, `${T} · CANTILEVER LEVERS`, 'odaruki · hanegi · section 0.24 × 0.30 m', 'CV-01', 0.7, (s) => {
-    for (let i = 0; i < 4; i++) {
-      const from = s.parts.length;
-      for (const x of [-c * 0.66, 0, c * 0.66]) s.beam([x, top + 1.05, c - 1.0], [x, top + 0.55, c + o - 0.6], 0.3, 0.24, 'keyaki');
-      s.beam([c - 0.9, top + 1.1, c - 0.9], [c + o - 0.8, top + 0.6, c + o - 0.8], 0.32, 0.26, 'keyaki'); // corner diagonal
-      s.yawFrom(from, SIDE_ANGLE[i]);
-    }
-  });
-}
-
-function rafters(T: TierId, r: RoofSpec, wallHalf: number, label = 'RAFTERS', code = 'RF-01'): StepDef[] {
-  // u where the roof surface crosses the wall line; rafters run from there to the eave
-  const uWall = Math.min(1, Math.max(0.2, (r.eaveHalf - wallHalf) / (r.eaveHalf - r.innerHalf)));
-  const uFly = uWall * 0.3;
-  const under = (u: number, s: number): Vec3 => {
-    const p = roofPoint(r, u, s);
-    p[1] -= 0.16;
-    return p;
-  };
-  return sideStep(T, `${T} · ${label}`, 'base + flying rafters · 0.11 × 0.13 m', code, 0.5, (s) => {
-    const n = Math.max(12, Math.round((2 * r.eaveHalf) / 0.45));
-    for (let i = 0; i < n; i++) {
-      const sN = -1 + (2 * (i + 0.5)) / n;
-      s.beam(under(uWall, sN), under(uFly, sN), 0.13, 0.11, 'hinoki');
-      s.beam(under(uFly, sN), under(0, sN), 0.11, 0.1, 'hinoki');
-    }
-  });
-}
-
-function roofTiles(T: TierId, r: RoofSpec, label = 'ROOF BOARDS & TILES', code = 'RT-01'): StepDef[] {
-  return sideStep(T, `${T} · ${label}`, 'hongawara tile · 0.27 m rows · hip ridge', code, 0.35, (s) => {
-    const slope = Math.hypot(r.eaveHalf - r.innerHalf, r.innerY - r.eaveY);
-    const rows = Math.max(5, Math.round(slope / 0.32));
-    for (let j = 0; j < rows; j++) {
-      const u = (j + 0.5) / rows;
-      const du = 0.5 / rows;
-      const segs = Math.max(6, Math.round((2 * (r.eaveHalf + (r.innerHalf - r.eaveHalf) * u)) / 0.85));
-      for (let i = 0; i < segs; i++) {
-        const sa = -1 + (2 * i) / segs;
-        const sb = -1 + (2 * (i + 1)) / segs;
-        const a = roofPoint(r, u, sa);
-        const b = roofPoint(r, u, sb);
-        const down = roofPoint(r, u - du, (sa + sb) / 2);
-        const upp = roofPoint(r, u + du, (sa + sb) / 2);
-        const zHint: Vec3 = [down[0] - upp[0], down[1] - upp[1], down[2] - upp[2]];
-        s.beam(a, b, 0.07, (slope / rows) * 1.02, 'tile', zHint);
-      }
-    }
-    // eave fascia board (follows the corner lift)
-    const fs = 8;
-    for (let i = 0; i < fs; i++) {
-      const a = roofPoint(r, 0, -1 + (2 * i) / fs);
-      const b = roofPoint(r, 0, -1 + (2 * (i + 1)) / fs);
-      a[1] -= 0.08;
-      b[1] -= 0.08;
-      s.beam(a, b, 0.2, 0.12, 'hinoki');
-    }
-    // hip ridge on the +X corner
-    for (let i = 0; i < 4; i++) {
-      const a = roofPoint(r, i / 4, 1);
-      const b = roofPoint(r, (i + 1) / 4, 1);
-      a[1] += 0.08;
-      b[1] += 0.08;
-      s.beam(a, b, 0.18, 0.22, 'tile');
-    }
-  });
-}
-
-function balcony(T: TierId, k: number): StepDef[] {
-  const c = CORE[k];
-  const F = FLOORS[k];
-  const out = c + 0.9;
-  return sideStep(T, `${T} · BALCONY`, 'koshigumi blocks · deck · kōran railing', 'BC-01', 0.5, (s) => {
-    for (const x of [-c * 0.66, 0, c * 0.66]) s.box([x, F - 0.18, c + 0.35], [0.3, 0.22, 0.6], 'keyaki');
-    for (let i = 0; i < 4; i++) s.box([0, F + 0.03, c + 0.11 + i * 0.22], [2 * out, 0.06, 0.2], 'hinoki');
-    for (let i = 0; i <= 4; i++) s.box([-out + (2 * out * i) / 4, F + 0.45, out], [0.1, 0.84, 0.1], 'hinoki');
-    for (const y of [F + 0.2, F + 0.55, F + 0.86]) s.box([0, y, out], [2 * out, 0.07, 0.07], 'hinoki');
-  });
-}
-
-function floorFraming(T: TierId, k: number): StepDef {
-  const c = CORE[k];
-  const F = FLOORS[k];
-  return step(T, `${T} · FLOOR FRAMING`, 'joists 0.18 × 0.24 m @ 0.9 m · two girders', 'FF-01', 0.6, (s) => {
-    for (const z of [-c * 0.5, c * 0.5]) s.box([0, F - 0.3, z], [2 * c, 0.3, 0.26], 'keyaki');
-    const n = Math.round((2 * c) / 0.9);
-    for (let i = 0; i <= n; i++) s.box([-c + (2 * c * i) / n, F - 0.08, 0], [0.18, 0.24, 2 * c], 'hinoki');
-  });
-}
-
-function ladder(T: TierId, k: number): StepDef {
-  const c = CORE[k];
-  const F = FLOORS[k];
-  const N = FLOORS[k + 1];
-  return step(T, `${T} · LADDER`, `2 stringers · 6 treads · rise ${(N - F).toFixed(2)} m`, 'LD-01', 0.5, (s) => {
-    const x0 = c * 0.5;
-    for (const dz of [-0.3, 0.3]) s.beam([x0 - 1.2, F + 0.1, c * 0.45 + dz], [x0 + 0.2, N - 0.2, c * 0.45 + dz], 0.18, 0.08, 'hinoki');
-    for (let i = 1; i <= 6; i++) {
-      const t = i / 7;
-      s.box([x0 - 1.2 + 1.4 * t, F + 0.1 + (N - F - 0.3) * t, c * 0.45], [0.2, 0.05, 0.6], 'hinoki');
-    }
-  });
-}
-
-function tierRoof(k: number, isTop: boolean): RoofSpec {
-  const c = CORE[k];
-  const top = FLOORS[k] + COL_H[k];
   return {
-    eaveHalf: c + OVERHANG[k],
-    eaveY: top + 0.95,
-    innerHalf: isTop ? 0.4 : c - 0.35,
-    innerY: isTop ? APEX : FLOORS[k + 1] - 0.18,
-    lift: 0.75,
+    zone: o.zone,
+    member: o.member,
+    spec: o.spec,
+    code: o.code,
+    method: o.method,
+    motion: o.motion ?? (o.method === 'cast' ? 'pour' : 'lower'),
+    drop: o.drop ?? (o.method === 'crane' ? 2.4 : 0),
+    level: o.level,
+    kind: o.kind ?? 'other',
+    log: o.log,
+    parts: s.parts,
   };
 }
 
-// ─── Tier 1 (with mokoshi lean-to and interior) ───────────────────────────
+// ─── Groundworks ──────────────────────────────────────────────────────────
 
-function tier1(): StepDef[] {
-  const T: TierId = 'TIER 1';
-  const k = 0;
-  const c = CORE[0];
-  const F = FLOORS[0];
-  const steps: StepDef[] = [];
-  steps.push(centralPillar(T, 1.0, FLOORS[1]));
-  steps.push(columns(T, 0, true));
-  const vp = 4.6;
-  steps.push(
-    step(T, 'MOKOSHI · VERANDA POSTS', `${vp.toFixed(1)} m line · 0.26 m posts · 2.3 m`, 'VP-01', 0.9, (s) => {
-      for (const x of colXs(vp)) for (const z of colXs(vp)) if (Math.abs(x) === vp || Math.abs(z) === vp) s.box([x, F + 1.15, z], [0.26, 2.3, 0.26], 'hinoki');
-    }),
-  );
-  steps.push(
-    ...sideStep(T, 'MOKOSHI · HEAD BEAMS & BRACKETS', 'single-step brackets · tie beams to the wall · section 0.18 × 0.22 m', 'MB-01', 0.6, (s) => {
-      s.box([0, F + 2.4, vp], [2 * vp + 0.3, 0.22, 0.2], 'hinoki');
-      for (const x of colXs(vp)) {
-        s.box([x, F + 2.62, vp], [0.32, 0.2, 0.32], 'keyaki');
-        s.beam([x * (c / vp), F + 2.4, c], [x, F + 2.4, vp], 0.18, 0.15, 'hinoki');
+function site(): StepDef[] {
+  const Z: ZoneId = 'SITE';
+  const out: StepDef[] = [];
+  out.push(
+    step({ zone: Z, member: 'SITE · SETTING-OUT', spec: 'grid A–E / 1–5 · 7.0 m bays · crane pad pegged', code: 'SO-01', method: 'manual' }, (s) => {
+      for (const k of XS) {
+        s.box([k, 0.01, 0], [0.04, 0.02, 40], 'stringline');
+        s.box([0, 0.01, k], [40, 0.02, 0.04], 'stringline');
       }
+      for (const [x, z] of [[-20, -20], [20, -20], [20, 20], [-20, 20], [-26, 0]]) s.box([x, 0.25, z], [0.12, 0.5, 0.12], 'stringline');
     }),
   );
-  steps.push(...sills(T, k));
-  steps.push(...doors(T, k));
-  steps.push(
-    step(T, 'INTERIOR · ALTAR DAIS', 'shumidan · 2.6 m square · 0.5 m high · two steps', 'AL-01', 0.4, (s) => {
-      s.box([0, F + 0.25, 0], [2.6, 0.5, 2.6], 'keyaki');
-      s.box([0, F + 0.08, 1.55], [1.4, 0.16, 0.5], 'keyaki');
-      s.box([0, F + 0.08, -1.55], [1.4, 0.16, 0.5], 'keyaki');
-    }),
-  );
-  SIDES.forEach((side, i) => {
-    steps.push(
-      step(T, `INTERIOR · SEATED BUDDHA · ${side}`, 'lotus pedestal · gilt figure · halo', 'BU-01', 0.3, (s) => {
-        const y = F + 0.5;
-        s.box([0, y + 0.15, 0.85], [0.62, 0.3, 0.62], 'gilt');
-        s.box([0, y + 0.36, 0.85], [0.7, 0.12, 0.7], 'gilt');
-        s.box([0, y + 0.36, 0.85], [0.7, 0.12, 0.7], 'gilt', Math.PI / 4);
-        s.box([0, y + 0.72, 0.85], [0.42, 0.6, 0.36], 'gilt');
-        s.box([0, y + 1.14, 0.85], [0.22, 0.24, 0.22], 'gilt');
-        s.box([0, y + 1.0, 0.66], [0.7, 0.85, 0.04], 'gilt');
-        s.yawFrom(0, SIDE_ANGLE[i]);
+  const pileXs = [-15, -9, -3, 3, 9, 15];
+  const quads: [string, (x: number, z: number) => boolean][] = [
+    ['NORTH-WEST', (x, z) => x < 0 && z < 0],
+    ['NORTH-EAST', (x, z) => x > 0 && z < 0],
+    ['SOUTH-EAST', (x, z) => x > 0 && z > 0],
+    ['SOUTH-WEST', (x, z) => x < 0 && z > 0],
+  ];
+  for (const [name, inQ] of quads) {
+    out.push(
+      step({ zone: Z, member: `PILES · ${name}`, spec: 'bored CFA piles · ⌀ 900 mm · 18 m to clay', code: 'PL-01', method: 'cast', motion: 'bore' }, (s) => {
+        for (const x of pileXs) for (const z of pileXs) if (inQ(x, z)) s.box([x, -11, z], [0.9, 18, 0.9], 'concrete');
       }),
     );
-  });
-  const ceilY = F + COL_H[0] - 0.35;
-  steps.push(
-    step(T, 'INTERIOR · COFFERED CEILING', 'gōtenjō · gilt panels · 0.55 m grid', 'CC-01', 0.4, (s) => {
-      const span = 2.2;
-      for (let i = 0; i < 6; i++) {
-        const v = -span + (2 * span * i) / 5;
-        s.box([v, ceilY, 0], [0.1, 0.14, 2 * span], 'keyaki');
-        s.box([0, ceilY, v], [2 * span, 0.14, 0.1], 'keyaki');
-      }
-      for (let i = 0; i < 3; i++)
-        for (let j = 0; j < 3; j++) s.box([-1.47 + 1.47 * i, ceilY + 0.08, -1.47 + 1.47 * j], [1.3, 0.03, 1.3], 'gilt');
-      s.box([0, ceilY + 0.15, 2.3], [4.8, 0.2, 0.2], 'keyaki');
-      s.box([0, ceilY + 0.15, -2.3], [4.8, 0.2, 0.2], 'keyaki');
-    }),
-  );
-  steps.push(
-    step(T, 'INTERIOR · HANGING LANTERNS', '4 bronze lanterns · chains', 'LN-01', 0.5, (s) => {
-      for (const [x, z] of [[-1.8, 1.8], [1.8, 1.8], [1.8, -1.8], [-1.8, -1.8]]) {
-        s.box([x, ceilY - 0.6, z], [0.28, 0.4, 0.28], 'bronze');
-        s.box([x, ceilY - 0.3, z], [0.04, 0.5, 0.04], 'bronze');
-      }
-    }),
-  );
-  const mokoshi: RoofSpec = { eaveHalf: 6.0, eaveY: F + 2.55, innerHalf: c + 0.05, innerY: F + 3.35, lift: 0.3 };
-  steps.push(...rafters(T, mokoshi, c, 'MOKOSHI · RAFTERS', 'MR-01').map(renameMokoshi));
-  steps.push(...roofTiles(T, mokoshi, 'MOKOSHI · ROOF BOARDS & TILES', 'MT-01').map(renameMokoshi));
-  steps.push(...brackets(T, k));
-  steps.push(levers(T, k));
-  const roof = tierRoof(k, false);
-  steps.push(...rafters(T, roof, c));
-  steps.push(...roofTiles(T, roof));
-  return steps;
-}
-
-function renameMokoshi(s: StepDef): StepDef {
-  return { ...s, member: s.member.replace('TIER 1 · MOKOSHI', 'MOKOSHI') };
-}
-
-// ─── Tiers 2–5 ────────────────────────────────────────────────────────────
-
-function upperTier(k: number): StepDef[] {
-  const T = `TIER ${k + 1}` as TierId;
-  const isTop = k === 4;
-  const F = FLOORS[k];
-  const steps: StepDef[] = [];
-  steps.push(floorFraming(T, k));
-  steps.push(centralPillar(T, F, isTop ? APEX + 0.6 : FLOORS[k + 1]));
-  steps.push(columns(T, k, false));
-  steps.push(...sills(T, k));
-  steps.push(...balcony(T, k));
-  steps.push(...doors(T, k));
-  if (!isTop) steps.push(ladder(T, k));
-  steps.push(...brackets(T, k));
-  steps.push(levers(T, k));
-  const roof = tierRoof(k, isTop);
-  steps.push(...rafters(T, roof, CORE[k]));
-  steps.push(...roofTiles(T, roof));
-  return steps;
-}
-
-// ─── Spire (sōrin) ────────────────────────────────────────────────────────
-
-export const SPIRE_TOP = 37.54;
-
-function spire(): StepDef[] {
-  const T: TierId = 'SPIRE';
-  const steps: StepDef[] = [];
-  let y = APEX;
-  steps.push(step(T, 'SPIRE · DEW BASIN', 'roban · bronze 1.45 m', 'SR-01', 0.6, (s) => s.box([0, y + 0.25, 0], [1.45, 0.5, 1.45], 'bronze')));
-  y += 0.5;
-  const mastTop = SPIRE_TOP - 1.9;
-  steps.push(
-    step(T, 'SPIRE · INVERTED BOWL & MAST', 'fukubachi · sōrin mast ⌀ 0.22 m', 'SR-02', 0.6, (s) => {
-      s.box([0, y + 0.22, 0], [1.1, 0.44, 1.1], 'bronze');
-      s.box([0, (y + mastTop) / 2, 0], [0.22, mastTop - y, 0.22], 'bronze');
-    }),
-  );
-  y += 0.44;
-  steps.push(step(T, 'SPIRE · LOTUS', 'ukebana · open lotus · 1.2 m', 'SR-03', 0.5, (s) => s.box([0, y + 0.15, 0], [1.2, 0.3, 1.2], 'bronze', Math.PI / 4)));
-  y += 0.45;
-  const ringGap = (mastTop - 0.8 - y) / 9;
-  for (let i = 0; i < 9; i++) {
-    const w = 1.05 - i * 0.04;
-    const yy = y + ringGap * (i + 0.5);
-    steps.push(step(T, `SPIRE · RING ${i + 1} OF 9`, `kurin · bronze ring ⌀ ${w.toFixed(2)} m`, `SR-${String(4 + i).padStart(2, '0')}`, 0.5, (s) => s.box([0, yy, 0], [w, 0.12, w], 'bronze', (i % 2) * (Math.PI / 4))));
   }
-  steps.push(
-    step(T, 'SPIRE · WATER FLAME', 'suien · pierced bronze · 4 leaves', 'SR-13', 0.5, (s) => {
-      for (let i = 0; i < 4; i++) s.box([0, mastTop - 0.1, 0], [0.9, 1.1, 0.03], 'bronze', (i * Math.PI) / 4);
+  for (const [name, sx, sz] of [['NORTH-WEST', -1, -1], ['NORTH-EAST', 1, -1], ['SOUTH-EAST', 1, 1], ['SOUTH-WEST', -1, 1]] as const) {
+    out.push(
+      step({ zone: Z, member: `RAFT · POUR ${name}`, spec: 'piled raft · 2.0 m deep · C40/50 · 578 m³ per pour', code: 'RF-01', method: 'cast' }, (s) => {
+        s.box([sx * 8.5, -1.0, sz * 8.5], [16.96, 2.0, 16.96], 'concrete');
+      }),
+    );
+  }
+  out.push(
+    step({ zone: Z, member: 'TC-1 · CRANE BASE', spec: 'cast pad 8 × 8 × 2.0 m · holding-down anchors', code: 'TC-01', method: 'cast' }, (s) => {
+      s.box([CRANE.base[0], -1.0, CRANE.base[2]], [8, 2.0, 8], 'concrete');
     }),
   );
-  steps.push(
-    step(T, 'SPIRE · DRAGON VESSEL & JEWEL', 'ryūsha · hōju · finial', 'SR-14', 0.5, (s) => {
-      s.box([0, mastTop + 0.65, 0], [0.4, 0.4, 0.4], 'bronze');
-      s.box([0, mastTop + 1.1, 0], [0.12, 0.5, 0.12], 'bronze');
-      s.box([0, SPIRE_TOP - 0.25, 0], [0.38, 0.5, 0.38], 'gilt', Math.PI / 4);
-    }),
+  out.push(
+    step(
+      {
+        zone: Z,
+        member: 'TC-1 · TOWER CRANE ERECTED',
+        spec: 'flat-top · 60 m jib · 12 t max · 2.4 t at tip',
+        code: 'TC-02',
+        method: 'manual',
+        log: 'ERECT TC-1 · flat-top · 60 m jib · 12 t max · 2.4 t at tip',
+      },
+      () => {},
+    ),
   );
-  return steps;
+  return out;
 }
 
-export function generatePagoda(): StepDef[] {
-  return [...plinth(), ...tier1(), upperTier(1), upperTier(2), upperTier(3), upperTier(4), spire()].flat();
+// ─── Shared structure ─────────────────────────────────────────────────────
+
+function gridPoints(): [number, number][] {
+  const pts: [number, number][] = [];
+  for (const x of XS) for (const z of XS) if (!(Math.abs(x) < CORE && Math.abs(z) < CORE)) pts.push([x, z]);
+  return pts; // 24
+}
+
+function coreJump(zone: ZoneId, a: number, b: number, yTop?: number): StepDef {
+  const y0 = levelY(a);
+  const y1 = yTop ?? levelY(b);
+  const h = y1 - y0;
+  const label = yTop ? `CORE · LIFT OVERRUN & TOPPING OUT` : `CORE · JUMP ${lv(a)}–${lv(b)}`;
+  return step(
+    { zone, member: label, spec: `jump-formed RC core · 400 mm walls · ${h.toFixed(1)} m lift`, code: 'CR-01', method: 'cast', level: b, kind: 'core' },
+    (s) => {
+      const c = y0 + h / 2;
+      s.box([0, c, CORE - 0.2], [2 * CORE, h, 0.4], 'concrete');
+      s.box([0, c, -CORE + 0.2], [2 * CORE, h, 0.4], 'concrete');
+      s.box([CORE - 0.2, c, 0], [0.4, h, 2 * CORE - 0.8], 'concrete');
+      s.box([-CORE + 0.2, c, 0], [0.4, h, 2 * CORE - 0.8], 'concrete');
+      s.box([-1.2, c, 0], [0.25, h, 2 * CORE - 0.8], 'concrete');
+      s.box([1.6, c, 0], [0.25, h, 2 * CORE - 0.8], 'concrete');
+      s.box([2.95, c, 0.9], [2.45, h, 0.25], 'concrete');
+    },
+  );
+}
+
+/** Rectangles of a floor plate around the core (podium flat slabs). */
+function plateAroundCore(s: Sink, yTop: number, t: number, mat: MaterialId) {
+  const y = yTop - t / 2;
+  const span = 2 * EDGE;
+  const strip = EDGE - CORE;
+  s.box([0, y, (EDGE + CORE) / 2], [span, t, strip], mat);
+  s.box([0, y, -(EDGE + CORE) / 2], [span, t, strip], mat);
+  s.box([(EDGE + CORE) / 2, y, 0], [strip, t, 2 * CORE], mat);
+  s.box([-(EDGE + CORE) / 2, y, 0], [strip, t, 2 * CORE], mat);
+}
+
+function columnSize(L: number) {
+  return L <= 12 ? 0.56 : L <= 22 ? 0.48 : 0.4;
+}
+
+function frame(zone: ZoneId, L: number): StepDef {
+  const c = columnSize(L);
+  const y0 = levelY(L);
+  const y1 = levelY(L + 1) - 0.2;
+  const mm = Math.round(c * 1000);
+  return step(
+    { zone, member: `${lv(L)} · GLULAM COLUMNS & BEAMS`, spec: `GL28h · columns ${mm} × ${mm} mm · beams 360 × 720 mm`, code: 'GL-01', method: 'crane', drop: 2.0, level: L, kind: 'frame' },
+    (s) => {
+      const sb = setBack(L);
+      for (const [x, z] of gridPoints()) if (!(sb && z > 7)) s.box([x, (y0 + y1) / 2, z], [c, y1 - y0, c], 'glulam');
+      const by = y1 - 0.36;
+      for (const z of [-14, -7, 7, 14]) if (!(sb && z > 7)) for (let i = 0; i < 4; i++) s.box([-10.5 + 7 * i, by, z], [6.6, 0.72, 0.36], 'glulam');
+      for (const x of [-14, -7, 7, 14]) for (let i = 0; i < (sb ? 3 : 4); i++) s.box([x, by, -10.5 + 7 * i], [0.36, 0.72, 6.6], 'glulam');
+    },
+  );
+}
+
+function pods(zone: ZoneId, L: number): StepDef {
+  const y = levelY(L) + 1.3;
+  return step(
+    { zone, member: `${lv(L)} · BATHROOM PODS`, spec: '6 prefab pods · 2.4 × 1.8 m · fitted and tested off-site', code: 'BP-01', method: 'crane', drop: 2.6, level: L, kind: 'pods' },
+    (s) => {
+      const south = setBack(L) ? 5.8 : 8.6;
+      for (const [x, z] of [[-8.6, 2.4], [-8.6, -2.4], [8.6, 2.4], [8.6, -2.4], [2.4, south], [-2.4, -8.6]]) s.box([x, y, z], [2.4, 2.6, 1.8], 'pod');
+    },
+  );
+}
+
+/** Trim an interval so it stays clear of the core span, or null if nothing is left. */
+function trim(a: number, b: number): [number, number] | null {
+  if (a >= 0) a = Math.max(a, CORE);
+  else if (b <= 0) b = Math.min(b, -CORE);
+  return b - a > 0.5 ? [a, b] : null;
+}
+
+function cltSlab(zone: ZoneId, L: number): StepDef {
+  const top = levelY(L);
+  const roof = L >= ROOF_LEVEL;
+  const skyVoid = SKY_GARDENS.includes(L - 1);
+  return step(
+    {
+      zone,
+      member: roof ? 'ROOF · CLT DECK' : `${lv(L)} · CLT FLOOR PANELS`,
+      spec: roof ? '5-ply CLT · 200 mm · falls to outlets · PV canopy over' : `5-ply CLT · 200 mm · 3.5 × 7.0 m panels${skyVoid ? ' · sky-garden void left open' : ''}`,
+      code: 'CL-01',
+      method: 'crane',
+      drop: 2.4,
+      level: L,
+      kind: 'slab',
+    },
+    (s) => {
+      for (let i = 0; i < 8; i++) {
+        for (let j = 0; j < 4; j++) {
+          let x: [number, number] | null = [-14 + 3.5 * i, -10.5 + 3.5 * i];
+          let z: [number, number] | null = [-14 + 7 * j, -7 + 7 * j];
+          if (i === 0) x = [-EDGE, x[1]];
+          if (i === 7) x = [x[0], EDGE];
+          if (j === 0) z = [-EDGE, z[1]];
+          if (j === 3) z = [z[0], EDGE];
+          const overlapX = x[0] < CORE && x[1] > -CORE;
+          const overlapZ = z[0] < CORE && z[1] > -CORE;
+          if (overlapX && overlapZ) {
+            if (x[0] >= -CORE && x[1] <= CORE) z = trim(z[0], z[1]);
+            else x = trim(x[0], x[1]);
+          }
+          if (!x || !z) continue;
+          const cx = (x[0] + x[1]) / 2;
+          const cz = (z[0] + z[1]) / 2;
+          if (skyVoid && inSkyCorner(cx, cz)) continue;
+          if (L > SETBACK_FROM && cz > 7) continue; // stepped back over the terrace
+          if (L > SETBACK_FROM && j === 2) z = [z[0], SET_EDGE];
+          s.box([cx, top - 0.1, (z[0] + z[1]) / 2], [x[1] - x[0] - 0.04, 0.2, z[1] - z[0] - 0.04], 'clt');
+        }
+      }
+    },
+  );
+}
+
+/** Staggered balconies: two bays per side, alternating floor by floor. */
+const hasBalcony = (L: number, side: number, bay: number) => (bay + L + side) % 2 === 0;
+const isGardenLevel = (L: number) => SKY_GARDENS.some((g) => L === g || L === g + 1);
+
+function facade(zone: ZoneId, L: number): StepDef {
+  const y0 = levelY(L);
+  const h = F2F;
+  return step(
+    {
+      zone,
+      member: `${lv(L)} · FAÇADE UNITS & BALCONIES`,
+      spec: 'unitised triple glazing · terracotta fins · planted CLT balconies',
+      code: 'FC-01',
+      method: 'crane',
+      drop: 1.6,
+      level: L,
+      kind: 'facade',
+    },
+    (s) => {
+      for (let side = 0; side < 4; side++) {
+        const from = s.parts.length;
+        const deep = side === 0 || side === 3 ? 1 : 0.7; // south and west fins work hardest
+        const EDGE = side === 0 ? southEdge(L) : 14.15;
+        for (let bay = 0; bay < 4; bay++) {
+          const bx0 = -14 + 7 * bay;
+          const bcx = bx0 + 3.5;
+          const [wx, wz] = toWorld(bcx, EDGE, side);
+          if (isGardenLevel(L) && inSkyCorner(wx, wz)) continue; // open sky-garden corner
+          if (side !== 0 && setBack(L) && wz > SET_EDGE) continue; // terrace, not façade
+          const balcony = hasBalcony(L, side, bay);
+          for (let m = 0; m < 4; m++) {
+            const cx = bx0 + 1.75 * (m + 0.5);
+            s.box([cx, y0 + 0.05 + (h - 0.4) / 2, EDGE], [1.69, h - 0.4, 0.06], 'glass');
+            const jx = bx0 + 1.75 * m;
+            const joint = bay * 4 + m;
+            if (!balcony && joint > 0) {
+              const wave = 0.5 + 0.5 * Math.sin((joint / 16) * Math.PI * 2 + L * 0.42 + side * 1.3);
+              const d = (0.22 + 0.42 * wave) * deep;
+              s.box([jx, y0 + h / 2, EDGE + d / 2], [0.12, h - 0.1, d], 'terracotta');
+            }
+          }
+          s.box([bcx, y0 + h - 0.17, EDGE + 0.04], [7, 0.34, 0.08], 'aluminium');
+          if (balcony) {
+            const y = y0 - 0.1;
+            s.box([bcx, y, EDGE + 1.0], [6.6, 0.2, 2.0], 'clt');
+            s.box([bcx, y0 + 0.55, EDGE + 2.0], [6.6, 1.1, 0.03], 'glass');
+            for (const dx of [-3.3, 3.3]) s.box([bcx + dx, y0 + 0.55, EDGE + 1.0], [0.03, 1.1, 2.0], 'glass');
+            s.box([bcx, y0 + 0.225, EDGE + 1.65], [6.0, 0.45, 0.5], 'soil');
+            for (const dx of [-2.2, 0, 2.2]) s.box([bcx + dx, y0 + 0.72, EDGE + 1.65], [1.1, 0.55, 0.45], 'planting', dx * 0.3);
+          }
+        }
+        s.yawFrom(from, SIDE_ANGLE[side]);
+      }
+    },
+  );
+}
+
+function skyGarden(zone: ZoneId, L: number): StepDef {
+  const y = levelY(L);
+  return step(
+    {
+      zone,
+      member: `SKY GARDEN · ${lv(L)}–${lv(L + 1)}`,
+      spec: 'double-height loggia · 3 trees in 600 mm beds · glass balustrade',
+      code: 'SG-01',
+      method: 'crane',
+      drop: 2.0,
+      level: L,
+    },
+    (s) => {
+      s.box([10.55, y + 0.3, 10.55], [6.6, 0.6, 6.6], 'soil');
+      s.tree(9.0, y + 0.6, 9.2, 5.2, 0.2);
+      s.tree(12.1, y + 0.6, 12.0, 4.6, 0.6);
+      s.tree(12.3, y + 0.6, 8.6, 3.8, 1.1);
+      s.box([10.55, y + 0.55, EDGE], [7, 1.1, 0.03], 'glass');
+      s.box([EDGE, y + 0.55, 10.55], [0.03, 1.1, 7], 'glass');
+    },
+  );
+}
+
+function skyTerrace(zone: ZoneId, L: number): StepDef {
+  const y = levelY(L);
+  return step(
+    {
+      zone,
+      member: `SKY TERRACE · ${lv(L)}`,
+      spec: 'communal terrace over the setback · 600 mm beds · 5 trees · glass balustrade',
+      code: 'ST-02',
+      method: 'crane',
+      drop: 2.0,
+      level: L,
+    },
+    (s) => {
+      for (const x of [-9.5, 0, 9.5]) s.box([x, y + 0.3, 12.9], [7.6, 0.6, 1.6], 'soil');
+      for (const [x, z, h] of [[-11.5, 12.8, 4.2], [-6.5, 12.9, 3.6], [2.2, 12.8, 4.6], [7.4, 12.9, 3.8], [11.8, 12.8, 4.4]]) s.tree(x, y + 0.6, z, h, x * 0.2);
+      s.box([0, y + 0.55, EDGE], [28.3, 1.1, 0.03], 'glass');
+      for (const x of [-EDGE, EDGE]) s.box([x, y + 0.55, (EDGE + SET_EDGE) / 2], [0.03, 1.1, EDGE - SET_EDGE], 'glass');
+      for (let i = 0; i < 6; i++) s.box([-11 + i * 4.4, y + 0.22, 9.6], [2.4, 0.44, 0.6], 'glulam');
+    },
+  );
+}
+
+// ─── Podium ───────────────────────────────────────────────────────────────
+
+function rcColumns(zone: ZoneId, L: number): StepDef {
+  const y0 = levelY(L);
+  const y1 = levelY(L + 1) - (L === 2 ? 0.8 : 0.3);
+  return step(
+    { zone, member: `${lv(L)} · RC COLUMNS`, spec: 'C50/60 · 600 × 600 mm · 24 no.', code: 'RC-01', method: 'cast', level: L, kind: 'frame' },
+    (s) => {
+      for (const [x, z] of gridPoints()) s.box([x, (y0 + y1) / 2, z], [0.6, y1 - y0, 0.6], 'concrete');
+    },
+  );
+}
+
+function rcSlab(zone: ZoneId, L: number, t: number, label: string, spec: string): StepDef {
+  return step({ zone, member: `${lv(L)} · ${label}`, spec, code: 'RS-01', method: 'cast', level: L, kind: 'slab' }, (s) => plateAroundCore(s, levelY(L), t, 'concrete'));
+}
+
+function podiumFacade(zone: ZoneId, L: number): StepDef {
+  const y0 = levelY(L);
+  const h = levelY(L + 1) - y0;
+  return step(
+    { zone, member: `${lv(L)} · PODIUM FAÇADE`, spec: 'storey-height glazing · deep terracotta fins @ 1.75 m', code: 'FC-02', method: 'crane', drop: 1.6, level: L, kind: 'facade' },
+    (s) => {
+      for (let side = 0; side < 4; side++) {
+        const from = s.parts.length;
+        for (let m = 0; m < 16; m++) {
+          s.box([-14 + 1.75 * (m + 0.5), y0 + 0.05 + (h - 0.5) / 2, EDGE], [1.69, h - 0.5, 0.06], 'glass');
+          if (m > 0) s.box([-14 + 1.75 * m, y0 + h / 2, EDGE + 0.3], [0.14, h - 0.1, 0.6], 'terracotta');
+        }
+        s.box([0, y0 + h - 0.22, EDGE + 0.04], [28.3, 0.44, 0.08], 'aluminium');
+        s.yawFrom(from, SIDE_ANGLE[side]);
+      }
+    },
+  );
+}
+
+function podium(): StepDef[] {
+  const Z: ZoneId = 'PODIUM';
+  const out: StepDef[] = [];
+  out.push(coreJump(Z, 0, 2));
+  out.push(rcColumns(Z, 0));
+  out.push(rcSlab(Z, 1, 0.3, 'PT FLAT SLAB', 'post-tensioned · 300 mm · C40/50'));
+  out.push(rcColumns(Z, 1));
+  out.push(rcSlab(Z, 2, 0.3, 'PT FLAT SLAB', 'post-tensioned · 300 mm · C40/50'));
+  out.push(coreJump(Z, 2, 5));
+  out.push(rcColumns(Z, 2));
+  out.push(rcSlab(Z, 3, 0.8, 'TRANSFER DECK', 'RC transfer slab · 800 mm · timber starts here'));
+  out.push(
+    step(
+      { zone: Z, member: 'L00 · LOBBY GLAZING & CANOPY', spec: '4.1 m structural glazing · CLT entrance canopy', code: 'FC-03', method: 'crane', drop: 1.6, level: 0, kind: 'facade' },
+      (s) => {
+        for (let side = 0; side < 4; side++) {
+          const from = s.parts.length;
+          for (let m = 0; m < 8; m++) s.box([-14 + 3.5 * (m + 0.5), 0.2 + 2.05, EDGE], [3.44, 4.1, 0.08], 'glass');
+          s.yawFrom(from, SIDE_ANGLE[side]);
+        }
+        s.box([0, 4.35, EDGE + 2.0], [12, 0.25, 4.0], 'clt');
+      },
+    ),
+  );
+  out.push(podiumFacade(Z, 1));
+  out.push(podiumFacade(Z, 2));
+  return out;
+}
+
+// ─── Tower ────────────────────────────────────────────────────────────────
+
+function tower(): StepDef[] {
+  const out: StepDef[] = [];
+  const zoneOf = (L: number): ZoneId => (L <= 12 ? 'LOWER' : L <= 22 ? 'MIDDLE' : 'UPPER');
+  let coreTo = 5; // core has been poured up to this level in the podium
+  for (let L = 3; L <= 31; L++) {
+    const zone = zoneOf(L);
+    while (coreTo < Math.min(L + 2, ROOF_LEVEL)) {
+      const next = Math.min(coreTo + 3, ROOF_LEVEL);
+      out.push(coreJump(zone, coreTo, next));
+      coreTo = next;
+    }
+    out.push(frame(zone, L));
+    out.push(pods(zone, L));
+    out.push(cltSlab(zone, L + 1));
+    const f = L - 2;
+    if (f >= 3) {
+      out.push(facade(zone, f));
+      const garden = SKY_GARDENS.find((g) => g + 1 === f);
+      if (garden) out.push(skyGarden(zone, garden));
+      if (f === SETBACK_FROM) out.push(skyTerrace(zone, SETBACK_FROM));
+    }
+  }
+  out.push(facade('UPPER', 30));
+  out.push(facade('UPPER', 31));
+  return out;
+}
+
+// ─── Crown & public realm ─────────────────────────────────────────────────
+
+function crown(): StepDef[] {
+  const Z: ZoneId = 'CROWN';
+  const out: StepDef[] = [];
+  out.push(coreJump(Z, ROOF_LEVEL, ROOF_LEVEL, ROOF + 4.5));
+  out.push(
+    step({ zone: Z, member: 'ROOF · GREEN ROOF BEDS', spec: 'biodiverse substrate · 450 mm beds · rainwater attenuation', code: 'GR-01', method: 'crane', drop: 1.6 }, (s) => {
+      const y = ROOF + 0.25;
+      s.box([0, y, -11.2], [26, 0.5, 4.6], 'soil');
+      s.box([-11.2, y, -2.7], [4.6, 0.5, 12.4], 'soil');
+      s.box([11.2, y, -2.7], [4.6, 0.5, 12.4], 'soil');
+      s.box([0, y, 5.9], [12, 0.5, 1.8], 'soil');
+      for (let i = 0; i < 10; i++) s.box([-11 + i * 2.45, y + 0.5, i % 2 ? -11.2 : -9.6], [1.4, 0.5, 1.4], 'planting', i);
+    }),
+  );
+  out.push(
+    step({ zone: Z, member: 'ROOF · GARDEN TREES', spec: '8 multi-stem trees · craned in with root balls', code: 'GR-02', method: 'crane', drop: 2.4 }, (s) => {
+      for (const [x, z] of [[-11.5, -11.5], [11.5, -11.5], [11.5, 4.4], [-11.5, 4.4], [0, -11.8], [-11.8, -3.6], [11.8, -3.6], [5.6, 5.9]]) s.tree(x, ROOF + 0.5, z, 4.6, x * 0.1 + z * 0.07);
+    }),
+  );
+  const pvY = ROOF + 4.2;
+  out.push(
+    step({ zone: Z, member: 'ROOF · PV CANOPY FRAME', spec: 'glulam pergola · 300 × 300 mm posts · 4.2 m clear', code: 'PV-01', method: 'crane', drop: 2.0 }, (s) => {
+      const g = [-10.5, -3.5, 3.5, 10.5];
+      const gz = [-10.5, -3.5, 3.5];
+      for (const x of g) for (const z of gz) s.box([x, ROOF + 2.1, z], [0.3, 4.2, 0.3], 'glulam');
+      for (const z of gz) s.box([0, pvY - 0.2, z], [21.6, 0.4, 0.24], 'glulam');
+      for (const x of g) s.box([x, pvY - 0.5, -3.5], [0.24, 0.4, 14.6], 'glulam');
+    }),
+  );
+  out.push(
+    step({ zone: Z, member: 'ROOF · PV ARRAY', spec: '32 glass-glass modules · 430 Wp · 10° tilt to south', code: 'PV-02', method: 'crane', drop: 1.6 }, (s) => {
+      const tilt = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), (10 * Math.PI) / 180);
+      for (let i = 0; i < 8; i++) {
+        for (let j = 0; j < 4; j++) {
+          s.parts.push({ pos: [-9.45 + 2.7 * i, pvY + 0.12, -9.4 + 3.6 * j], size: [2.5, 0.04, 3.3], quat: [tilt.x, tilt.y, tilt.z, tilt.w], mat: 'pv' });
+        }
+      }
+    }),
+  );
+  out.push(
+    step({ zone: Z, member: 'CROWN · TERRACOTTA SCREEN', spec: '4.6 m baguettes @ 1.75 m · screens plant and the PV edge', code: 'FC-04', method: 'crane', drop: 1.6 }, (s) => {
+      for (let side = 0; side < 4; side++) {
+        const from = s.parts.length;
+        const edge = side === 0 ? SET_EDGE : EDGE;
+        for (let m = 1; m < 16; m++) {
+          const x = -14 + 1.75 * m;
+          if (side !== 0 && toWorld(x, edge, side)[1] > SET_EDGE + 0.01) continue;
+          s.box([x, ROOF + 2.3, edge + 0.25], [0.14, 4.6, 0.5], 'terracotta');
+        }
+        for (let bay = 0; bay < 4; bay++) {
+          const cx = -10.5 + 7 * bay;
+          if (side !== 0 && toWorld(cx, edge, side)[1] > SET_EDGE) continue;
+          s.box([cx, ROOF + 4.55, edge + 0.25], [7, 0.1, 0.5], 'aluminium');
+        }
+        s.yawFrom(from, SIDE_ANGLE[side]);
+      }
+    }),
+  );
+  out.push(
+    step({ zone: Z, member: 'ROOF · BMU TRACK & GANTRY', spec: 'building maintenance unit · perimeter track · 14 m reach', code: 'BM-01', method: 'crane', drop: 2.0 }, (s) => {
+      const y = ROOF + 0.65;
+      s.box([0, y, -8.2], [17, 0.3, 0.3], 'steel');
+      s.box([0, y, 5.6], [17, 0.3, 0.3], 'steel');
+      s.box([-8.2, y, -1.3], [0.3, 0.3, 13.8], 'steel');
+      s.box([8.2, y, -1.3], [0.3, 0.3, 13.8], 'steel');
+      s.box([0, ROOF + 1.6, 5.6], [2.4, 1.6, 1.6], 'steel');
+      s.beam([0, ROOF + 2.6, 5.6], [0, ROOF + 3.0, 11.8], 0.4, 0.4, 'steel');
+    }),
+  );
+  out.push(
+    step({ zone: Z, member: 'PUBLIC REALM · TREES & BENCHES', spec: '12 street trees · timber benches · permeable paving', code: 'PR-01', method: 'crane', drop: 2.0 }, (s) => {
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2 + 0.26;
+        const r = 21 + (i % 3) * 1.4;
+        const x = Math.cos(a) * r;
+        const z = Math.sin(a) * r;
+        if (x < -18 && Math.abs(z) < 6) continue; // keep the crane pad clear
+        s.tree(x, 0, z, 6 + (i % 4) * 0.6, a);
+      }
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        s.box([Math.cos(a) * 18, 0.22, Math.sin(a) * 18], [2.4, 0.44, 0.6], 'glulam', -a + Math.PI / 2);
+      }
+    }),
+  );
+  return out;
+}
+
+export function generateTower(): StepDef[] {
+  return [...site(), ...podium(), ...tower(), ...crown()];
+}
+
+/** Neighbouring buildings, drawn as light context massing (not part of the build). */
+export function contextMassing(): Part[] {
+  const s = new Sink();
+  const blocks: [number, number, number, number, number][] = [
+    // x, z, width, depth, height
+    [-50, -14, 22, 26, 26],
+    [-50, 26, 20, 34, 18],
+    [46, -30, 24, 26, 62],
+    [48, 14, 18, 30, 30],
+    [4, -56, 46, 16, 22],
+    [-10, 56, 32, 18, 16],
+    [40, 52, 18, 18, 38],
+    [-48, -52, 22, 20, 44],
+  ];
+  for (const [x, z, w, d, h] of blocks) s.box([x, h / 2, z], [w, h, d], 'context');
+  return s.parts;
 }
 
 export const LEVELS = [
   { code: 'GL', y: 0 },
-  { code: 'FL 1', y: FLOORS[0] },
-  { code: 'T2', y: FLOORS[1] },
-  { code: 'T3', y: FLOORS[2] },
-  { code: 'T4', y: FLOORS[3] },
-  { code: 'T5', y: FLOORS[4] },
-  { code: 'APEX', y: APEX },
-  { code: 'TOP', y: SPIRE_TOP },
+  { code: 'L03', y: levelY(3) },
+  { code: 'L13', y: levelY(13) },
+  { code: 'L24', y: levelY(24) },
+  { code: 'ROOF', y: ROOF },
+  { code: 'TOP', y: ROOF + 4.6 },
 ];
 
-export { r2 };
+/** Gross internal floor area used for carbon intensity, m² (L25–L31 lose the south bay). */
+export const GIFA = STOREYS * ((2 * EDGE) ** 2 - (2 * CORE) ** 2) - (ROOF_LEVEL - SETBACK_FROM - 1) * (2 * EDGE) * (EDGE - SET_EDGE);

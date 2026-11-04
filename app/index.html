@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pagoda Build</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3v4M6 11h20M9 11l-3 4h20l-3-4M8 18h16M6 22h20M10 22v6h12v-6' fill='none' stroke='%239d1125' stroke-width='2'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <!-- HEADER ─────────────────────────────────────────────────────────── -->
+      <header class="header">
+        <div class="brand">
+          <span class="logo" data-icon="logo"></span>
+          <div>
+            <h1 class="wordmark">PAGODA <em>BUILD</em></h1>
+            <p class="tagline">TIMBER STRUCTURE · ASSEMBLY · SECTION</p>
+          </div>
+        </div>
+        <div class="header-drawing" id="headerDrawing"></div>
+        <div class="status card">
+          <span class="status-icon" data-icon="pagoda"></span>
+          <div class="status-main">
+            <div class="status-phase" id="statusPhase">ASSEMBLY</div>
+            <div class="status-step mono" id="statusStep">STEP 000/191 · 0 PCS</div>
+            <div class="bar"><i id="statusBar"></i></div>
+          </div>
+          <div class="status-stage"><b id="statusStage">1</b>/<span id="statusStageTotal">8</span></div>
+          <div class="status-clock">
+            <div class="mono date" id="clockDate">—</div>
+            <div class="mono time" id="clockTime">--:--:--</div>
+            <div class="mono live"><i></i> LIVE · <span id="liveFps">60</span> FPS</div>
+          </div>
+          <button class="stamp" title="Project PG-05">PG</button>
+        </div>
+      </header>
+
+      <!-- RAIL ───────────────────────────────────────────────────────────── -->
+      <nav class="rail" id="rail" aria-label="Workspace">
+        <div class="rail-items" id="railItems"></div>
+        <div class="gpu card">
+          <div class="gpu-head mono"><span>GPU</span><b>LIVE</b></div>
+          <div class="gpu-fps"><b id="gpuFps">60</b><span>FPS</span></div>
+          <canvas id="gpuSpark" width="160" height="40"></canvas>
+          <dl class="mono">
+            <dt>DRAWS</dt><dd id="gpuDraws">0</dd>
+            <dt>TRIS</dt><dd id="gpuTris">0</dd>
+            <dt>RES</dt><dd id="gpuRes">1.50×</dd>
+          </dl>
+        </div>
+      </nav>
+
+      <!-- VIEWPORT ───────────────────────────────────────────────────────── -->
+      <main class="viewport card" id="viewport">
+        <div class="watermark" aria-hidden="true">PAGODA</div>
+        <svg class="overlay" id="overlaySvg"></svg>
+        <div class="overlay" id="overlayHtml"></div>
+
+        <div class="toolbar">
+          <button class="chip icon-only" id="btnMenu" title="Menu" data-icon="menu"></button>
+          <button class="chip" id="btnOrbit"><i class="dot"></i> Orbit Cam</button>
+          <label class="chip select">
+            <select id="selStyle" aria-label="Render style">
+              <option value="ink+paint">Ink + Paint</option>
+              <option value="ink">Ink</option>
+              <option value="paint">Paint</option>
+            </select>
+          </label>
+          <button class="chip toggle on" id="btnGhost">Ghost</button>
+          <button class="chip music" id="btnMusic" title="No soundtrack in this build" disabled>
+            <span data-icon="music"></span><span class="wave"></span><span>Muted</span>
+          </button>
+        </div>
+
+        <section class="caption" id="caption">
+          <h2>Five-Tier Pagoda — Assembly Drawing</h2>
+          <p class="sub">Timber pagoda · built member by member from the drawing</p>
+          <p class="mono red" id="capStep">STEP 000 / 191</p>
+          <p class="member" id="capMember">—</p>
+          <p class="spec" id="capSpec">—</p>
+        </section>
+
+        <section class="titleblock" id="titleBlock">
+          <div class="tb-row full"><label>DRAWING</label><b>FIVE-TIER PAGODA</b></div>
+          <div class="tb-row"><label>DWG NO.</label><span class="mono" id="tbDwg">PG-05 / A-101</span></div>
+          <div class="tb-row"><label>SCALE</label><span class="mono" id="tbScale">1:200</span></div>
+          <div class="tb-row"><label>PHASE</label><span class="mono red" id="tbPhase">ASSEMBLY</span></div>
+          <div class="tb-row"><label>SHEET</label><span class="mono" id="tbSheet">1 / 8</span></div>
+          <div class="tb-row full"><label>CAMERA</label><span class="mono" id="tbCamera">AZ 211° · EL +19° · 52 mm</span></div>
+        </section>
+
+        <div class="scalebar" id="scaleBar">
+          <div class="sb-labels mono"><span>0</span><span id="sbMid">2.5</span><span id="sbEnd">5 m</span></div>
+          <div class="sb-bar"><i></i><i></i><i></i><i></i></div>
+          <div class="mono red sb-scale" id="sbScale">SCALE · 1:200</div>
+        </div>
+
+        <div class="scrubber" id="scrubber">
+          <div class="scrub-ticks mono" id="scrubTicks"></div>
+          <div class="scrub-track" id="scrubTrack"><i id="scrubFill"></i><b id="scrubKnob"></b></div>
+        </div>
+
+        <div class="transport card" id="transport">
+          <button class="tbtn icon" id="btnPrev" title="Previous stage (←)" data-icon="prev"></button>
+          <button class="tbtn icon" id="btnPlay" title="Play / pause (Space)" data-icon="pause"></button>
+          <button class="tbtn icon" id="btnNext" title="Next stage (→)" data-icon="next"></button>
+          <div class="timecode mono" id="timecode">00:00.0 /<br />00:15</div>
+          <span class="sep"></span>
+          <button class="tkey" id="btnRebuild">REBUILD<small>R</small></button>
+          <button class="tkey on" id="btnRotate">AUTO-<br />ROTATE<small>A</small></button>
+          <button class="tkey" id="btnColour">COLOUR<small>C</small></button>
+          <button class="tkey" id="btnFrame">FRAME<small>X</small></button>
+          <button class="tkey" id="btnSection" disabled title="Section cut arrives in milestone M5">SECTION<small>S</small></button>
+          <button class="tkey" id="btnSpeed">SPEED<br /><span id="speedVal">×1</span><small>F</small></button>
+          <button class="tkey" id="btnView">VIEW<small>V</small></button>
+        </div>
+
+        <div class="drawer card" id="drawer" hidden></div>
+      </main>
+
+      <!-- RIGHT PANEL ────────────────────────────────────────────────────── -->
+      <aside class="panel card" id="panel">
+        <div class="panel-head">
+          <h3>BUILD SEQUENCE</h3>
+          <div class="seg" role="tablist">
+            <button role="tab" class="on" id="tabSeq">Sequence</button>
+            <button role="tab" id="tabMembers">Members</button>
+          </div>
+          <button class="sq" id="btnDownload" title="Download sequence (JSON)" data-icon="download"></button>
+          <button class="sq red" id="btnPlay2" title="Play / pause" data-icon="pause"></button>
+        </div>
+        <p class="crumb mono" id="crumb">PG-05 ▸ <b>Assembly</b> · 191 steps · 0 parts</p>
+
+        <div class="tabpane" id="paneSeq">
+          <div class="sec-head"><h4>STAGE TIMELINE</h4><span class="mono" id="ganttTime">0.0 / 15.0 s</span></div>
+          <div class="gantt" id="gantt"></div>
+
+          <div class="sec-head"><h4>ACTIVE OPERATION</h4><span class="mono" id="opStatus">WAITING</span></div>
+          <div class="op" id="op">
+            <div class="op-row full"><label>MEMBER</label><b class="serif" id="opMember">—</b></div>
+            <div class="op-row"><label>STEP</label><span class="mono red big" id="opStep">—</span></div>
+            <div class="op-row"><label>STAGE</label><span class="mono big" id="opStage">—</span></div>
+            <div class="op-row"><label>QUANTITY</label><span class="mono big" id="opQty">—</span></div>
+            <div class="op-row"><label>MATERIAL</label><span class="mono big" id="opMat">—</span></div>
+            <div class="op-row full"><label>SPECIFICATION</label><span class="mono big ellipsis" id="opSpec">—</span></div>
+            <div class="op-row"><label>PLACED AT X · Y · Z</label><span class="mono big" id="opXYZ">—</span></div>
+            <div class="op-row"><label>EST. MASS</label><span class="mono big" id="opMass">—</span></div>
+          </div>
+
+          <div class="sec-head"><h4>STRUCTURE</h4><span class="mono" id="structTotal">0 % · 0.0 t</span></div>
+          <div class="structure">
+            <div class="pyramid" id="pyramid"></div>
+            <div class="tiers mono" id="tierTable"></div>
+          </div>
+        </div>
+
+        <div class="tabpane" id="paneMembers" hidden>
+          <input class="search mono" id="memberSearch" placeholder="Filter members, codes, materials…" />
+          <div class="members" id="memberList"></div>
+        </div>
+
+        <div class="log">
+          <div class="log-head">
+            <h4>BUILD LOG</h4><span class="badge" id="logBadge">ASSEMBLING</span>
+            <canvas id="logSpark" width="300" height="24"></canvas>
+            <button class="sq" id="btnLogClose" title="Collapse log" data-icon="close"></button>
+          </div>
+          <ol class="log-lines mono" id="logLines"></ol>
+        </div>
+      </aside>
+
+      <!-- STAGES ─────────────────────────────────────────────────────────── -->
+      <footer class="stages">
+        <div class="stages-head">
+          <h3>STAGES</h3>
+          <span class="mono muted" id="stagesMeta">8 STAGES · 191 STEPS · 15 SEC SEQUENCE</span>
+          <span class="legend mono"><i class="l-placed"></i>PLACED <i class="l-active"></i>ACTIVE <i class="l-ghost"></i>GHOST</span>
+        </div>
+        <div class="stages-row">
+          <button class="round" id="stagePrev" data-icon="chevL" title="Previous stage"></button>
+          <div class="cards" id="stageCards"></div>
+          <button class="round" id="stageNext" data-icon="chevR" title="Next stage"></button>
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

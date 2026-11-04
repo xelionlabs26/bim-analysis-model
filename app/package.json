@@ -1,0 +1,25 @@
+{
+  "name": "pagoda-build",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/archivo": "5.1.0",
+    "@fontsource/jetbrains-mono": "5.1.1",
+    "@fontsource/source-serif-4": "5.1.0",
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.170.0",
+    "typescript": "5.6.3",
+    "vite": "6.0.7",
+    "vitest": "2.1.8"
+  }
+}

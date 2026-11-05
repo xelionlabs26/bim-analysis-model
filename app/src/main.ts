@@ -16,6 +16,8 @@ import { ACTIVE_HOLD, buildProject } from './data/project';
 import { Timeline } from './engine/timeline';
 import { Playback } from './engine/playback';
 import { CONTEXT_STAGE, VIEW_PRESETS, Viewer, type RenderStyle } from './scene/viewer';
+import { CUT_AT, CUT_NORMAL, type CutState } from './engine/presentation';
+import type { Vec3 } from './data/types';
 import { Overlays, drawingScale, scaleBarLength } from './ui/overlays';
 import { SequenceUI } from './ui/panels';
 import { renderHeaderDrawing, startClock } from './ui/header';
@@ -51,6 +53,8 @@ const view = {
   colour: false,
   ghost: true,
   crane: true,
+  // manual section, independent of the stage-08 fly-through
+  section: { on: false, plane: 'A' as 'A' | 'B', d: CUT_AT },
   autoRotate: params.get('rotate') !== '0' && !reduceMotion,
   orbit: true,
   presetIndex: 0,
@@ -85,11 +89,11 @@ function syncButtons() {
 playback.onChange(syncButtons);
 
 // ── Rail ───────────────────────────────────────────────────────────────────
-const RAIL = [
+const RAIL: { id: string; label: string; sub: string; icon: string; disabled?: boolean }[] = [
   { id: 'model', label: 'Model', sub: `${project.storeys} STOREYS`, icon: 'model' },
   { id: 'layers', label: 'Layers', sub: `${project.stages.length} STAGES`, icon: 'layers' },
   { id: 'parts', label: 'Parts', sub: `${(project.parts.length / 1000).toFixed(1)}K PCS`, icon: 'parts' },
-  { id: 'section', label: 'Section', sub: 'A – A', icon: 'section', disabled: true },
+  { id: 'section', label: 'Section', sub: 'A – A', icon: 'section' },
   { id: 'render', label: 'Render', sub: 'INK', icon: 'render' },
   { id: 'settings', label: 'Settings', sub: 'MSAA · 1.5×', icon: 'settings' },
   { id: 'language', label: 'Language', sub: 'EN', icon: 'language' },
@@ -118,7 +122,7 @@ function selectRail(id: string) {
 
 function renderDrawer() {
   const id = view.rail;
-  drawer.hidden = !['layers', 'render', 'settings', 'language'].includes(id);
+  drawer.hidden = !['layers', 'render', 'settings', 'language', 'section'].includes(id);
   $('caption').style.visibility = drawer.hidden ? 'visible' : 'hidden';
   if (drawer.hidden) return;
   if (id === 'layers') {
@@ -127,7 +131,7 @@ function renderDrawer() {
       project.stages
         .map(
           (s, i) =>
-            `<label><input type="checkbox" data-bit="${i}" ${view.stageMask & (1 << i) ? 'checked' : ''} ${s.available ? '' : 'disabled'} /> ${String(s.n).padStart(2, '0')} · ${s.title}${s.available ? '' : ' <span class="muted">(M5)</span>'}</label>`,
+            `<label><input type="checkbox" data-bit="${i}" ${view.stageMask & (1 << i) ? 'checked' : ''} ${s.kind === 'assembly' ? '' : 'disabled'} /> ${String(s.n).padStart(2, '0')} · ${s.title}${s.kind === 'assembly' ? '' : ' <span class="muted">(view pass)</span>'}</label>`,
         )
         .join('') +
       `<label><input type="checkbox" data-bit="${CONTEXT_STAGE - 1}" ${view.stageMask & (1 << (CONTEXT_STAGE - 1)) ? 'checked' : ''} /> Context massing</label>`;
@@ -155,6 +159,30 @@ function renderDrawer() {
         renderDrawer();
       }),
     );
+  } else if (id === 'section') {
+    const sec = view.section;
+    const range = sec.plane === 'A' ? [-14, 18] : [-14, 18];
+    drawer.innerHTML = `<h5>SECTION</h5>
+      <label><input type="checkbox" id="secOn" ${sec.on ? 'checked' : ''} /> Cut the model (S)</label>
+      <div class="opts" style="margin:8px 0 10px">
+        <button data-plane="A" class="${sec.plane === 'A' ? 'on' : ''}">A–A · east bay</button>
+        <button data-plane="B" class="${sec.plane === 'B' ? 'on' : ''}">B–B · south bay</button>
+      </div>
+      <label for="secD">Offset <b class="mono" id="secDv">${sec.d.toFixed(1)} m</b></label>
+      <input type="range" id="secD" min="${range[0]}" max="${range[1]}" step="0.1" value="${sec.d}" style="width:100%" />
+      <p style="margin-top:8px">Stage 08 runs its own cut and fly-through; this one stays until you turn it off.</p>`;
+    $<HTMLInputElement>('secOn').addEventListener('change', (e) => setSection({ on: (e.target as HTMLInputElement).checked }));
+    drawer.querySelectorAll<HTMLButtonElement>('[data-plane]').forEach((b) =>
+      b.addEventListener('click', () => {
+        setSection({ on: true, plane: b.dataset.plane as 'A' | 'B', d: b.dataset.plane === 'A' ? CUT_AT : 3.5 });
+        renderDrawer();
+      }),
+    );
+    $<HTMLInputElement>('secD').addEventListener('input', (e) => {
+      setSection({ on: true, d: Number((e.target as HTMLInputElement).value) });
+      $('secDv').textContent = `${view.section.d.toFixed(1)} m`;
+      ($<HTMLInputElement>('secOn')).checked = true;
+    });
   } else if (id === 'language') {
     drawer.innerHTML = '<h5>LANGUAGE</h5><div class="opts"><button class="on">English</button></div><p style="margin-top:10px">Other languages are not translated yet.</p>';
   }
@@ -172,6 +200,16 @@ function setColour(on: boolean) {
   viewer.setColour(on);
   syncButtons();
 }
+function manualCut(): CutState {
+  const n: Vec3 = view.section.plane === 'A' ? [1, 0, 0] : [0, 0, 1];
+  return { on: true, normal: n, d: view.section.d };
+}
+function setSection(patch: Partial<typeof view.section>) {
+  Object.assign(view.section, patch);
+  $('btnSection').classList.toggle('on', view.section.on);
+  $('rail-sub-section').textContent = view.section.on ? `${view.section.plane}–${view.section.plane} · ${view.section.d.toFixed(1)} m` : 'A – A';
+}
+
 const stageStarts = project.stages.filter((s) => s.available).map((s) => s.start);
 function jumpStage(dir: 1 | -1) {
   const t = playback.t;
@@ -204,6 +242,7 @@ const actions: Record<string, () => void> = {
     syncButtons();
   },
   colour: () => setColour(!view.colour),
+  section: () => setSection({ on: !view.section.on }),
   frame: () => {
     viewer.autoFrame = true;
     syncButtons();
@@ -244,6 +283,7 @@ bind('btnView', actions.view);
 bind('btnGhost', actions.ghost);
 bind('btnOrbit', actions.orbit);
 bind('btnCrane', actions.crane);
+bind('btnSection', actions.section);
 bind('btnMenu', () => selectRail(view.rail === 'render' ? 'model' : 'render'));
 bind('stagePrev', () => jumpStage(-1));
 bind('stageNext', () => jumpStage(1));
@@ -361,6 +401,7 @@ window.addEventListener('keydown', (e) => {
     v: actions.view,
     g: actions.ghost,
     k: actions.crane,
+    s: actions.section,
     arrowleft: () => jumpStep(-1),
     arrowright: () => jumpStep(1),
     home: () => playback.seek(0),
@@ -406,7 +447,9 @@ function loop(now: number) {
   last = now;
   playback.tick(dt);
   const state = timeline.stateAt(playback.t);
-  viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame);
+  viewer.setWash(state.presentation.wash.front);
+  viewer.setCut(view.section.on ? manualCut() : state.presentation.cut);
+  viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame, state.presentation.pose);
   overlays.update(state);
   ui.update(state, view.tab === 'members');
 
@@ -455,8 +498,13 @@ function loop(now: number) {
 }
 
 function makeThumbnails() {
+  const painted: [number, number] = [1e4, 1e4];
   project.stages.forEach((st, i) => {
-    if (!st.available) return;
+    if (st.kind === 'material') return ui.setThumbnail(i, viewer.snapshot(st.end, project.height, 26, { wash: painted }));
+    if (st.kind === 'section') {
+      const cut: CutState = { on: true, normal: CUT_NORMAL, d: CUT_AT };
+      return ui.setThumbnail(i, viewer.snapshot(st.end, project.height, 26, { wash: painted, cut, az: 90, el: 8 }));
+    }
     const steps = project.steps.filter((s) => s.stage === st.n);
     const top = Math.max(...steps.map((s) => s.top), ...project.steps.filter((s) => s.stage < st.n).map((s) => s.top));
     const half = Math.max(17, ...steps.map((s) => s.halfExtent));

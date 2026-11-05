@@ -20,6 +20,8 @@
   --warn: #b7791f;
   --bad: #b3261e;
   --part: #fbfbf8;
+  --wet: #f4c48c;            /* fresh wash front */
+  --poche: #2f3632;          /* section cut, drawing mode */
   --context: #e4e6e0;
   --card-glass: rgba(248, 248, 244, 0.86);
   --grid: rgba(95, 159, 209, 0.09);
@@ -213,6 +215,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .drawer { position: absolute; left: 14px; top: 62px; z-index: 6; width: 290px; padding: 14px 16px; border-radius: 16px; }
 .drawer h5 { margin: 0 0 10px; font: 800 15px var(--display); letter-spacing: 0.08em; }
 .drawer label { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
+.drawer input[type='range'] { accent-color: var(--brand); }
 .drawer .opts { display: flex; gap: 6px; flex-wrap: wrap; }
 .drawer .opts button { border: 1px solid var(--line); background: var(--card); border-radius: 9px; padding: 4px 10px; font-size: 12px; }
 .drawer .opts button.on { border-color: var(--brand); color: var(--brand); box-shadow: 0 0 0 1px var(--brand) inset; }
@@ -244,7 +247,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .sec-head h4, .log-head h4 { margin: 0; font: 800 15px var(--display); letter-spacing: 0.07em; }
 .sec-head .mono { font-size: 11px; color: var(--muted); }
 .gantt { position: relative; border: 1px solid var(--line); border-radius: 14px; background: var(--well); padding: 6px 12px; }
-.g-row { display: grid; grid-template-columns: 92px 1fr 42px; align-items: center; height: 16px; font: 11.5px var(--mono); }
+.g-row { display: grid; grid-template-columns: 92px 1fr 42px; align-items: center; height: 15px; font: 11.5px var(--mono); }
 .g-row .lab { color: var(--ink-2); white-space: nowrap; }
 .g-row .lab i { font-style: normal; color: var(--muted); margin-right: 6px; }
 .g-row.on .lab { color: var(--brand); }
@@ -271,12 +274,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .op-row .big { font-size: 12.5px; }
 .ellipsis { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .structure { display: grid; grid-template-columns: 0.7fr 1fr; gap: 18px; align-items: center; }
-.zone-stack { height: 96px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px; }
+.zone-stack { height: 88px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px; }
 .zone-stack i { display: block; min-height: 5px; border: 1px solid var(--rule); background: var(--well); position: relative; overflow: hidden; }
 .zone-stack i b { position: absolute; inset: auto 0 0 0; background: var(--ink-2); height: 0; }
 .zone-stack i.on { border-color: var(--brand); }
 .zone-stack i.on b { background: var(--brand); }
-.zones div { display: flex; justify-content: space-between; font-size: 11px; padding: 0; line-height: 15px; border-bottom: 1px dashed var(--line); }
+.zones div { display: flex; justify-content: space-between; font-size: 11px; padding: 0; line-height: 14px; border-bottom: 1px dashed var(--line); }
 .zones div.on { color: var(--brand); }
 .carbon { margin-top: 6px; border: 1px solid var(--line); border-radius: 12px; padding: 5px 12px 5px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; background: var(--well); }
 .carbon div { min-width: 0; }
@@ -306,6 +309,9 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .log-lines li.STAGE { color: var(--ink); font-weight: 700; }
 .log-lines li.CHK { color: var(--green); }
 .log-lines li.CRANE { color: var(--brand); }
+.log-lines li.MAT, .log-lines li.CUT { color: var(--ink); }
+.log-lines li.CAM, .log-lines li.VIEW { color: var(--ink-2); }
+.log-lines li.CUT { font-weight: 600; }
 .log-lines li.bad { color: var(--bad); }
 .log-lines li.PERF { color: var(--muted); }
 .log-lines li.old { opacity: 0.7; }
@@ -334,8 +340,6 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .scard .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--brand); width: 0; }
 .scard.on { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand) inset; }
 .scard.on .meta b { color: var(--brand); }
-.scard.na { opacity: 0.55; cursor: not-allowed; }
-.scard.na .thumb::after { content: 'M5'; position: absolute; inset: 0; display: grid; place-items: center; font: 900 24px var(--display); color: var(--brand-line); letter-spacing: 0.1em; }
 
 /* ── Narrow screens ───────────────────────────────────────────────────── */
 @media (max-width: 1100px) {

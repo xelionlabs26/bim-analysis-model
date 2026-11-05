@@ -105,6 +105,7 @@ export class CraneRig {
     if (!s.visible) return;
     this.mastMat.uniforms.uTop.value = s.mastTop;
     this.tieMat.uniforms.uTop.value = s.ties.length ? Math.max(...s.ties) + 0.5 : -1;
+    this.head.visible = s.headVisible;
     this.head.position.y = s.mastTop;
     this.head.rotation.y = s.slew;
     this.trolley.position.set(s.radius, -0.3, 0);

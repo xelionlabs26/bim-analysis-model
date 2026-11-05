@@ -1,5 +1,5 @@
-import type { SequenceState, Timeline } from '../engine/timeline';
-import type { Project, Step } from '../data/types';
+import type { Callout, SequenceState, Timeline } from '../engine/timeline';
+import type { Project } from '../data/types';
 import type { Viewer } from '../scene/viewer';
 
 const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000];
@@ -26,7 +26,7 @@ interface CalloutEl {
 }
 
 export class Overlays {
-  private callouts = new Map<number, CalloutEl>();
+  private callouts = new Map<string, CalloutEl>();
   private datumEls: { code: HTMLDivElement; tick: SVGPathElement; dash: SVGLineElement; y: number; level: string }[] = [];
   private rulerLine: SVGLineElement;
   private hbox: HTMLDivElement;
@@ -36,7 +36,7 @@ export class Overlays {
     private svg: SVGSVGElement,
     private html: HTMLElement,
     project: Project,
-    private timeline: Timeline,
+    _timeline: Timeline,
     private viewer: Viewer,
   ) {
     this.rulerLine = this.svgEl('line', { style: 'stroke: var(--brand)', 'stroke-width': '1.4' });
@@ -109,8 +109,8 @@ export class Overlays {
   }
 
   private updateCallouts(state: SequenceState, w: number, h: number) {
-    const recent = this.timeline.recentSteps(state.t, RANK_OPACITY.length);
-    const ids = new Set(recent.map((s) => s.index));
+    const recent = state.callouts.slice(0, RANK_OPACITY.length);
+    const ids = new Set(recent.map((s) => s.key));
     for (const [id, c] of this.callouts) {
       if (!ids.has(id)) {
         c.el.remove();
@@ -119,22 +119,24 @@ export class Overlays {
         this.callouts.delete(id);
       }
     }
-    const placed: { step: Step; c: CalloutEl; ax: number; ay: number; side: 'l' | 'r'; y: number; rank: number }[] = [];
-    recent.forEach((step, rank) => {
-      let c = this.callouts.get(step.index);
+    const placed: { item: Callout; c: CalloutEl; ax: number; ay: number; side: 'l' | 'r'; y: number; rank: number; hidden?: boolean }[] = [];
+    recent.forEach((item, rank) => {
+      let c = this.callouts.get(item.key);
       if (!c) {
         const el = document.createElement('div');
         el.className = 'callout';
-        el.innerHTML = `<b>${step.member}</b><span>${step.spec}</span>`;
+        el.innerHTML = `<b></b><span></span>`;
+        el.firstElementChild!.textContent = item.member;
+        el.lastElementChild!.textContent = item.spec;
         el.style.opacity = '0';
         this.html.append(el);
         c = { el, line: this.svgEl('line', { style: 'stroke: var(--brand)', 'stroke-width': '1' }), ring: this.svgEl('circle', { r: '4.5', fill: 'none', style: 'stroke: var(--brand)', 'stroke-width': '1.4' }), seen: this.frameNo };
-        this.callouts.set(step.index, c);
+        this.callouts.set(item.key, c);
       }
-      const a = this.viewer.project(step.centroid);
+      const a = this.viewer.project(item.anchor);
       // the tower sits right of centre; only a wide viewport has room for labels on its right
       const side = w > 1150 && a.x > w * 0.5 ? 'r' : 'l';
-      placed.push({ step, c, ax: a.x, ay: a.y, side, y: a.y - 24, rank });
+      placed.push({ item, c, ax: a.x, ay: a.y, side, y: a.y - 24, rank });
     });
     // de-overlap per side, below the caption card
     const cap = document.getElementById('caption');
@@ -144,13 +146,20 @@ export class Overlays {
       const list = placed.filter((p) => p.side === side).sort((a, b) => a.y - b.y);
       let cursor = minY;
       for (const p of list) {
-        p.y = Math.min(Math.max(p.y, cursor), maxY);
+        p.y = Math.max(p.y, cursor);
         cursor = p.y + 46;
       }
+      // pull the stack back up from the bottom limit; whatever no longer fits is hidden
+      let limit = maxY;
+      for (let i = list.length - 1; i >= 0; i--) {
+        list[i].y = Math.min(list[i].y, limit);
+        limit = list[i].y - 46;
+      }
+      for (const p of list) p.hidden = p.y < minY - 1;
     }
     for (const p of placed) {
       const { c, rank } = p;
-      const op = RANK_OPACITY[rank];
+      const op = p.hidden ? 0 : RANK_OPACITY[rank];
       const fresh = this.frameNo - c.seen < 2;
       c.el.className = `callout rank-${rank}`;
       c.line.setAttribute('class', `rank-${rank}`);

@@ -14,7 +14,7 @@ npm run build            # typecheck + production bundle in dist/
 npm run build:artifact   # one-page build for the claude.ai host → dist-artifact/arbor-build.html
 ```
 
-URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`.
+URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`. The full sequence runs about 29 s: assembly to 18.1 s, material pass to 22.1 s, then the section.
 
 ## The building
 
@@ -29,6 +29,12 @@ URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`.
 
 Context massing (light line work) can be toggled in **Layers**.
 
+## Stages 07–08 (milestone 5)
+- **07 Material pass, 4.0 s.** The tower crane is struck first. Then two washes rise up the tower with an uneven, noise-driven front and a warm wet edge. Pass 1 colours the structure (concrete, glulam, CLT, pods); pass 2 colours the envelope and planting (glass, terracotta, bronze, PV, greenery). The log reports each front's height and the share of parts coloured.
+- **08 Section A–A, 6.8 s.** A cut plane slides in to x = 9.6 m through the east bay. Opened parts show their inside faces as hatched poché, tinted by material. The camera flies through five shots: the sky garden at L12–L13, bathroom pods in section, the L24 sky terrace, then the crown and PV canopy. Then it pulls back and the section closes before the loop.
+- Everything is still a pure function of time, so you can scrub into the middle of the wash or the fly-through. Dragging the view during the fly-through takes the camera over; **X** hands it back.
+- **Manual section:** **S** (or **Section** in the rail) cuts the model at any stage. Choose A–A (east bay) or B–B (south bay) and set the offset with the slider.
+
 ## What is computed (not authored)
 - **Install order rules** are checked in tests: core lead, frame → pods → slab, façade trailing, sky gardens after their façades, crane erected before the first lift.
 - **Crane reach check:** every crane-lifted piece is checked against an *indicative* flat-top load chart
@@ -42,13 +48,13 @@ Context massing (light line work) can be toggled in **Layers**.
 
 ## Controls
 `Space` play/pause · `←/→` step · `Home` start · `R` rebuild · `A` auto-rotate · `C` material colours ·
-`X` re-frame · `F` speed · `V` view preset · `G` ghost · `K` crane · `1–7` rail · `Esc` close drawer.
+`X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `S` section · `1–7` rail · `Esc` close drawer.
 "Save the sequence as JSON" exports steps, lifts, mass and carbon. In the hosted page this goes through the
 viewer's save prompt.
 
-## Not in this build
-- **Stages 07 Material pass and 08 Section A–A** are milestone **M5**. They're shown greyed out.
+## Limits
 - Masses use effective densities for simplified box geometry, so treat totals as order-of-magnitude.
+- The poché is drawn from the inside faces of the parts the plane opens. It's exact for these closed boxes, but it's not a true capped section.
 
 ## Where things live
 `src/data/generator.ts` authors the tower as ordered install steps. `src/data/project.ts` schedules them

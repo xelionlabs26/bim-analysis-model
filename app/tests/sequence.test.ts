@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildProject } from '../src/data/project';
 import { ROOF_LEVEL } from '../src/data/generator';
 import { Timeline } from '../src/engine/timeline';
+import { CUT_AT } from '../src/engine/presentation';
 import { drawingScale, scaleBarLength } from '../src/ui/overlays';
 
 const project = buildProject();
@@ -42,9 +43,11 @@ describe('Arbor House model', () => {
     }
   });
 
-  it('keeps presentation stages 07–08 marked unavailable (M5)', () => {
-    expect(project.stages.filter((s) => !s.available).map((s) => s.n)).toEqual([7, 8]);
+  it('ends with the material pass and Section A–A, which place no parts', () => {
+    expect(project.stages.map((s) => s.kind)).toEqual(['assembly', 'assembly', 'assembly', 'assembly', 'assembly', 'assembly', 'material', 'section']);
     expect(project.parts.every((p) => p.stage <= 6)).toBe(true);
+    const last = project.steps[project.steps.length - 1];
+    expect(project.stages[6].start).toBeGreaterThanOrEqual(last.t0);
   });
 });
 
@@ -88,7 +91,7 @@ describe('crane reach check', () => {
   });
 
   it('keeps the jib clear of the structure as the mast climbs', () => {
-    for (let t = 0; t <= project.duration; t += 0.25) {
+    for (let t = 0; t < tl.presentation.strikeT; t += 0.25) {
       const s = tl.stateAt(t);
       if (s.crane.visible) expect(s.crane.mastTop).toBeGreaterThanOrEqual(s.builtTop + 14);
     }
@@ -137,9 +140,10 @@ describe('timeline state', () => {
     }
   });
 
-  it('emits one computed CHK line per zone', () => {
+  it('emits one computed CHK line per zone, plus the material pass', () => {
     const chk = tl.events.filter((e) => e.kind === 'CHK');
-    expect(chk).toHaveLength(6);
+    expect(chk).toHaveLength(7);
+    expect(chk.at(-1)!.text).toContain('CHK MATERIAL');
     expect(chk.find((e) => e.text.startsWith('CHK LOWER'))!.text).toContain('core lead ≥ 2 floors ✓');
     expect(chk.find((e) => e.text.startsWith('CHK CROWN'))!.text).toContain('✗');
   });
@@ -148,6 +152,59 @@ describe('timeline state', () => {
     const log = tl.logAt(6.0, 8);
     expect(log.length).toBeLessThanOrEqual(8);
     expect(log.every((e) => e.t <= 6.0)).toBe(true);
+  });
+});
+
+describe('material pass and section (M5)', () => {
+  const pr = tl.presentation;
+  const m = pr.material;
+  const sec = pr.section;
+
+  it('leaves the drawing uncoloured until the wash reaches it, then colours everything', () => {
+    expect(pr.washAt(m.start - 0.01).front).toEqual([-1e4, -1e4]);
+    expect(pr.washAt(m.start - 0.01).pct).toEqual([0, 0]);
+    let last = pr.washAt(m.start);
+    for (let t = m.start; t <= m.end; t += 0.05) {
+      const w = pr.washAt(t);
+      expect(w.front[0]).toBeGreaterThanOrEqual(last.front[0]);
+      expect(w.front[1]).toBeGreaterThanOrEqual(last.front[1]);
+      expect(w.pct[0]).toBeGreaterThanOrEqual(last.pct[0]);
+      last = w;
+    }
+    expect(pr.washAt(m.end + 0.01).pct).toEqual([1, 1]);
+    expect(pr.washAt(0).front).toEqual([-1e4, -1e4]); // looping back undoes the wash
+  });
+
+  it('strikes the crane at the start of the material pass', () => {
+    expect(tl.stateAt(pr.strikeT - 0.01).crane.visible).toBe(true);
+    expect(tl.stateAt(pr.strikeT + 0.4).crane.headVisible).toBe(false);
+    expect(tl.stateAt(pr.strikeT + 0.9).crane.visible).toBe(false);
+    expect(tl.stateAt(sec.start + 2).crane.visible).toBe(false);
+  });
+
+  it('opens the section at x = 9.6 m and closes it before the loop', () => {
+    expect(pr.cutAt(sec.start).on).toBe(false);
+    const open = pr.cutAt(sec.start + 2);
+    expect(open.on).toBe(true);
+    expect(open.d).toBeCloseTo(CUT_AT, 5);
+    expect(pr.cutAt(sec.start + 6.5).on).toBe(false);
+    expect(tl.stateAt(project.duration).presentation.cut.on).toBe(false);
+    expect(pr.cutParts).toBeGreaterThan(300);
+  });
+
+  it('flies the camera only during the section, with finite poses', () => {
+    expect(pr.poseAt(sec.start - 0.01)).toBeNull();
+    for (let t = sec.start; t <= sec.end; t += 0.05) {
+      const pose = pr.poseAt(t)!;
+      expect([...pose.target, pose.az, pose.el, pose.dist, pose.fov].every(Number.isFinite)).toBe(true);
+      expect(pose.dist).toBeGreaterThan(20);
+    }
+  });
+
+  it('labels every section shot it frames', () => {
+    const s = tl.stateAt(sec.start + 2.0);
+    expect(s.presentation.shot!.id).toBe('S-03');
+    expect(s.callouts[0].member).toContain('SKY GARDEN');
   });
 });
 

@@ -11,7 +11,9 @@ import {
   Quaternion,
   Scene,
   ShaderMaterial,
+  Vector2,
   Vector3,
+  Vector4,
   WebGLRenderTarget,
   WebGLRenderer,
 } from 'three';
@@ -19,6 +21,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MATERIAL_INFO, type Motion, type Project } from '../data/types';
 import { ACTIVE_HOLD } from '../data/project';
 import type { CraneState } from '../engine/timeline';
+import { PASS_OF, type CameraPose, type CutState } from '../engine/presentation';
 import { CraneRig } from './crane';
 import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex } from './shaders';
 
@@ -60,6 +63,7 @@ export class Viewer {
   private distance = 90;
   private maxTop: number;
   autoFrame = true;
+  pathActive = false;
   private resolution = 1.5;
   private size = { w: 1, h: 1 };
 
@@ -76,6 +80,7 @@ export class Viewer {
     const color = new Float32Array(n * 3);
     const stage = new Float32Array(n);
     const mode = new Float32Array(n);
+    const pass = new Float32Array(n);
     const m = new Matrix4();
     const q = new Quaternion();
     const v = new Vector3();
@@ -95,8 +100,15 @@ export class Viewer {
       uShade: { value: 1 },
       uColour: { value: 0 },
       uGhost: { value: 1 },
+      uWetColor: { value: css('--wet') },
+      uPoche: { value: css('--poche') },
+      uWash: { value: new Vector2(-1e4, -1e4) },
+      uCut: { value: new Vector4(1, 0, 0, 1e4) },
+      uCutOn: { value: 0 },
+      uDpr: { value: 1.5 },
     };
-    this.fillMat = new ShaderMaterial({ uniforms, vertexShader: fillVertex, fragmentShader: fillFragment });
+    // double-sided so that parts opened by the section plane show their (hatched) inside faces
+    this.fillMat = new ShaderMaterial({ uniforms, vertexShader: fillVertex, fragmentShader: fillFragment, side: DoubleSide });
     this.ghostMat = new ShaderMaterial({ uniforms, vertexShader: ghostVertex, fragmentShader: ghostFragment, transparent: true, depthWrite: false });
     this.fill = new InstancedMesh(geo, this.fillMat, n);
     project.parts.forEach((p, i) => {
@@ -107,6 +119,7 @@ export class Viewer {
       color.set([c.r, c.g, c.b], i * 3);
       stage[i] = p.stage;
       mode[i] = MODE[p.motion];
+      pass[i] = PASS_OF[p.mat];
     });
     project.context.forEach((p, k) => {
       const i = project.parts.length + k;
@@ -122,6 +135,7 @@ export class Viewer {
     geo.setAttribute('aColor', new InstancedBufferAttribute(color, 3));
     geo.setAttribute('aStage', new InstancedBufferAttribute(stage, 1));
     geo.setAttribute('aMode', new InstancedBufferAttribute(mode, 1));
+    geo.setAttribute('aPass', new InstancedBufferAttribute(pass, 1));
     this.fill.instanceMatrix.needsUpdate = true;
     this.ghost = new InstancedMesh(geo, this.ghostMat, n);
     this.ghost.instanceMatrix = this.fill.instanceMatrix;
@@ -157,6 +171,10 @@ export class Viewer {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.01;
     this.controls.maxDistance = 900;
     this.renderer.domElement.addEventListener('wheel', () => (this.autoFrame = false), { passive: true });
+    // grabbing the view during the fly-through hands the camera to the viewer
+    this.controls.addEventListener('start', () => {
+      if (this.pathActive) this.autoFrame = false;
+    });
     this.setView(VIEW_PRESETS[0].az, VIEW_PRESETS[0].el);
 
     new ResizeObserver(() => this.resize()).observe(host);
@@ -203,6 +221,14 @@ export class Viewer {
   setAutoRotate(on: boolean) {
     this.controls.autoRotate = on;
   }
+  setWash(front: [number, number]) {
+    (this.fillMat.uniforms.uWash.value as Vector2).set(front[0], front[1]);
+  }
+  setCut(cut: CutState | null) {
+    const u = this.fillMat.uniforms;
+    u.uCutOn.value = cut?.on ? 1 : 0;
+    if (cut) (u.uCut.value as Vector4).set(cut.normal[0], cut.normal[1], cut.normal[2], cut.d);
+  }
 
   setView(azDeg: number, elDeg: number) {
     const az = (azDeg * Math.PI) / 180;
@@ -222,9 +248,20 @@ export class Viewer {
   }
 
   /** Per-frame: update sequence time, crane, auto-frame, orbit, render. */
-  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false) {
+  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false, pose: CameraPose | null = null) {
     this.fillMat.uniforms.uTime.value = t;
+    this.fillMat.uniforms.uDpr.value = this.renderer.getPixelRatio();
     this.crane.update(crane);
+    this.pathActive = !!pose && this.autoFrame;
+    if (pose && this.autoFrame) {
+      this.followPose(pose, snap ? 1 : 1 - Math.exp(-dt * 3.2));
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+    if (Math.abs(this.camera.fov - FOV) > 0.01) {
+      this.camera.fov += (FOV - this.camera.fov) * (snap ? 1 : 1 - Math.exp(-dt * 3));
+      this.camera.updateProjectionMatrix();
+    }
     if (this.autoFrame) {
       const withCrane = crane.visible ? crane.mastTop + 4 : 0;
       const frameTop = Math.max(Math.min(Math.max(builtTop * 1.12 + 10, 28), this.maxTop * 1.08 + 4), withCrane);
@@ -241,6 +278,31 @@ export class Viewer {
     }
     this.controls.update(dt);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /** Ease the camera towards a fly-through pose (spherical about the pose target). */
+  private followPose(pose: CameraPose, k: number) {
+    const cur = this.camera.position.clone().sub(this.controls.target);
+    const dist = cur.length();
+    let az = Math.atan2(cur.x, cur.z);
+    const el = Math.asin(Math.min(1, Math.max(-1, cur.y / Math.max(dist, 1e-6))));
+    const azT = (pose.az * Math.PI) / 180;
+    let da = azT - az;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    az += da * k;
+    const elN = el + ((pose.el * Math.PI) / 180 - el) * k;
+    const dN = Math.exp(Math.log(dist) + (Math.log(pose.dist) - Math.log(dist)) * k);
+    this.controls.target.lerp(new Vector3(...pose.target), k);
+    this.target.copy(this.controls.target);
+    this.distance = dN;
+    this.camera.position.set(
+      this.target.x + Math.sin(az) * Math.cos(elN) * dN,
+      this.target.y + Math.sin(elN) * dN,
+      this.target.z + Math.cos(az) * Math.cos(elN) * dN,
+    );
+    this.camera.lookAt(this.target);
+    this.camera.fov += (pose.fov - this.camera.fov) * k;
+    this.camera.updateProjectionMatrix();
   }
 
   readout(): CameraReadout {
@@ -271,28 +333,36 @@ export class Viewer {
   }
 
   /** Render a still of the model at time t, fitted to `top` × `half`, as a data URL. */
-  snapshot(t: number, top: number, half: number, w = 360, h = 200): string {
+  snapshot(t: number, top: number, half: number, opts: { az?: number; el?: number; wash?: [number, number]; cut?: CutState } = {}, w = 360, h = 200): string {
     const rt = new WebGLRenderTarget(w * 2, h * 2, { samples: 4 });
     const cam = new PerspectiveCamera(FOV, w / h, 1, 2400);
     const frameTop = Math.max(top + 3, 10);
     const tn = Math.tan(((FOV * Math.PI) / 180) / 2);
     const d = Math.max((frameTop / 2 + 1) / tn, (half * 1.1) / (tn * (w / h)));
-    const az = (VIEW_PRESETS[0].az * Math.PI) / 180;
-    const el = (18 * Math.PI) / 180;
+    const az = ((opts.az ?? VIEW_PRESETS[0].az) * Math.PI) / 180;
+    const el = ((opts.el ?? 18) * Math.PI) / 180;
     const ty = frameTop * 0.48;
     cam.position.set(Math.sin(az) * Math.cos(el) * d, ty + Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
     cam.lookAt(0, ty, 0);
-    const prev = this.fillMat.uniforms.uTime.value;
+    const u = this.fillMat.uniforms;
+    const prev = { t: u.uTime.value, wash: (u.uWash.value as Vector2).clone(), cut: (u.uCut.value as Vector4).clone(), on: u.uCutOn.value, dpr: u.uDpr.value };
     const craneVisible = this.crane.group.visible;
     this.crane.group.visible = false;
-    this.fillMat.uniforms.uTime.value = t;
+    u.uTime.value = t;
+    u.uDpr.value = 2;
+    this.setWash(opts.wash ?? [-1e4, -1e4]);
+    this.setCut(opts.cut ?? null);
     this.renderer.setRenderTarget(rt);
     this.renderer.clear();
     this.renderer.render(this.scene, cam);
     const buf = new Uint8Array(w * 2 * h * 2 * 4);
     this.renderer.readRenderTargetPixels(rt, 0, 0, w * 2, h * 2, buf);
     this.renderer.setRenderTarget(null);
-    this.fillMat.uniforms.uTime.value = prev;
+    u.uTime.value = prev.t;
+    (u.uWash.value as Vector2).copy(prev.wash);
+    (u.uCut.value as Vector4).copy(prev.cut);
+    u.uCutOn.value = prev.on;
+    u.uDpr.value = prev.dpr;
     this.crane.group.visible = craneVisible;
     rt.dispose();
     const canvas = document.createElement('canvas');

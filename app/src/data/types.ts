@@ -85,8 +85,11 @@ export interface Level {
   y: number;
 }
 
+export type StageKind = 'assembly' | 'material' | 'section';
+
 export interface StageDef {
   n: number;
+  kind: StageKind;
   code: string;
   tick: string;
   title: string;

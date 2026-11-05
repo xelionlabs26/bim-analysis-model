@@ -45,6 +45,7 @@ export class SequenceUI {
   private memberRows: HTMLElement[] = [];
   private lastLogKey = '';
   private lastMemberUpdate = -1;
+  private passTotals: ReturnType<Timeline['presentation']['passTotals']>[] = [];
   perf: PerfSample = { fps: 60, draws: 3, tris: 0, res: 1.5 };
 
   constructor(
@@ -53,6 +54,7 @@ export class SequenceUI {
     private onSeek: (t: number) => void,
     private onSeekStep: (index: number) => void,
   ) {
+    this.passTotals = [tl.presentation.passTotals(1), tl.presentation.passTotals(2)];
     this.buildGantt();
     this.buildStructure();
     this.buildCards();
@@ -68,18 +70,13 @@ export class SequenceUI {
     const g = $('gantt');
     const D = this.p.duration;
     g.innerHTML = '';
-    const later = this.p.stages.filter((s) => !s.available);
     for (const st of this.p.stages) {
-      if (!st.available && st !== later[0]) continue;
       const row = document.createElement('div');
-      row.className = `g-row${st.available ? '' : ' na'}`;
+      row.className = 'g-row';
       const n = this.p.steps.filter((s) => s.stage === st.n).length;
-      const pillsN = Math.max(3, Math.ceil(n / 5));
-      const track = st.available
-        ? `<div class="g-track"><div class="g-bar" style="left:${(st.start / D) * 100}%;width:${((st.end - st.start) / D) * 100}%">${'<i></i>'.repeat(pillsN)}</div></div>`
-        : `<div class="g-track"><span class="g-na">M5 · material pass, section A–A</span></div>`;
-      const label = st.available ? `<i>${pad2(st.n)}</i>${st.code}` : `<i>${later.map((s) => pad2(s.n)).join('–')}</i>LATER`;
-      row.innerHTML = `<span class="lab">${label}</span>${track}<span class="pct">${st.available ? '0%' : '—'}</span>`;
+      const pillsN = st.kind === 'assembly' ? Math.max(3, Math.ceil(n / 5)) : st.kind === 'material' ? 4 : 7;
+      const track = `<div class="g-track"><div class="g-bar" style="left:${(st.start / D) * 100}%;width:${((st.end - st.start) / D) * 100}%">${'<i></i>'.repeat(pillsN)}</div></div>`;
+      row.innerHTML = `<span class="lab"><i>${pad2(st.n)}</i>${st.code}</span>${track}<span class="pct">0%</span>`;
       g.append(row);
       this.ganttRows.push({ el: row, pills: [...row.querySelectorAll<HTMLElement>('.g-bar i')], pct: row.querySelector('.pct')! });
     }
@@ -113,12 +110,11 @@ export class SequenceUI {
     const wrap = $('stageCards');
     for (const st of this.p.stages) {
       const b = document.createElement('button');
-      b.className = `scard${st.available ? '' : ' na'}`;
-      b.disabled = !st.available;
-      b.title = st.available ? `Jump to ${st.title}` : `${st.title} — milestone M5`;
+      b.className = 'scard';
+      b.title = `Jump to ${st.title}`;
       b.innerHTML = `<div class="thumb"><img alt="" hidden /><span class="chip-t">${st.start.toFixed(1)}s</span><span class="chip-s">${st.sheet}</span></div>
         <div class="meta"><b>${pad2(st.n)}. ${st.title}</b><span>${st.subtitle}</span></div><i class="prog"></i>`;
-      b.addEventListener('click', () => st.available && this.onSeek(st.start + 0.001));
+      b.addEventListener('click', () => this.onSeek(st.start + 0.001));
       wrap.append(b);
       this.cards.push(b);
     }
@@ -151,7 +147,7 @@ export class SequenceUI {
     const ticks = $('scrubTicks');
     const track = $('scrubTrack');
     const D = this.p.duration;
-    for (const st of this.p.stages.filter((s) => s.available)) {
+    for (const st of this.p.stages) {
       ticks.insertAdjacentHTML('beforeend', `<span style="left:${(st.start / D) * 100}%">${st.tick}</span>`);
       track.insertAdjacentHTML('beforeend', `<span class="scrub-tick" style="left:${(st.start / D) * 100}%"></span>`);
     }
@@ -170,14 +166,53 @@ export class SequenceUI {
     track.addEventListener('pointerup', () => (dragging = false));
   }
 
+  /** Caption and operation card while the material pass or the section is running. */
+  private updatePresentation(s: SequenceState) {
+    const p = this.p;
+    const pres = s.presentation;
+    const st = p.stages[s.stage - 1];
+    const shot = pres.shot;
+    $('capMember').textContent = shot?.title ?? st.title;
+    $('capSpec').textContent = shot?.spec ?? st.subtitle;
+    $('opMember').textContent = shot?.title ?? st.title;
+    $('opStep').textContent = shot?.id ?? '—';
+    $('opStage').textContent = `${pad2(st.n)} · ${st.code}`;
+    const liftEl = $('opLift');
+    liftEl.dataset.level = 'none';
+    if (pres.kind === 'material') {
+      const w = pres.wash;
+      const pass = w.active || (w.front[1] >= 1e4 ? 2 : 1);
+      const k = (pass - 1) as 0 | 1;
+      const tot = this.passTotals[k];
+      const pct = Math.round(w.pct[k] * 100);
+      $('capStep').textContent = `MATERIAL PASS · ${pass} / 2 · ${pct} %`;
+      $('opStatus').textContent = w.active ? 'WASH' : 'COLOURED ✓';
+      $('opQty').textContent = `${fmtInt(tot.pcs)} pcs · pass ${pass}`;
+      $('opMat').textContent = tot.materials.join(' · ');
+      liftEl.textContent = s.crane.visible ? 'TC-1 being struck · mobile crane at street level' : 'TC-1 struck · no lifts';
+      $('opXYZ').textContent = w.active ? `wash front +${Math.max(0, w.front[k]).toFixed(1)} m` : 'all surfaces coloured';
+      $('opMass').textContent = `${fmtMass(tot.kg)} · ${fmtCarbon(tot.co2).replace('≈ ', '')}`;
+    } else {
+      const c = pres.cut;
+      $('capStep').textContent = c.on ? `SECTION A–A · x = ${c.d.toFixed(1)} m` : 'SECTION A–A · closed';
+      $('opStatus').textContent = c.on ? 'CUT · FLY-THROUGH' : 'CLOSED ✓';
+      $('opQty').textContent = `${fmtInt(this.tl.presentation.cutParts)} parts in section`;
+      $('opMat').textContent = 'poché · cut faces hatched';
+      liftEl.textContent = 'TC-1 struck · no lifts';
+      $('opXYZ').textContent = c.on ? `plane x = ${c.d.toFixed(1)} m` : 'plane open';
+      $('opMass').textContent = `${fmtMass(p.totalMassKg)} · ${fmtCarbon(p.totalCarbonKg).replace('≈ ', '')}`;
+    }
+  }
+
   update(s: SequenceState, membersVisible: boolean) {
     const p = this.p;
     const step = s.step;
     const st = p.stages[s.stage - 1];
     const D = p.duration;
 
+    const pres = s.presentation;
     // status card + caption + title block
-    $('statusPhase').textContent = s.complete ? 'TOPPED OUT ✓' : st.title;
+    $('statusPhase').textContent = pres.kind ? st.title : s.complete ? 'TOPPED OUT ✓' : st.title;
     $('statusStep').textContent = `STEP ${String(s.stepsDone).padStart(3, '0')}/${p.steps.length} · ${fmtInt(s.partsPlaced)} PCS`;
     $('statusBar').style.width = `${(s.stepsDone / p.steps.length) * 100}%`;
     $('statusStage').textContent = String(s.stage);
@@ -185,7 +220,7 @@ export class SequenceUI {
     $('capMember').textContent = step ? step.member : '—';
     $('capSpec').textContent = step ? step.spec : '—';
     $('tbDwg').textContent = `${p.id} / ${st.sheet}`;
-    $('tbPhase').textContent = st.code === 'SITE' ? 'GROUNDWORKS' : 'ASSEMBLY';
+    $('tbPhase').textContent = pres.kind === 'material' ? 'MATERIAL' : pres.kind === 'section' ? 'SECTION A–A' : st.code === 'SITE' ? 'GROUNDWORKS' : 'ASSEMBLY';
     $('tbSheet').textContent = `${st.n} / ${p.stages.length}`;
     const hdr = document.getElementById('hdrSheet');
     if (hdr) hdr.textContent = st.sheet;
@@ -199,12 +234,11 @@ export class SequenceUI {
 
     // gantt
     this.ganttRows.forEach((row, i) => {
-      if (!p.stages[i]?.available) return;
       const prog = s.stageProgress[i];
       const done = Math.round(prog * row.pills.length);
       row.pills.forEach((pill, k) => pill.classList.toggle('done', k < done));
       row.pct.textContent = `${Math.round(prog * 100)}%`;
-      row.el.classList.toggle('on', i === s.stage - 1 && !s.complete);
+      row.el.classList.toggle('on', i === s.stage - 1 && (!s.complete || !!pres.kind) && prog < 1);
     });
     const firstTrack = this.ganttRows[0].el.querySelector<HTMLElement>('.g-track')!;
     $('ganttHead').style.left = `${firstTrack.offsetLeft + (s.t / D) * firstTrack.offsetWidth}px`;
@@ -222,6 +256,7 @@ export class SequenceUI {
     const liftEl = $('opLift');
     liftEl.textContent = lift.text;
     liftEl.dataset.level = lift.level;
+    if (pres.kind) this.updatePresentation(s);
 
     // structure: zone stack + carbon
     const order = [...ZONES].reverse();
@@ -266,7 +301,7 @@ export class SequenceUI {
         })
         .join('');
     }
-    $('logBadge').textContent = s.complete ? 'TOPPED OUT' : step?.method === 'cast' ? 'POURING' : 'ASSEMBLING';
+    $('logBadge').textContent = pres.kind === 'material' ? 'MATERIAL PASS' : pres.kind === 'section' ? 'SECTION A–A' : s.complete ? 'TOPPED OUT' : step?.method === 'cast' ? 'POURING' : 'ASSEMBLING';
 
     // members (throttled)
     if (membersVisible && Math.abs(s.t - this.lastMemberUpdate) > 0.1) {

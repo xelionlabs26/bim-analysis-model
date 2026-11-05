@@ -9,20 +9,21 @@ import {
   type Project,
   type ScheduledPart,
   type StageDef,
+  type StageKind,
   type Step,
   type ZoneId,
 } from './types';
 
 /** Stage table. Assembly windows are sized from their step counts; 07–08 are M5. */
-const STAGES: { code: string; tick: string; title: string; zones: ZoneId[]; available: boolean; sheet: string; m5Duration?: number }[] = [
-  { code: 'SITE', tick: 'SITE', title: 'GROUNDWORKS', zones: ['SITE'], available: true, sheet: 'A-201' },
-  { code: 'PODIUM', tick: 'PODIUM', title: 'PODIUM & CORE', zones: ['PODIUM'], available: true, sheet: 'A-202' },
-  { code: 'LOWER', tick: 'L03', title: 'LOWER TOWER', zones: ['LOWER'], available: true, sheet: 'A-203' },
-  { code: 'MIDDLE', tick: 'L13', title: 'MID TOWER', zones: ['MIDDLE'], available: true, sheet: 'A-204' },
-  { code: 'UPPER', tick: 'L23', title: 'UPPER TOWER', zones: ['UPPER'], available: true, sheet: 'A-205' },
-  { code: 'CROWN', tick: 'CROWN', title: 'CROWN & GARDENS', zones: ['CROWN'], available: true, sheet: 'A-206' },
-  { code: 'MATERIAL', tick: 'MAT', title: 'MATERIAL PASS', zones: [], available: false, sheet: 'A-207', m5Duration: 4 },
-  { code: 'SECTION', tick: 'SECT', title: 'SECTION A–A', zones: [], available: false, sheet: 'A-208', m5Duration: 6 },
+const STAGES: { code: string; tick: string; title: string; zones: ZoneId[]; kind: StageKind; sheet: string; seconds?: number }[] = [
+  { code: 'SITE', tick: 'SITE', title: 'GROUNDWORKS', zones: ['SITE'], kind: 'assembly', sheet: 'A-201' },
+  { code: 'PODIUM', tick: 'PODIUM', title: 'PODIUM & CORE', zones: ['PODIUM'], kind: 'assembly', sheet: 'A-202' },
+  { code: 'LOWER', tick: 'L03', title: 'LOWER TOWER', zones: ['LOWER'], kind: 'assembly', sheet: 'A-203' },
+  { code: 'MIDDLE', tick: 'L13', title: 'MID TOWER', zones: ['MIDDLE'], kind: 'assembly', sheet: 'A-204' },
+  { code: 'UPPER', tick: 'L23', title: 'UPPER TOWER', zones: ['UPPER'], kind: 'assembly', sheet: 'A-205' },
+  { code: 'CROWN', tick: 'CROWN', title: 'CROWN & GARDENS', zones: ['CROWN'], kind: 'assembly', sheet: 'A-206' },
+  { code: 'MATERIAL', tick: 'MAT', title: 'MATERIAL PASS', zones: [], kind: 'material', sheet: 'A-207', seconds: 4.0 },
+  { code: 'SECTION', tick: 'SECT', title: 'SECTION A–A', zones: [], kind: 'section', sheet: 'A-208', seconds: 6.8 },
 ];
 
 const SUBTITLES: Record<string, (n: number) => string> = {
@@ -32,15 +33,15 @@ const SUBTITLES: Record<string, (n: number) => string> = {
   MIDDLE: (n) => `L13–L22 · sky garden · ${n} steps`,
   UPPER: (n) => `L23–L31 · roof deck · ${n} steps`,
   CROWN: (n) => `PV canopy · trees · ${n} steps`,
-  MATERIAL: () => 'timber · glass · planting · M5',
-  SECTION: () => 'cut through a sky garden · M5',
+  MATERIAL: () => 'timber · envelope · 2 passes · 4.0 s',
+  SECTION: () => 'sky gardens · fly-through · 6.8 s',
 };
 
 export const PART_ANIM = 0.2; // seconds for one part to settle
 export const ACTIVE_HOLD = 0.25; // seconds a placed part stays "active"
 const SECONDS_PER_STEP = 0.105;
 const MIN_STAGE = 1.6;
-const END_HOLD = 1.0;
+const END_HOLD = 0.4;
 
 const tmpV = new Vector3();
 const tmpQ = new Quaternion();
@@ -84,7 +85,7 @@ export function buildProject(): Project {
   STAGES.forEach((sd, si) => {
     const n = si + 1;
     const mine = defs.filter((d) => sd.zones.includes(d.zone));
-    const dur = sd.available ? Math.max(MIN_STAGE, mine.length * SECONDS_PER_STEP) : sd.m5Duration ?? 4;
+    const dur = sd.seconds ?? Math.max(MIN_STAGE, mine.length * SECONDS_PER_STEP);
     const stage: StageDef = {
       n,
       code: sd.code,
@@ -94,12 +95,13 @@ export function buildProject(): Project {
       start: clock,
       end: clock + dur,
       sheet: sd.sheet,
-      available: sd.available,
+      available: true,
+      kind: sd.kind,
       zones: sd.zones,
     };
     stages.push(stage);
     clock += dur;
-    if (!sd.available || !mine.length) return;
+    if (sd.kind !== 'assembly' || !mine.length) return;
     const interval = (dur - 0.3) / mine.length;
     mine.forEach((def, i) => {
       const t0 = stage.start + 0.05 + i * interval;
@@ -152,7 +154,6 @@ export function buildProject(): Project {
     });
   });
 
-  const assembly = stages.filter((s) => s.available);
   const last = steps[steps.length - 1];
   const height = Math.max(...steps.map((s) => s.top));
   return {
@@ -170,7 +171,7 @@ export function buildProject(): Project {
     parts,
     context: contextMassing(),
     crane: CRANE,
-    duration: Math.max(last.t1, assembly[assembly.length - 1].end) + END_HOLD,
+    duration: Math.max(last.t1, stages[stages.length - 1].end) + END_HOLD,
     totalMassKg: steps.reduce((a, s) => a + s.massKg, 0),
     totalCarbonKg: steps.reduce((a, s) => a + s.carbonKg, 0),
     totalBiogenicKg: steps.reduce((a, s) => a + s.biogenicKg, 0),

@@ -2,11 +2,27 @@
  * Deterministic sequence state. Everything the UI shows is a pure function of
  * time `t`, so seek / scrub / speed / rebuild never accumulate state.
  */
-import { ZONES, type Project, type Step, type ZoneId } from '../data/types';
+import { ZONES, type Project, type Step, type Vec3, type ZoneId } from '../data/types';
 import { ACTIVE_HOLD } from '../data/project';
 import { ROOF_LEVEL, levelY } from '../data/generator';
+import { Presentation, type CameraPose, type CutState, type Shot, type WashState } from './presentation';
 
-export type LogKind = 'STAGE' | 'ASM' | 'CHK' | 'PERF' | 'RUN' | 'CRANE';
+export type LogKind = 'STAGE' | 'ASM' | 'CHK' | 'PERF' | 'RUN' | 'CRANE' | 'MAT' | 'CUT' | 'CAM' | 'VIEW';
+
+export interface Callout {
+  key: string;
+  member: string;
+  spec: string;
+  anchor: Vec3;
+}
+
+export interface PresentationState {
+  kind: 'material' | 'section' | null;
+  shot: Shot | null;
+  wash: WashState;
+  cut: CutState;
+  pose: CameraPose | null;
+}
 export interface LogEvent {
   t: number;
   kind: LogKind;
@@ -23,6 +39,7 @@ export interface CraneState {
   hookY: number; // world height of the hook block
   lifting: boolean;
   ties: number[]; // heights of tie collars in place
+  headVisible: boolean; // false while the crane is being struck
 }
 
 export interface SequenceState {
@@ -43,6 +60,8 @@ export interface SequenceState {
   builtHalf: number;
   complete: boolean;
   crane: CraneState;
+  presentation: PresentationState;
+  callouts: Callout[];
 }
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString('en-GB').replace(/,/g, ' ');
@@ -72,6 +91,7 @@ export class Timeline {
   private readonly lifts: Lift[];
   private readonly liftT0: number[];
   readonly erectT: number;
+  readonly presentation: Presentation;
   readonly zoneTotal: Record<ZoneId, number>;
   /** Per timber floor: the core's level when that floor's frame went up. */
   readonly coreLead: { level: number; coreLevel: number; required: number }[] = [];
@@ -117,6 +137,7 @@ export class Timeline {
       });
     this.liftT0 = this.lifts.map((l) => l.step.t0);
     this.zoneTotal = Object.fromEntries(ZONES.map((z) => [z, steps.filter((s) => s.zone === z).length])) as Record<ZoneId, number>;
+    this.presentation = new Presentation(project);
     this.events = this.buildEvents();
     this.eventT = this.events.map((e) => e.t);
   }
@@ -158,6 +179,7 @@ export class Timeline {
       const lift = peak > 0 ? ` · peak lift ${Math.round(peak * 100)} % ${peak <= 1 ? '✓' : '✗'}` : '';
       ev.push({ t: lastStep.t1, kind: 'CHK', text: `CHK ${zone} · ${mine.length}/${mine.length} steps · ${fmtInt(pcs)} pcs · ${fmtMass(mass)}${lift}${lead}` });
     }
+    for (const e of this.presentation.events) ev.push({ t: e.t, kind: e.kind, text: e.text });
     for (let t = 2; t < project.duration - 0.5; t += 2) ev.push({ t, kind: 'PERF', text: 'PERF' });
     ev.push({ t: project.duration - 0.05, kind: 'RUN', text: 'RUN sequence complete · loop → STEP 000' });
     return ev.sort((a, b) => a.t - b.t);
@@ -189,13 +211,21 @@ export class Timeline {
   }
 
   craneAt(t: number, i: number): CraneState {
-    const mastTop = i >= 0 ? this.mastAfter[i] : MAST_START;
+    let mastTop = i >= 0 ? this.mastAfter[i] : MAST_START;
     const parked = mastTop - 5;
     const builtTop = i >= 0 ? this.cumTop[i] : 0;
-    const ties = TIE_HEIGHTS.filter((h) => builtTop >= h + 3);
-    const visible = t >= this.erectT;
+    let ties = TIE_HEIGHTS.filter((h) => builtTop >= h + 3);
+    let visible = t >= this.erectT;
+    // struck at the start of the material pass: head first, then the mast comes down
+    const strike = (t - this.presentation.strikeT) / 0.8;
+    if (strike >= 0) {
+      if (strike >= 1) visible = false;
+      mastTop *= 1 - strike;
+      ties = ties.filter((h) => h < mastTop);
+      return { visible, mastTop, slew: 0, radius: 22, hookY: mastTop, lifting: false, ties, headVisible: false };
+    }
     const k = Timeline.floorIndex(this.liftT0, t + SLEW_LEAD);
-    if (k < 0) return { visible, mastTop, slew: 0, radius: 22, hookY: parked, lifting: false, ties };
+    if (k < 0) return { visible, mastTop, slew: 0, radius: 22, hookY: parked, lifting: false, ties, headVisible: true };
     const cur = this.lifts[k];
     const prev = k > 0 ? this.lifts[k - 1] : { angle: 0, radius: 22 };
     const s = cur.step;
@@ -209,7 +239,7 @@ export class Timeline {
     const lifting = t >= s.t0 && t <= s.t1;
     if (lifting) hookY = parked + (target - parked) * easeOut((t - s.t0) / Math.max(1e-3, s.t1 - s.t0));
     else if (t > s.t1) hookY = target + (parked - target) * smoothstep(s.t1, s.t1 + 0.18, t);
-    return { visible, mastTop, slew, radius, hookY, lifting, ties };
+    return { visible, mastTop, slew, radius, hookY, lifting, ties, headVisible: true };
   }
 
   stateAt(tIn: number): SequenceState {
@@ -221,10 +251,17 @@ export class Timeline {
     for (let k = 0; k <= i; k++) zoneDone[project.steps[k].zone]++;
     const stage = project.stages.reduce((acc, s) => (t >= s.start && s.available ? s.n : acc), 1);
     const stageProgress = project.stages.map((s) => {
+      if (s.kind !== 'assembly') return Math.min(1, Math.max(0, (t - s.start) / (s.end - s.start)));
       const n = project.steps.filter((x) => x.stage === s.n);
       if (!n.length) return 0;
       return n.filter((x) => x.index <= i).length / n.length;
     });
+    const pr = this.presentation;
+    const kind = t >= pr.section.start ? 'section' : t >= pr.material.start ? 'material' : null;
+    const presentation: PresentationState = { kind, shot: pr.shotAt(t), wash: pr.washAt(t), cut: pr.cutAt(t), pose: pr.poseAt(t) };
+    const callouts: Callout[] = kind
+      ? pr.calloutsAt(t, 4).map((sh) => ({ key: sh.id, member: sh.title, spec: sh.spec, anchor: sh.anchor! }))
+      : this.recentSteps(t, 4).map((st) => ({ key: `s${st.index}`, member: st.member, spec: st.spec, anchor: st.centroid }));
     let stepStatus = 'WAITING';
     if (step) {
       const busy = t < step.t1;
@@ -248,6 +285,8 @@ export class Timeline {
       builtHalf: i >= 0 ? this.cumHalf[i] : 17,
       complete: i === project.steps.length - 1 && t >= project.steps[i].t1,
       crane: this.craneAt(t, i),
+      presentation,
+      callouts,
     };
   }
 

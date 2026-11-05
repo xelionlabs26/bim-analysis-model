@@ -1,24 +1,26 @@
 {
-  "name": "pagoda-build",
+  "name": "arbor-build",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc --noEmit -p tests && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "build:artifact": "tsc --noEmit && vite build --mode artifact && node scripts/make-artifact.mjs"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tests",
+    "build:artifact": "tsc --noEmit && tsc --noEmit -p tests && vite build --mode artifact && node scripts/make-artifact.mjs"
   },
   "dependencies": {
     "@fontsource/big-shoulders-display": "5.3.0",
     "@fontsource/geist-mono": "5.3.0",
     "@fontsource/instrument-sans": "5.3.0",
     "@fontsource/instrument-serif": "5.3.0",
+    "earcut": "3.0.2",
     "three": "0.170.0"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "@types/three": "0.170.0",
     "typescript": "5.6.3",
     "vite": "6.0.7",

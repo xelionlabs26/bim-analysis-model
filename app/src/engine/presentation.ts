@@ -1,16 +1,17 @@
 /**
- * Stages 07–08: the material pass and Section A–A. Like the assembly, every
- * value here is a pure function of time `t`, so the scrubber can land anywhere.
+ * Stages 07–08: the material pass and the section. Every value is a pure
+ * function of time `t`, so the scrubber can land anywhere.
  *
- *   07 MATERIAL PASS  two washes rise up the tower with an uneven front:
- *                     pass 1 structure (timber, concrete), pass 2 envelope + planting.
- *                     The tower crane is struck at the start.
- *   08 SECTION A–A    a cut plane at x = 9.6 m slides through the east bay,
- *                     the camera flies to the sky gardens, the pods, the L24
- *                     terrace and the crown, then the section closes.
+ *   MATERIAL PASS  the crane is struck, then two washes rise up the building
+ *                  with an uneven front: pass 1 structure, pass 2 envelope,
+ *                  finishes and planting.
+ *   SECTION        a cut plane slides in, the camera flies along the project's
+ *                  keys, then the section closes before the loop.
+ *
+ * What is cut and where the camera goes come from `project.presentation`.
  */
-import { MATERIAL_INFO, type MaterialId, type Project, type StageDef, type Vec3 } from '../data/types';
-import { ROOF, levelY } from '../data/generator';
+import { MATERIAL_INFO, type CameraKey, type MaterialId, type Project, type StageDef, type Vec3 } from '../data/types';
+import { partFootprint } from '../data/assemble';
 
 export interface WashState {
   front: [number, number]; // wash front height per pass (−1e4 = not started, 1e4 = done)
@@ -24,13 +25,7 @@ export interface CutState {
   d: number; // keep points with dot(p, normal) < d
 }
 
-export interface CameraPose {
-  target: Vec3;
-  az: number; // degrees, from south (+Z) towards east (+X)
-  el: number;
-  dist: number;
-  fov: number;
-}
+export type CameraPose = Omit<CameraKey, 't'>;
 
 export interface Shot {
   id: string;
@@ -47,9 +42,6 @@ export interface PresentationEvent {
   text: string;
 }
 
-export const CUT_NORMAL: Vec3 = [1, 0, 0];
-export const CUT_OPEN = 40;
-export const CUT_AT = 9.6;
 const OFF = 1e4;
 
 /** Which wash colours each material. Context massing stays as line work. */
@@ -58,11 +50,17 @@ export const PASS_OF: Record<MaterialId, 0 | 1 | 2> = {
   concrete: 1,
   glulam: 1,
   clt: 1,
+  timber: 1,
+  masonry: 1,
   steel: 1,
   pod: 1,
+  generic: 1,
   glass: 2,
   aluminium: 2,
   terracotta: 2,
+  gypsum: 2,
+  insulation: 2,
+  membrane: 2,
   soil: 2,
   planting: 2,
   pv: 2,
@@ -75,19 +73,17 @@ const smooth = (x: number) => {
   return t * t * (3 - 2 * t);
 };
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
-/** Half-extent along world X of an oriented box. */
-function halfExtentX(size: Vec3, q: [number, number, number, number]) {
+/** Half-extent along a world axis of an oriented box. */
+function halfExtentAlong(size: Vec3, q: [number, number, number, number], n: Vec3) {
   const [x, y, z, w] = q;
-  const r0 = 1 - 2 * (y * y + z * z);
-  const r1 = 2 * (x * y - w * z);
-  const r2 = 2 * (x * z + w * y);
-  return 0.5 * (Math.abs(r0) * size[0] + Math.abs(r1) * size[1] + Math.abs(r2) * size[2]);
+  // rows of the rotation matrix dotted with n give the box axes' components along n
+  const ax: Vec3 = [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)];
+  const ay: Vec3 = [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)];
+  const az: Vec3 = [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+  const d = (a: Vec3) => Math.abs(a[0] * n[0] + a[1] * n[1] + a[2] * n[2]);
+  return 0.5 * (d(ax) * size[0] + d(ay) * size[1] + d(az) * size[2]);
 }
 const fmt = (n: number) => Math.round(n).toLocaleString('en-GB').replace(/,/g, ' ');
-
-interface Key extends CameraPose {
-  t: number; // seconds after the section stage starts
-}
 
 export class Presentation {
   readonly material: StageDef;
@@ -96,19 +92,29 @@ export class Presentation {
   readonly events: PresentationEvent[];
   readonly cutParts: number;
   private readonly heights: [number[], number[]];
-  private readonly keys: Key[];
+  private readonly keys: CameraKey[];
   private readonly windows: [[number, number], [number, number]];
+  private readonly closeAt: number;
   readonly strikeT: number;
+  readonly cutAtValue: number;
+  readonly cutNormal: Vec3;
+  readonly cutOpen: number;
 
   constructor(readonly project: Project) {
     this.material = project.stages.find((s) => s.kind === 'material')!;
     this.section = project.stages.find((s) => s.kind === 'section')!;
+    const spec = project.presentation;
     const m = this.material;
+    const md = m.end - m.start;
     this.windows = [
-      [m.start + 0.15, m.start + 2.2],
-      [m.start + 1.6, m.end - 0.25],
+      [m.start + 0.15, m.start + md * 0.55],
+      [m.start + md * 0.4, m.end - 0.25],
     ];
     this.strikeT = m.start + 0.05;
+    this.cutAtValue = spec.cut.at;
+    this.cutNormal = spec.cut.normal;
+    this.cutOpen = spec.cut.open;
+    this.closeAt = this.section.end - this.section.start - 1.2;
     const h1: number[] = [];
     const h2: number[] = [];
     for (const p of project.parts) {
@@ -117,36 +123,14 @@ export class Presentation {
       else if (pass === 2) h2.push(p.pos[1]);
     }
     this.heights = [h1.sort((a, b) => a - b), h2.sort((a, b) => a - b)];
-    this.cutParts = project.parts.filter((p) => Math.abs(p.pos[0] - CUT_AT) < halfExtentX(p.size, p.quat)).length;
-
-    const H = project.height;
-    const mid = H * 0.5;
-    this.keys = [
-      { t: 0.0, target: [0, mid, 0], az: 90, el: 6, dist: 330, fov: 26 },
-      { t: 0.9, target: [2, mid, 0], az: 90, el: 6, dist: 330, fov: 26 },
-      { t: 1.9, target: [CUT_AT, levelY(12) + 3.3, 4], az: 98, el: 5, dist: 64, fov: 34 },
-      { t: 2.8, target: [CUT_AT, levelY(14) + 1.5, 2], az: 92, el: 4, dist: 58, fov: 36 },
-      { t: 3.8, target: [CUT_AT, levelY(24) + 2, 7], az: 104, el: 7, dist: 70, fov: 36 },
-      { t: 4.7, target: [CUT_AT, ROOF + 2.5, 0], az: 114, el: 14, dist: 78, fov: 34 },
-      { t: 5.6, target: [0, mid, 0], az: 124, el: 9, dist: 345, fov: 26 },
-      { t: this.section.end - this.section.start, target: [0, mid, 0], az: 126, el: 9, dist: 345, fov: 26 },
-    ];
-
-    const storedT = Math.round(project.totalBiogenicKg / 1000);
-    const s0 = this.section.start;
-    this.shots = [
-      { id: 'M-00', t: this.strikeT, stage: 'material', title: 'TC-1 · CRANE DISMANTLED', spec: 'sections lowered by a mobile crane at street level', anchor: null },
-      { id: 'M-01', t: this.windows[0][0], stage: 'material', title: 'MATERIAL PASS 1/2 · STRUCTURE', spec: 'glulam · CLT · C40/50 concrete · natural finishes', anchor: [-14, levelY(8) + 1.6, 14] },
-      { id: 'M-02', t: this.windows[1][0], stage: 'material', title: 'MATERIAL PASS 2/2 · ENVELOPE & PLANTING', spec: 'triple glazing · terracotta fins · bronze spandrels · planting', anchor: [0, levelY(18) + 1.6, 14.2] },
-      { id: 'M-03', t: m.start + 2.9, stage: 'material', title: 'TIMBER · CARBON STORED', spec: `≈ ${fmt(storedT)} tCO₂e held in the glulam and CLT · indicative`, anchor: [-7, levelY(20) + 1.6, 14.2] },
-      { id: 'S-01', t: s0 + 0.1, stage: 'section', title: 'SECTION A–A · CUT PLANE', spec: `x = ${CUT_AT} m through the east bay · cut faces hatched`, anchor: [CUT_AT, H * 0.66, -9] },
-      { id: 'S-02', t: s0 + 0.95, stage: 'section', title: 'CAMERA · DOLLY IN TO L12', spec: '330 → 64 m · lens 52 → 39 mm', anchor: null },
-      { id: 'S-03', t: s0 + 1.9, stage: 'section', title: 'SKY GARDEN · L12–L13 IN SECTION', spec: 'double-height loggia · trees in 600 mm beds · CLT slab cut', anchor: [CUT_AT, levelY(12) + 2.8, 9] },
-      { id: 'S-04', t: s0 + 2.8, stage: 'section', title: 'BATHROOM PODS IN SECTION', spec: 'prefab pods sit on each CLT slab · 2.6 m high', anchor: [CUT_AT, levelY(14) + 1.3, 2.4] },
-      { id: 'S-05', t: s0 + 3.8, stage: 'section', title: 'SKY TERRACE · L24 SETBACK', spec: 'floors above step back one bay · planted communal terrace', anchor: [CUT_AT, levelY(24) + 1.4, 11.5] },
-      { id: 'S-06', t: s0 + 4.7, stage: 'section', title: 'CROWN · PV CANOPY & GREEN ROOF', spec: '32 PV modules on a glulam pergola · biodiverse roof', anchor: [CUT_AT, ROOF + 4.3, -3.5] },
-      { id: 'S-07', t: s0 + 5.6, stage: 'section', title: 'SECTION A–A · CLOSING', spec: `plane → ${CUT_OPEN.toFixed(1)} m · the model closes back up`, anchor: null },
-    ];
+    const n = spec.cut.normal;
+    this.cutParts = project.parts.filter((p) => Math.abs(p.pos[0] * n[0] + p.pos[1] * n[1] + p.pos[2] * n[2] - spec.cut.at) < halfExtentAlong(p.size, p.quat, n)).length;
+    const dur = this.section.end - this.section.start;
+    this.keys = spec.keys.length ? spec.keys : [{ t: 0, target: [0, project.height / 2, 0], az: 90, el: 8, dist: project.height * 3 + 40, fov: 26 }];
+    const lastKey = this.keys[this.keys.length - 1];
+    if (lastKey.t < dur) this.keys = [...this.keys, { ...lastKey, t: dur }];
+    const stageStart = (s: 'material' | 'section') => (s === 'material' ? m.start : this.section.start);
+    this.shots = spec.shots.map((s) => ({ id: s.id, t: stageStart(s.stage) + s.dt, stage: s.stage, title: s.title, spec: s.spec, anchor: s.anchor })).sort((a, b) => a.t - b.t);
     this.events = this.buildEvents();
   }
 
@@ -154,11 +138,12 @@ export class Presentation {
     const ev: PresentationEvent[] = [];
     const m = this.material;
     const s0 = this.section.start;
-    ev.push({ t: this.strikeT, kind: 'CRANE', text: 'STRIKE TC-1 · tower crane dismantled · mobile crane at street level' });
-    const names = ['structure · glulam · CLT · concrete', 'envelope · glass · terracotta · planting'];
+    const { crane } = this.project;
+    ev.push({ t: this.strikeT, kind: 'CRANE', text: `STRIKE ${crane.id} · crane dismantled · mobile crane at street level` });
+    const names = [1, 2].map((pass) => this.passTotals(pass as 1 | 2).materials.slice(0, 3).join(' · ') || '—');
     for (const pass of [0, 1] as const) {
       const [a, b] = this.windows[pass];
-      ev.push({ t: a, kind: 'MAT', text: `MAT pass ${pass + 1}/2 · ${names[pass]}` });
+      ev.push({ t: a, kind: 'MAT', text: `MAT pass ${pass + 1}/2 · ${pass ? 'envelope & finishes' : 'structure'} · ${names[pass]}` });
       for (let t = a + 0.45; t < b; t += 0.45) {
         const w = this.washAt(t);
         ev.push({ t, kind: 'MAT', text: `MAT pass ${pass + 1}/2 · wash front +${Math.max(0, w.front[pass]).toFixed(1)} m · ${Math.round(w.pct[pass] * 100)} % of ${pass ? 'envelope' : 'structure'}` });
@@ -166,15 +151,10 @@ export class Presentation {
     }
     const coloured = this.heights[0].length + this.heights[1].length;
     ev.push({ t: m.end - 0.1, kind: 'CHK', text: `CHK MATERIAL · 2/2 passes · ${fmt(coloured)} pcs coloured ✓` });
-    ev.push({ t: s0 + 0.1, kind: 'CUT', text: `CUT plane A–A · normal +X · offset ${CUT_OPEN.toFixed(1)} → ${CUT_AT} m · poché hatch` });
-    ev.push({ t: s0 + 0.95, kind: 'CAM', text: 'CAM dolly in · 330 → 64 m · fov 26° → 34°' });
-    ev.push({ t: s0 + 1.9, kind: 'VIEW', text: 'VIEW sky garden L12–L13 · double-height loggia in section' });
-    ev.push({ t: s0 + 2.8, kind: 'VIEW', text: `VIEW bathroom pods cut at x = ${CUT_AT} m · ${fmt(this.cutParts)} parts in section` });
-    ev.push({ t: s0 + 3.3, kind: 'CAM', text: `CAM crane up · target +${(levelY(14) + 1.5).toFixed(0)} → +${(levelY(24) + 2).toFixed(0)} m` });
-    ev.push({ t: s0 + 3.8, kind: 'VIEW', text: 'VIEW L24 sky terrace · setback in section' });
-    ev.push({ t: s0 + 4.7, kind: 'VIEW', text: 'VIEW crown · PV canopy and green roof' });
-    ev.push({ t: s0 + 5.15, kind: 'CAM', text: 'CAM pull back · 78 → 345 m · fov 34° → 26°' });
-    ev.push({ t: s0 + 5.6, kind: 'CUT', text: `CUT closing section · plane → ${CUT_OPEN.toFixed(1)} m` });
+    const axis = this.cutNormal[0] ? 'X' : this.cutNormal[2] ? 'Z' : 'Y';
+    ev.push({ t: s0 + 0.1, kind: 'CUT', text: `CUT plane A–A · normal +${axis} · offset ${this.cutOpen.toFixed(1)} → ${this.cutAtValue.toFixed(1)} m · ${fmt(this.cutParts)} parts in section · poché hatch` });
+    for (const l of this.project.presentation.log) ev.push({ t: s0 + l.dt, kind: l.kind, text: l.text });
+    ev.push({ t: s0 + this.closeAt, kind: 'CUT', text: `CUT closing section · plane → ${this.cutOpen.toFixed(1)} m` });
     return ev.sort((a, b) => a.t - b.t);
   }
 
@@ -185,10 +165,7 @@ export class Presentation {
     let active: 0 | 1 | 2 = 0;
     for (const pass of [0, 1] as const) {
       const [a, b] = this.windows[pass];
-      if (t < this.material.start) {
-        front[pass] = -OFF;
-        pct[pass] = 0;
-      } else if (t < a) {
+      if (t < this.material.start || t < a) {
         front[pass] = -OFF;
         pct[pass] = 0;
       } else if (t <= b) {
@@ -214,11 +191,13 @@ export class Presentation {
 
   cutAt(t: number): CutState {
     const s0 = this.section.start;
-    let d = CUT_OPEN;
-    if (t >= s0 + 0.1 && t < s0 + 0.9) d = lerp(CUT_OPEN, CUT_AT, smooth((t - s0 - 0.1) / 0.8));
-    else if (t >= s0 + 0.9 && t < s0 + 5.6) d = CUT_AT;
-    else if (t >= s0 + 5.6 && t < s0 + 6.4) d = lerp(CUT_AT, CUT_OPEN, smooth((t - s0 - 5.6) / 0.8));
-    return { on: d < CUT_OPEN - 0.01, normal: CUT_NORMAL, d };
+    const open = this.cutOpen;
+    const at = this.cutAtValue;
+    let d = open;
+    if (t >= s0 + 0.1 && t < s0 + 0.9) d = lerp(open, at, smooth((t - s0 - 0.1) / 0.8));
+    else if (t >= s0 + 0.9 && t < s0 + this.closeAt) d = at;
+    else if (t >= s0 + this.closeAt && t < s0 + this.closeAt + 0.8) d = lerp(at, open, smooth((t - s0 - this.closeAt) / 0.8));
+    return { on: d < open - 0.01, normal: this.cutNormal, d };
   }
 
   /** Camera pose for the section fly-through, or null outside it. */
@@ -229,7 +208,7 @@ export class Presentation {
     let i = 0;
     while (i < k.length - 2 && r >= k[i + 1].t) i++;
     const a = k[i];
-    const b = k[i + 1];
+    const b = k[i + 1] ?? a;
     const e = smooth((r - a.t) / Math.max(1e-3, b.t - a.t));
     return {
       target: [lerp(a.target[0], b.target[0], e), lerp(a.target[1], b.target[1], e), lerp(a.target[2], b.target[2], e)],
@@ -263,11 +242,11 @@ export class Presentation {
     const byMat = new Map<MaterialId, number>();
     for (const p of this.project.parts) {
       if (PASS_OF[p.mat] !== pass) continue;
-      const m = p.size[0] * p.size[1] * p.size[2] * MATERIAL_INFO[p.mat].density;
-      kg += m;
-      co2 += m * MATERIAL_INFO[p.mat].carbon;
+      const fp = partFootprint(p, this.project.density);
+      kg += fp.kg;
+      co2 += fp.co2;
       pcs++;
-      if (p.mat !== 'stringline') byMat.set(p.mat, (byMat.get(p.mat) ?? 0) + m);
+      if (p.mat !== 'stringline') byMat.set(p.mat, (byMat.get(p.mat) ?? 0) + fp.kg);
     }
     const materials = [...byMat.entries()].sort((a, b) => b[1] - a[1]).map(([x]) => MATERIAL_INFO[x].label.split(' ·')[0]);
     return { pcs, kg, co2, materials };

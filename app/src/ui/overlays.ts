@@ -43,7 +43,8 @@ export class Overlays {
     for (const lv of project.levels) {
       const code = document.createElement('div');
       code.className = 'datum';
-      code.innerHTML = `<span class="code">${lv.code}</span><span class="val">${lv.y === 0 ? '±0.00' : `+${lv.y.toFixed(2)}`}</span>`;
+      code.innerHTML = `<span class="code"></span><span class="val">${Math.abs(lv.y) < 0.005 ? '±0.00' : `${lv.y > 0 ? '+' : '−'}${Math.abs(lv.y).toFixed(2)}`}</span>`;
+      code.firstElementChild!.textContent = lv.code;
       html.append(code);
       const tick = this.svgEl('path', { style: 'stroke: var(--brand)', 'stroke-width': '1.4', fill: 'none' });
       const dash = this.svgEl('line', { style: 'stroke: var(--muted)', 'stroke-width': '1', 'stroke-dasharray': '2 3' });

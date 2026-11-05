@@ -18,6 +18,7 @@ export const ICONS: Record<string, string> = {
   settings: s('<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/><path d="M4 12h2M10 12h10"/><circle cx="8" cy="12" r="2"/>'),
   language: s('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.6 2.4 3.8 5.2 3.8 8.5S14.6 18.1 12 20.5C9.4 18.1 8.2 15.3 8.2 12S9.4 5.9 12 3.5Z"/>'),
   menu: s('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  upload: s('<path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>'),
   prev: s('<path d="M6 5v14"/><path d="M18 5 9 12l9 7V5Z" fill="currentColor"/>'),
   next: s('<path d="M18 5v14"/><path d="M6 5l9 7-9 7V5Z" fill="currentColor"/>'),
   pause: s('<path d="M8 5v14M16 5v14" stroke-width="3"/>'),

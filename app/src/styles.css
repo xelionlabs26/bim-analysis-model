@@ -250,6 +250,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .g-row { display: grid; grid-template-columns: 92px 1fr 42px; align-items: center; height: 15px; font: 11.5px var(--mono); }
 .g-row .lab { color: var(--ink-2); white-space: nowrap; }
 .g-row .lab i { font-style: normal; color: var(--muted); margin-right: 6px; }
+.g-row .lab em { font-style: normal; }
 .g-row.on .lab { color: var(--brand); }
 .g-row.na { opacity: 0.45; }
 .g-row .pct { text-align: right; color: var(--muted); }
@@ -327,7 +328,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .stages-row { display: grid; grid-template-columns: 40px 1fr 40px; gap: 12px; align-items: center; }
 .round { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); display: grid; place-items: center; }
 .round svg { width: 16px; height: 16px; }
-.cards { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 12px; }
+.cards { display: grid; grid-template-columns: repeat(var(--n, 8), minmax(0, 1fr)); gap: 12px; }
 .scard { position: relative; border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; padding: 0; text-align: left; height: 112px; display: flex; flex-direction: column; }
 .scard .thumb { flex: 1; min-height: 0; background-color: var(--viewport); background-image: linear-gradient(var(--grid-major) 1px, transparent 1px), linear-gradient(90deg, var(--grid-major) 1px, transparent 1px); background-size: 12px 12px; position: relative; }
 .scard .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -434,3 +435,26 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .g-row { height: 14px; }
 }
 @media (max-height: 860px) and (min-width: 1101px) { .gpu { display: none; } }
+
+/* ── Import ───────────────────────────────────────────────────────────── */
+.drawer.wide { width: min(430px, calc(100% - 28px)); max-height: calc(100% - 200px); overflow: auto; }
+.drawer .opts button.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.drawer .report { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 10px 0 6px; font-size: 11px; }
+.drawer .report dt { color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; font-size: 9.5px; padding-top: 1px; }
+.drawer .report dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.drawer .cats { font-size: 10.5px; color: var(--ink-2); margin: 4px 0; }
+.drawer .warn { font-size: 11.5px; color: var(--warn); margin-top: 6px; }
+.drawer .credit { font-size: 10.5px; color: var(--muted); margin-top: 8px; }
+.drop-hint {
+  position: absolute; inset: 12px; z-index: 7; border: 2px dashed var(--brand); border-radius: 16px;
+  background: var(--card-glass); display: grid; place-content: center; text-align: center; gap: 6px; pointer-events: none;
+}
+.drop-hint b { font: 900 32px var(--display); letter-spacing: 0.04em; color: var(--brand); }
+.drop-hint span { font-size: 13px; color: var(--ink-2); }
+.loading {
+  position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); z-index: 8;
+  width: min(360px, calc(100% - 40px)); padding: 16px 18px; border-radius: 14px; display: grid; gap: 10px;
+}
+.loading span { font: 600 13px var(--sans); }
+.loading .bar { max-width: none; }
+@media (prefers-reduced-motion: reduce) { .loading .bar i { transition: none; } }

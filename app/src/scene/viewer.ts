@@ -1,7 +1,15 @@
 import {
   BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
   Color,
+  DataTexture,
   DoubleSide,
+  FloatType,
+  Group,
+  LineSegments,
+  NearestFilter,
+  RGBAFormat,
   InstancedBufferAttribute,
   InstancedMesh,
   Matrix4,
@@ -19,11 +27,11 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MATERIAL_INFO, type Motion, type Project } from '../data/types';
-import { ACTIVE_HOLD } from '../data/project';
+import { ACTIVE_HOLD } from '../data/assemble';
 import type { CraneState } from '../engine/timeline';
 import { PASS_OF, type CameraPose, type CutState } from '../engine/presentation';
 import { CraneRig } from './crane';
-import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex } from './shaders';
+import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex, meshFillFragment, meshFillVertex, meshLineFragment, meshLineVertex } from './shaders';
 
 export type RenderStyle = 'ink' | 'ink+paint' | 'paint';
 
@@ -54,14 +62,20 @@ export class Viewer {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(FOV, 1, 1, 2400);
   readonly controls: OrbitControls;
-  readonly crane: CraneRig;
-  private fill: InstancedMesh;
-  private ghost: InstancedMesh;
+  crane!: CraneRig;
+  private model = new Group();
   private fillMat: ShaderMaterial;
   private ghostMat: ShaderMaterial;
+  private meshFillMat: ShaderMaterial;
+  private meshLineMat: ShaderMaterial;
+  private meshGhostMat: ShaderMaterial;
+  private groundMat: ShaderMaterial;
+  private partTex: DataTexture | null = null;
+  private uniforms: Record<string, { value: unknown }>;
   private target = new Vector3(0, 6, 0);
   private distance = 90;
-  private maxTop: number;
+  private maxTop = 10;
+  private footprint = 17;
   autoFrame = true;
   pathActive = false;
   private resolution = 1.5;
@@ -74,18 +88,6 @@ export class Viewer {
     host.prepend(this.renderer.domElement);
     this.maxTop = project.height;
 
-    const geo = new BoxGeometry(1, 1, 1);
-    const n = project.parts.length + project.context.length;
-    const time = new Float32Array(n * 3);
-    const color = new Float32Array(n * 3);
-    const stage = new Float32Array(n);
-    const mode = new Float32Array(n);
-    const pass = new Float32Array(n);
-    const m = new Matrix4();
-    const q = new Quaternion();
-    const v = new Vector3();
-    const s = new Vector3();
-    const c = new Color();
     const uniforms = {
       uTime: { value: 0 },
       uMask: { value: 511 },
@@ -106,60 +108,28 @@ export class Viewer {
       uCut: { value: new Vector4(1, 0, 0, 1e4) },
       uCutOn: { value: 0 },
       uDpr: { value: 1.5 },
+      uParts: { value: null as DataTexture | null },
+      uGhostLines: { value: 0 },
     };
+    this.uniforms = uniforms;
     // double-sided so that parts opened by the section plane show their (hatched) inside faces
     this.fillMat = new ShaderMaterial({ uniforms, vertexShader: fillVertex, fragmentShader: fillFragment, side: DoubleSide });
     this.ghostMat = new ShaderMaterial({ uniforms, vertexShader: ghostVertex, fragmentShader: ghostFragment, transparent: true, depthWrite: false });
-    this.fill = new InstancedMesh(geo, this.fillMat, n);
-    project.parts.forEach((p, i) => {
-      m.compose(v.set(...p.pos), q.set(...p.quat), s.set(...p.size));
-      this.fill.setMatrixAt(i, m);
-      time.set([p.t0, p.dur, p.drop], i * 3);
-      c.set(MATERIAL_INFO[p.mat].colour);
-      color.set([c.r, c.g, c.b], i * 3);
-      stage[i] = p.stage;
-      mode[i] = MODE[p.motion];
-      pass[i] = PASS_OF[p.mat];
+    this.meshFillMat = new ShaderMaterial({ uniforms, vertexShader: meshFillVertex, fragmentShader: meshFillFragment, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    this.meshLineMat = new ShaderMaterial({ uniforms, vertexShader: meshLineVertex, fragmentShader: meshLineFragment });
+    this.meshGhostMat = new ShaderMaterial({ uniforms: { ...uniforms, uGhostLines: { value: 1 } }, vertexShader: meshLineVertex, fragmentShader: meshLineFragment, transparent: true, depthWrite: false });
+    this.groundMat = new ShaderMaterial({
+      uniforms: { uLine: { value: css('--ghost') }, uFade: { value: new Vector2(32, 78) } },
+      vertexShader: groundVertex,
+      fragmentShader: groundFragment,
+      transparent: true,
+      depthWrite: false,
+      side: DoubleSide,
     });
-    project.context.forEach((p, k) => {
-      const i = project.parts.length + k;
-      m.compose(v.set(...p.pos), q.set(...p.quat), s.set(...p.size));
-      this.fill.setMatrixAt(i, m);
-      time.set([-100, 0.001, 0], i * 3);
-      c.set(MATERIAL_INFO.context.colour);
-      color.set([c.r, c.g, c.b], i * 3);
-      stage[i] = CONTEXT_STAGE;
-      mode[i] = 3;
-    });
-    geo.setAttribute('aTime', new InstancedBufferAttribute(time, 3));
-    geo.setAttribute('aColor', new InstancedBufferAttribute(color, 3));
-    geo.setAttribute('aStage', new InstancedBufferAttribute(stage, 1));
-    geo.setAttribute('aMode', new InstancedBufferAttribute(mode, 1));
-    geo.setAttribute('aPass', new InstancedBufferAttribute(pass, 1));
-    this.fill.instanceMatrix.needsUpdate = true;
-    this.ghost = new InstancedMesh(geo, this.ghostMat, n);
-    this.ghost.instanceMatrix = this.fill.instanceMatrix;
-    for (const mesh of [this.fill, this.ghost]) mesh.frustumCulled = false;
-    this.ghost.renderOrder = 2;
-    this.scene.add(this.fill, this.ghost);
-
-    const ground = new Mesh(
-      new PlaneGeometry(200, 200).rotateX(-Math.PI / 2),
-      new ShaderMaterial({
-        uniforms: { uLine: { value: css('--ghost') } },
-        vertexShader: groundVertex,
-        fragmentShader: groundFragment,
-        transparent: true,
-        depthWrite: false,
-        side: DoubleSide,
-      }),
-    );
+    const ground = new Mesh(new PlaneGeometry(400, 400).rotateX(-Math.PI / 2), this.groundMat);
     ground.position.y = -0.005;
     ground.renderOrder = 1;
-    this.scene.add(ground);
-
-    this.crane = new CraneRig(project.crane, css('--ink'), css('--part'), css('--brand'));
-    this.scene.add(this.crane.group);
+    this.scene.add(ground, this.model);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enablePan = false;
@@ -179,6 +149,142 @@ export class Viewer {
 
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
+    this.setProject(project);
+  }
+
+  /** Replace the model: instanced boxes (generated parts), merged mesh (imported parts), context, crane. */
+  setProject(project: Project) {
+    for (const child of [...this.model.children]) {
+      this.model.remove(child);
+      child.traverse((o) => {
+        const g = (o as Mesh).geometry as BufferGeometry | undefined;
+        g?.dispose?.();
+      });
+    }
+    this.partTex?.dispose();
+    this.partTex = null;
+    this.maxTop = project.height;
+
+    // ── instanced boxes ──
+    const boxes = project.parts.map((p, i) => ({ p, i })).filter(({ p }) => p.mesh === undefined);
+    const n = boxes.length + project.context.length;
+    if (n) {
+      const geo = new BoxGeometry(1, 1, 1);
+      const time = new Float32Array(n * 3);
+      const color = new Float32Array(n * 3);
+      const stage = new Float32Array(n);
+      const mode = new Float32Array(n);
+      const pass = new Float32Array(n);
+      const m = new Matrix4();
+      const q = new Quaternion();
+      const v = new Vector3();
+      const s = new Vector3();
+      const c = new Color();
+      const fill = new InstancedMesh(geo, this.fillMat, n);
+      boxes.forEach(({ p }, i) => {
+        m.compose(v.set(...p.pos), q.set(...p.quat), s.set(...p.size));
+        fill.setMatrixAt(i, m);
+        time.set([p.t0, p.dur, p.drop], i * 3);
+        c.set(MATERIAL_INFO[p.mat].colour);
+        color.set([c.r, c.g, c.b], i * 3);
+        stage[i] = p.stage;
+        mode[i] = MODE[p.motion];
+        pass[i] = PASS_OF[p.mat];
+      });
+      project.context.forEach((p, k) => {
+        const i = boxes.length + k;
+        m.compose(v.set(...p.pos), q.set(...p.quat), s.set(...p.size));
+        fill.setMatrixAt(i, m);
+        time.set([-100, 0.001, 0], i * 3);
+        c.set(MATERIAL_INFO.context.colour);
+        color.set([c.r, c.g, c.b], i * 3);
+        stage[i] = CONTEXT_STAGE;
+        mode[i] = 3;
+      });
+      geo.setAttribute('aTime', new InstancedBufferAttribute(time, 3));
+      geo.setAttribute('aColor', new InstancedBufferAttribute(color, 3));
+      geo.setAttribute('aStage', new InstancedBufferAttribute(stage, 1));
+      geo.setAttribute('aMode', new InstancedBufferAttribute(mode, 1));
+      geo.setAttribute('aPass', new InstancedBufferAttribute(pass, 1));
+      fill.instanceMatrix.needsUpdate = true;
+      const ghost = new InstancedMesh(geo, this.ghostMat, n);
+      ghost.instanceMatrix = fill.instanceMatrix;
+      for (const mesh of [fill, ghost]) mesh.frustumCulled = false;
+      ghost.renderOrder = 2;
+      this.model.add(fill, ghost);
+    }
+
+    // ── merged meshes ──
+    const meshParts = project.parts.map((p, i) => ({ p, i })).filter(({ p }) => p.mesh !== undefined);
+    const ctxMeshes = project.contextMeshes;
+    if (meshParts.length || ctxMeshes.length) {
+      const entries = [...meshParts.map(({ p }) => ({ p, mesh: project.meshes[p.mesh!] })), ...ctxMeshes.map((mesh) => ({ p: null as typeof project.parts[number] | null, mesh }))];
+      const count = entries.length;
+      const rows = Math.ceil((count * 3) / 1024);
+      const data = new Float32Array(1024 * Math.max(1, rows) * 4);
+      const c = new Color();
+      let nv = 0, ni = 0, ne = 0;
+      for (const { mesh } of entries) {
+        nv += mesh.positions.length / 3;
+        ni += mesh.indices.length;
+        ne += mesh.edges.length / 3;
+      }
+      const pos = new Float32Array(nv * 3);
+      const part = new Float32Array(nv);
+      const idx = new Uint32Array(ni);
+      const epos = new Float32Array(ne * 3);
+      const epart = new Float32Array(ne);
+      let vo = 0, io = 0, eo = 0;
+      entries.forEach(({ p, mesh }, k) => {
+        const t = k * 12;
+        if (p) {
+          c.set(MATERIAL_INFO[p.mat].colour);
+          data.set([p.t0, p.dur, p.drop, MODE[p.motion], c.r, c.g, c.b, PASS_OF[p.mat], p.stage, mesh.min[1], mesh.max[1], mesh.closed ? 0 : 1], t);
+        } else {
+          c.set(MATERIAL_INFO.context.colour);
+          data.set([-100, 0.001, 0, 3, c.r, c.g, c.b, 0, CONTEXT_STAGE, mesh.min[1], mesh.max[1], 1], t);
+        }
+        const nverts = mesh.positions.length / 3;
+        pos.set(mesh.positions, vo * 3);
+        part.fill(k, vo, vo + nverts);
+        for (let j = 0; j < mesh.indices.length; j++) idx[io + j] = mesh.indices[j] + vo;
+        io += mesh.indices.length;
+        vo += nverts;
+        const nedge = mesh.edges.length / 3;
+        epos.set(mesh.edges, eo * 3);
+        epart.fill(k, eo, eo + nedge);
+        eo += nedge;
+      });
+      this.partTex = new DataTexture(data, 1024, Math.max(1, rows), RGBAFormat, FloatType);
+      this.partTex.magFilter = NearestFilter;
+      this.partTex.minFilter = NearestFilter;
+      this.partTex.needsUpdate = true;
+      this.uniforms.uParts.value = this.partTex;
+      (this.meshGhostMat.uniforms.uParts as { value: unknown }).value = this.partTex;
+      const g = new BufferGeometry();
+      g.setAttribute('position', new BufferAttribute(pos, 3));
+      g.setAttribute('aPart', new BufferAttribute(part, 1));
+      g.setIndex(new BufferAttribute(idx, 1));
+      const fill = new Mesh(g, this.meshFillMat);
+      const lg = new BufferGeometry();
+      lg.setAttribute('position', new BufferAttribute(epos, 3));
+      lg.setAttribute('aPart', new BufferAttribute(epart, 1));
+      const lines = new LineSegments(lg, this.meshLineMat);
+      const ghosts = new LineSegments(lg, this.meshGhostMat);
+      ghosts.renderOrder = 2;
+      for (const o of [fill, lines, ghosts]) o.frustumCulled = false;
+      this.model.add(fill, lines, ghosts);
+    }
+
+    // ── footprint, grid, crane ──
+    let half = 17;
+    for (const p of project.parts) half = Math.max(half, Math.abs(p.pos[0]) + p.size[0] / 2, Math.abs(p.pos[2]) + p.size[2] / 2);
+    this.footprint = Math.min(half, 120);
+    (this.groundMat.uniforms.uFade.value as Vector2).set(this.footprint * 1.9, this.footprint * 4.6);
+    if (this.crane) this.scene.remove(this.crane.group);
+    this.crane = new CraneRig(project.crane, css('--ink'), css('--part'), css('--brand'));
+    this.scene.add(this.crane.group);
+    this.autoFrame = true;
   }
 
   setResolution(r: number) {
@@ -244,7 +350,7 @@ export class Viewer {
     const t = Math.tan(((FOV * Math.PI) / 180) / 2);
     const byH = ((h / 2) * 1.32 + 4) / t; // headroom for the toolbar above and the transport below
     const byW = (w * 1.2) / (t * this.camera.aspect);
-    return Math.max(byH, byW, Math.hypot(h / 2, w) * 1.2, 30);
+    return Math.max(byH, byW, Math.hypot(h / 2, w) * 1.2, Math.min(30, 6 + h * 1.2));
   }
 
   /** Per-frame: update sequence time, crane, auto-frame, orbit, render. */
@@ -263,10 +369,16 @@ export class Viewer {
       this.camera.updateProjectionMatrix();
     }
     if (this.autoFrame) {
-      const withCrane = crane.visible ? crane.mastTop + 4 : 0;
-      const frameTop = Math.max(Math.min(Math.max(builtTop * 1.12 + 10, 28), this.maxTop * 1.08 + 4), withCrane);
-      const desiredY = Math.max(3, Math.min(frameTop * 0.5, builtTop * 0.55 + 4));
-      const desiredD = this.fitDistance(frameTop, Math.max(builtHalf, crane.visible ? 26 : 17));
+      // tall projects keep the whole climbing crane in view; low-rise ones frame the building
+      const H = this.maxTop;
+      const tall = H > 30;
+      const margin = Math.min(10, Math.max(2.5, H * 0.09));
+      const minFrame = Math.max(6, Math.min(28, H * 0.25 + 4));
+      let frameTop = Math.min(Math.max(builtTop * 1.12 + margin, minFrame), H * 1.08 + 4);
+      if (crane.visible) frameTop = Math.max(frameTop, tall ? crane.mastTop + 4 : Math.min(crane.mastTop + 2, frameTop * 1.45));
+      const desiredY = Math.max(tall ? 3 : 1.5, Math.min(frameTop * 0.5, builtTop * 0.55 + (tall ? 4 : 1.5)));
+      const half = tall ? Math.max(builtHalf, crane.visible ? Math.max(this.footprint, 26) : Math.min(this.footprint, 17)) : Math.max(builtHalf, this.footprint * 0.95);
+      const desiredD = this.fitDistance(frameTop, half);
       const k = snap ? 1 : 1 - Math.exp(-dt * 2.2);
       const off = this.camera.position.clone().sub(this.controls.target);
       this.target.y += (desiredY - this.target.y) * k;

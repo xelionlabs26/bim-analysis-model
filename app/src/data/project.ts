@@ -1,162 +1,80 @@
-import { Quaternion, Vector3 } from 'three';
-import { CRANE, GIFA, LEVELS, STOREYS, contextMassing, generateTower } from './generator';
-import {
-  MATERIAL_INFO,
-  TIMBER_BIOGENIC,
-  type LiftCheck,
-  type MaterialId,
-  type Part,
-  type Project,
-  type ScheduledPart,
-  type StageDef,
-  type StageKind,
-  type Step,
-  type ZoneId,
-} from './types';
+/**
+ * Arbor House: the generated sample project (stage table, zones, crane,
+ * curated fly-through). Imported IFC models are assembled by src/ifc/sequence.ts.
+ */
+import { CRANE, GIFA, LEVELS, ROOF, STOREYS, contextMassing, generateTower, levelY } from './generator';
+import { assembleProject, type StageConfig } from './assemble';
+import type { PresentationSpec, Project, ZoneDef } from './types';
 
-/** Stage table. Assembly windows are sized from their step counts; 07–08 are M5. */
-const STAGES: { code: string; tick: string; title: string; zones: ZoneId[]; kind: StageKind; sheet: string; seconds?: number }[] = [
-  { code: 'SITE', tick: 'SITE', title: 'GROUNDWORKS', zones: ['SITE'], kind: 'assembly', sheet: 'A-201' },
-  { code: 'PODIUM', tick: 'PODIUM', title: 'PODIUM & CORE', zones: ['PODIUM'], kind: 'assembly', sheet: 'A-202' },
-  { code: 'LOWER', tick: 'L03', title: 'LOWER TOWER', zones: ['LOWER'], kind: 'assembly', sheet: 'A-203' },
-  { code: 'MIDDLE', tick: 'L13', title: 'MID TOWER', zones: ['MIDDLE'], kind: 'assembly', sheet: 'A-204' },
-  { code: 'UPPER', tick: 'L23', title: 'UPPER TOWER', zones: ['UPPER'], kind: 'assembly', sheet: 'A-205' },
-  { code: 'CROWN', tick: 'CROWN', title: 'CROWN & GARDENS', zones: ['CROWN'], kind: 'assembly', sheet: 'A-206' },
-  { code: 'MATERIAL', tick: 'MAT', title: 'MATERIAL PASS', zones: [], kind: 'material', sheet: 'A-207', seconds: 4.0 },
-  { code: 'SECTION', tick: 'SECT', title: 'SECTION A–A', zones: [], kind: 'section', sheet: 'A-208', seconds: 6.8 },
+export { ACTIVE_HOLD, PART_ANIM } from './assemble';
+
+/** Stage table. Assembly windows are sized from their step counts. */
+const STAGES: StageConfig[] = [
+  { code: 'SITE', tick: 'SITE', title: 'GROUNDWORKS', zones: ['SITE'], kind: 'assembly', sheet: 'A-201', subtitle: (n) => `piles · raft · crane · ${n} steps` },
+  { code: 'PODIUM', tick: 'PODIUM', title: 'PODIUM & CORE', zones: ['PODIUM'], kind: 'assembly', sheet: 'A-202', subtitle: (n) => `RC frame · transfer deck · ${n} steps` },
+  { code: 'LOWER', tick: 'L03', title: 'LOWER TOWER', zones: ['LOWER'], kind: 'assembly', sheet: 'A-203', subtitle: (n) => `L03–L12 · sky garden · ${n} steps` },
+  { code: 'MIDDLE', tick: 'L13', title: 'MID TOWER', zones: ['MIDDLE'], kind: 'assembly', sheet: 'A-204', subtitle: (n) => `L13–L22 · sky garden · ${n} steps` },
+  { code: 'UPPER', tick: 'L23', title: 'UPPER TOWER', zones: ['UPPER'], kind: 'assembly', sheet: 'A-205', subtitle: (n) => `L23–L31 · roof deck · ${n} steps` },
+  { code: 'CROWN', tick: 'CROWN', title: 'CROWN & GARDENS', zones: ['CROWN'], kind: 'assembly', sheet: 'A-206', subtitle: (n) => `PV canopy · trees · ${n} steps` },
+  { code: 'MATERIAL', tick: 'MAT', title: 'MATERIAL PASS', zones: [], kind: 'material', sheet: 'A-207', seconds: 4.0, subtitle: () => 'timber · envelope · 2 passes · 4.0 s' },
+  { code: 'SECTION', tick: 'SECT', title: 'SECTION A–A', zones: [], kind: 'section', sheet: 'A-208', seconds: 6.8, subtitle: () => 'sky gardens · fly-through · 6.8 s' },
 ];
 
-const SUBTITLES: Record<string, (n: number) => string> = {
-  SITE: (n) => `piles · raft · crane · ${n} steps`,
-  PODIUM: (n) => `RC frame · transfer deck · ${n} steps`,
-  LOWER: (n) => `L03–L12 · sky garden · ${n} steps`,
-  MIDDLE: (n) => `L13–L22 · sky garden · ${n} steps`,
-  UPPER: (n) => `L23–L31 · roof deck · ${n} steps`,
-  CROWN: (n) => `PV canopy · trees · ${n} steps`,
-  MATERIAL: () => 'timber · envelope · 2 passes · 4.0 s',
-  SECTION: () => 'sky gardens · fly-through · 6.8 s',
-};
+const ZONES: ZoneDef[] = [
+  { id: 'SITE', label: 'SITE', y0: -6, y1: 0 },
+  { id: 'PODIUM', label: 'PODIUM', y0: 0, y1: levelY(3) },
+  { id: 'LOWER', label: 'LOWER', y0: levelY(3), y1: levelY(13) },
+  { id: 'MIDDLE', label: 'MIDDLE', y0: levelY(13), y1: levelY(23) },
+  { id: 'UPPER', label: 'UPPER', y0: levelY(23), y1: levelY(32) },
+  { id: 'CROWN', label: 'CROWN', y0: levelY(32), y1: levelY(32) + 6 },
+];
 
-export const PART_ANIM = 0.2; // seconds for one part to settle
-export const ACTIVE_HOLD = 0.25; // seconds a placed part stays "active"
-const SECONDS_PER_STEP = 0.105;
-const MIN_STAGE = 1.6;
-const END_HOLD = 0.4;
+export const ARBOR_CUT_AT = 9.6;
+const fmt = (n: number) => Math.round(n).toLocaleString('en-GB').replace(/,/g, ' ');
 
-const tmpV = new Vector3();
-const tmpQ = new Quaternion();
-
-/** Highest point / max horizontal extent of an oriented box. */
-function extent(p: Part) {
-  let top = -Infinity;
-  let half = 0;
-  tmpQ.set(...p.quat);
-  for (let i = 0; i < 8; i++) {
-    tmpV.set(((i & 1) - 0.5) * p.size[0], (((i >> 1) & 1) - 0.5) * p.size[1], (((i >> 2) & 1) - 0.5) * p.size[2]).applyQuaternion(tmpQ);
-    top = Math.max(top, p.pos[1] + tmpV.y);
-    half = Math.max(half, Math.abs(p.pos[0] + tmpV.x), Math.abs(p.pos[2] + tmpV.z));
-  }
-  return { top, half };
-}
-
-export const partMassKg = (p: Part) => p.size[0] * p.size[1] * p.size[2] * MATERIAL_INFO[p.mat].density;
-
-/** Critical crane pick in a step: the piece with the highest share of chart capacity. */
-function liftCheck(parts: Part[]): LiftCheck | null {
-  let worst: LiftCheck | null = null;
-  for (const p of parts) {
-    if (MATERIAL_INFO[p.mat].bulk) continue;
-    const r = Math.hypot(p.pos[0] - CRANE.base[0], p.pos[2] - CRANE.base[2]);
-    const kg = partMassKg(p);
-    const cap = r > CRANE.jib ? 0 : CRANE.capacityAt(r);
-    const util = cap > 0 ? kg / cap : Infinity;
-    if (!worst || util > worst.util) worst = { radius: r, pieceKg: kg, capacityKg: cap, util };
-  }
-  return worst;
+function arborPresentation(p: Omit<Project, 'presentation'>): PresentationSpec {
+  const H = p.height;
+  const mid = H * 0.5;
+  const at = ARBOR_CUT_AT;
+  const storedT = Math.round(p.totalBiogenicKg / 1000);
+  return {
+    cut: { normal: [1, 0, 0], at, open: 40 },
+    keys: [
+      { t: 0.0, target: [0, mid, 0], az: 90, el: 6, dist: 330, fov: 26 },
+      { t: 0.9, target: [2, mid, 0], az: 90, el: 6, dist: 330, fov: 26 },
+      { t: 1.9, target: [at, levelY(12) + 3.3, 4], az: 98, el: 5, dist: 64, fov: 34 },
+      { t: 2.8, target: [at, levelY(14) + 1.5, 2], az: 92, el: 4, dist: 58, fov: 36 },
+      { t: 3.8, target: [at, levelY(24) + 2, 7], az: 104, el: 7, dist: 70, fov: 36 },
+      { t: 4.7, target: [at, ROOF + 2.5, 0], az: 114, el: 14, dist: 78, fov: 34 },
+      { t: 5.6, target: [0, mid, 0], az: 124, el: 9, dist: 345, fov: 26 },
+    ],
+    shots: [
+      { id: 'M-00', stage: 'material', dt: 0.05, title: 'TC-1 · CRANE DISMANTLED', spec: 'sections lowered by a mobile crane at street level', anchor: null },
+      { id: 'M-01', stage: 'material', dt: 0.15, title: 'MATERIAL PASS 1/2 · STRUCTURE', spec: 'glulam · CLT · C40/50 concrete · natural finishes', anchor: [-14, levelY(8) + 1.6, 14] },
+      { id: 'M-02', stage: 'material', dt: 1.6, title: 'MATERIAL PASS 2/2 · ENVELOPE & PLANTING', spec: 'triple glazing · terracotta fins · bronze spandrels · planting', anchor: [0, levelY(18) + 1.6, 14.2] },
+      { id: 'M-03', stage: 'material', dt: 2.9, title: 'TIMBER · CARBON STORED', spec: `≈ ${fmt(storedT)} tCO₂e held in the glulam and CLT · indicative`, anchor: [-7, levelY(20) + 1.6, 14.2] },
+      { id: 'S-01', stage: 'section', dt: 0.1, title: 'SECTION A–A · CUT PLANE', spec: `x = ${at} m through the east bay · cut faces hatched`, anchor: [at, H * 0.66, -9] },
+      { id: 'S-02', stage: 'section', dt: 0.95, title: 'CAMERA · DOLLY IN TO L12', spec: '330 → 64 m · lens 52 → 39 mm', anchor: null },
+      { id: 'S-03', stage: 'section', dt: 1.9, title: 'SKY GARDEN · L12–L13 IN SECTION', spec: 'double-height loggia · trees in 600 mm beds · CLT slab cut', anchor: [at, levelY(12) + 2.8, 9] },
+      { id: 'S-04', stage: 'section', dt: 2.8, title: 'BATHROOM PODS IN SECTION', spec: 'prefab pods sit on each CLT slab · 2.6 m high', anchor: [at, levelY(14) + 1.3, 2.4] },
+      { id: 'S-05', stage: 'section', dt: 3.8, title: 'SKY TERRACE · L24 SETBACK', spec: 'floors above step back one bay · planted communal terrace', anchor: [at, levelY(24) + 1.4, 11.5] },
+      { id: 'S-06', stage: 'section', dt: 4.7, title: 'CROWN · PV CANOPY & GREEN ROOF', spec: '32 PV modules on a glulam pergola · biodiverse roof', anchor: [at, ROOF + 4.3, -3.5] },
+      { id: 'S-07', stage: 'section', dt: 5.6, title: 'SECTION A–A · CLOSING', spec: 'plane → 40.0 m · the model closes back up', anchor: null },
+    ],
+    log: [
+      { dt: 0.95, kind: 'CAM', text: 'CAM dolly in · 330 → 64 m · fov 26° → 34°' },
+      { dt: 1.9, kind: 'VIEW', text: 'VIEW sky garden L12–L13 · double-height loggia in section' },
+      { dt: 2.8, kind: 'VIEW', text: `VIEW bathroom pods cut at x = ${at} m` },
+      { dt: 3.3, kind: 'CAM', text: `CAM crane up · target +${(levelY(14) + 1.5).toFixed(0)} → +${(levelY(24) + 2).toFixed(0)} m` },
+      { dt: 3.8, kind: 'VIEW', text: 'VIEW L24 sky terrace · setback in section' },
+      { dt: 4.7, kind: 'VIEW', text: 'VIEW crown · PV canopy and green roof' },
+      { dt: 5.15, kind: 'CAM', text: 'CAM pull back · 78 → 345 m · fov 34° → 26°' },
+    ],
+  };
 }
 
 export function buildProject(): Project {
-  const defs = generateTower();
-  const steps: Step[] = [];
-  const parts: ScheduledPart[] = [];
-  const stages: StageDef[] = [];
-
-  let clock = 0;
-  STAGES.forEach((sd, si) => {
-    const n = si + 1;
-    const mine = defs.filter((d) => sd.zones.includes(d.zone));
-    const dur = sd.seconds ?? Math.max(MIN_STAGE, mine.length * SECONDS_PER_STEP);
-    const stage: StageDef = {
-      n,
-      code: sd.code,
-      tick: sd.tick,
-      title: sd.title,
-      subtitle: SUBTITLES[sd.code](mine.length),
-      start: clock,
-      end: clock + dur,
-      sheet: sd.sheet,
-      available: true,
-      kind: sd.kind,
-      zones: sd.zones,
-    };
-    stages.push(stage);
-    clock += dur;
-    if (sd.kind !== 'assembly' || !mine.length) return;
-    const interval = (dur - 0.3) / mine.length;
-    mine.forEach((def, i) => {
-      const t0 = stage.start + 0.05 + i * interval;
-      const spread = Math.min(interval * 1.6, 0.45);
-      const partStart = parts.length;
-      let mass = 0;
-      let carbon = 0;
-      let biogenic = 0;
-      let top = 0;
-      let half = 0;
-      const c = [0, 0, 0];
-      const matMass = new Map<MaterialId, number>();
-      def.parts.forEach((p, j) => {
-        const pt0 = t0 + (def.parts.length > 1 ? (spread * j) / (def.parts.length - 1) : 0);
-        parts.push({ ...p, t0: pt0, dur: PART_ANIM, drop: def.drop, motion: def.motion, stage: n, step: steps.length });
-        const kg = partMassKg(p);
-        const info = MATERIAL_INFO[p.mat];
-        mass += kg;
-        carbon += kg * info.carbon;
-        if (info.biogenic) biogenic += kg * TIMBER_BIOGENIC;
-        matMass.set(p.mat, (matMass.get(p.mat) ?? 0) + kg);
-        const e = extent(p);
-        top = Math.max(top, e.top);
-        half = Math.max(half, e.half);
-        c[0] += p.pos[0];
-        c[1] += p.pos[1];
-        c[2] += p.pos[2];
-      });
-      const cnt = Math.max(1, def.parts.length);
-      const dominant = [...matMass.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-      const { parts: _omit, ...rest } = def;
-      steps.push({
-        ...rest,
-        index: steps.length,
-        id: String(steps.length + 1).padStart(3, '0'),
-        stage: n,
-        t0,
-        t1: (def.parts.length ? parts[parts.length - 1].t0 : t0) + PART_ANIM,
-        partStart,
-        partCount: def.parts.length,
-        material: dominant ? MATERIAL_INFO[dominant].label : def.method === 'manual' ? 'site team' : '—',
-        massKg: mass,
-        carbonKg: carbon,
-        biogenicKg: biogenic,
-        centroid: def.parts.length ? [c[0] / cnt, c[1] / cnt, c[2] / cnt] : [...CRANE.base],
-        top,
-        halfExtent: half,
-        lift: def.method === 'crane' ? liftCheck(def.parts) : null,
-      });
-    });
-  });
-
-  const last = steps[steps.length - 1];
-  const height = Math.max(...steps.map((s) => s.top));
-  return {
+  return assembleProject({
     id: 'AR-32',
     name: 'Arbor House',
     subtitle: '32-storey hybrid timber residential tower · built in install order',
@@ -164,16 +82,19 @@ export function buildProject(): Project {
     revDate: '11/26',
     storeys: STOREYS,
     gifa: GIFA,
-    height,
-    levels: LEVELS.map((l) => (l.code === 'TOP' ? { ...l, y: height } : l)),
-    stages,
-    steps,
-    parts,
+    levels: LEVELS,
+    zones: ZONES,
+    stages: STAGES,
+    defs: generateTower(),
     context: contextMassing(),
     crane: CRANE,
-    duration: Math.max(last.t1, stages[stages.length - 1].end) + END_HOLD,
-    totalMassKg: steps.reduce((a, s) => a + s.massKg, 0),
-    totalCarbonKg: steps.reduce((a, s) => a + s.carbonKg, 0),
-    totalBiogenicKg: steps.reduce((a, s) => a + s.biogenicKg, 0),
-  };
+    secondsPerStep: 0.105,
+    meta: {
+      tagline: 'HYBRID MASS TIMBER · 32 STOREYS · INSTALL ORDER',
+      caption: '32-storey hybrid timber residential tower · built in install order',
+      watermark: 'ARBOR',
+      source: 'generator',
+    },
+    presentation: arborPresentation,
+  });
 }

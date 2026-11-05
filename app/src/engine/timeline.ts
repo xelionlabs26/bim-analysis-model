@@ -2,9 +2,8 @@
  * Deterministic sequence state. Everything the UI shows is a pure function of
  * time `t`, so seek / scrub / speed / rebuild never accumulate state.
  */
-import { ZONES, type Project, type Step, type Vec3, type ZoneId } from '../data/types';
-import { ACTIVE_HOLD } from '../data/project';
-import { ROOF_LEVEL, levelY } from '../data/generator';
+import type { Project, Step, Vec3, ZoneId } from '../data/types';
+import { ACTIVE_HOLD } from '../data/assemble';
 import { Presentation, type CameraPose, type CutState, type Shot, type WashState } from './presentation';
 
 export type LogKind = 'STAGE' | 'ASM' | 'CHK' | 'PERF' | 'RUN' | 'CRANE' | 'MAT' | 'CUT' | 'CAM' | 'VIEW';
@@ -65,10 +64,9 @@ export interface SequenceState {
 }
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString('en-GB').replace(/,/g, ' ');
-const MAST_START = 44;
 const MAST_CLEAR = 14; // climb when the structure comes within this of the jib
 const MAST_CLIMB = 16; // four 4 m sections per climb
-const TIE_HEIGHTS = [30, 62, 94];
+const TIE_EVERY = 32; // tie collars from +30 m, every 32 m
 const SLEW_LEAD = 0.09;
 
 interface Lift {
@@ -95,17 +93,27 @@ export class Timeline {
   readonly zoneTotal: Record<ZoneId, number>;
   /** Per timber floor: the core's level when that floor's frame went up. */
   readonly coreLead: { level: number; coreLevel: number; required: number }[] = [];
+  private readonly zoneIds: ZoneId[];
+  private readonly mastStart: number;
+  private readonly tieHeights: number[];
 
   constructor(readonly project: Project) {
     const { steps, crane } = project;
     this.stepT0 = steps.map((s) => s.t0);
+    this.zoneIds = project.zones.map((z) => z.id);
+    this.mastStart = crane.mastStart;
+    this.tieHeights = [];
+    for (let h = 30; h < project.height; h += TIE_EVERY) this.tieHeights.push(h);
+    const topCore = Math.max(0, ...steps.filter((s) => s.kind === 'core' && s.level !== undefined).map((s) => s.level!));
     let p = 0;
     let m = 0;
     let c = 0;
     let b = 0;
     let top = 0;
     let half = 0;
-    let mast = MAST_START;
+    let mast = crane.mastStart;
+    // a crane sized for the whole building never climbs; a tower crane keeps 14 m over the work
+    const clear = crane.mastStart >= project.height + 4 ? crane.mastStart - project.height - 0.01 : MAST_CLEAR;
     let coreLevel = 0;
     for (const s of steps) {
       p += s.partCount;
@@ -114,7 +122,7 @@ export class Timeline {
       b += s.biogenicKg;
       top = Math.max(top, s.top);
       half = Math.max(half, s.halfExtent);
-      while (top + MAST_CLEAR > mast) mast += MAST_CLIMB;
+      while (top + clear > mast) mast += MAST_CLIMB;
       this.cumParts.push(p);
       this.cumMass.push(m);
       this.cumCarbon.push(c);
@@ -124,7 +132,7 @@ export class Timeline {
       this.mastAfter.push(mast);
       if (s.kind === 'core' && s.level !== undefined) coreLevel = Math.max(coreLevel, s.level);
       if (s.kind === 'frame' && s.code === 'GL-01' && s.level !== undefined) {
-        this.coreLead.push({ level: s.level, coreLevel, required: Math.min(s.level + 2, ROOF_LEVEL) });
+        this.coreLead.push({ level: s.level, coreLevel, required: Math.min(s.level + 2, topCore) });
       }
     }
     this.erectT = steps.find((s) => s.code === 'TC-02')?.t0 ?? 0;
@@ -136,7 +144,7 @@ export class Timeline {
         return { step: s, angle: Math.atan2(-dz, dx), radius: Math.min(crane.jib - 1, Math.max(4, Math.hypot(dx, dz))) };
       });
     this.liftT0 = this.lifts.map((l) => l.step.t0);
-    this.zoneTotal = Object.fromEntries(ZONES.map((z) => [z, steps.filter((s) => s.zone === z).length])) as Record<ZoneId, number>;
+    this.zoneTotal = Object.fromEntries(this.zoneIds.map((z) => [z, steps.filter((s) => s.zone === z).length])) as Record<ZoneId, number>;
     this.presentation = new Presentation(project);
     this.events = this.buildEvents();
     this.eventT = this.events.map((e) => e.t);
@@ -149,23 +157,24 @@ export class Timeline {
       const head = st.subtitle.replace(/ · \d+ steps$/, '');
       ev.push({ t: st.start, kind: 'STAGE', text: `STAGE ${pad2(st.n)}/${pad2(project.stages.length)} · ${st.title} — ${head}` });
     }
-    let lastMast = MAST_START;
+    let lastMast = this.mastStart;
+    const cid = project.crane.id;
     project.steps.forEach((s, i) => {
       if (s.log) ev.push({ t: s.t0, kind: 'CRANE', text: s.log });
       if (s.partCount > 0) {
-        const lift = s.lift ? ` · TC-1 ${Math.round(s.lift.util * 100)} %` : '';
+        const lift = s.lift ? ` · ${cid} ${Math.round(s.lift.util * 100)} %` : '';
         ev.push({ t: s.t0, kind: 'ASM', text: `${s.method === 'cast' ? 'POUR' : 'ASM'} ${s.member} +${s.partCount} pcs · Σ ${fmtInt(this.cumParts[i])}${lift}` });
       }
       if (this.mastAfter[i] > lastMast && s.t0 >= this.erectT) {
-        ev.push({ t: s.t1, kind: 'CRANE', text: `CLIMB TC-1 · mast → +${this.mastAfter[i].toFixed(0)} m · jib clears structure by ≥ ${MAST_CLEAR} m` });
+        ev.push({ t: s.t1, kind: 'CRANE', text: `CLIMB ${cid} · mast → +${this.mastAfter[i].toFixed(0)} m · jib clears structure by ≥ ${MAST_CLEAR} m` });
       }
       lastMast = this.mastAfter[i];
     });
-    for (const h of TIE_HEIGHTS) {
+    for (const h of this.tieHeights) {
       const k = this.cumTop.findIndex((top) => top >= h + 3);
-      if (k >= 0) ev.push({ t: project.steps[k].t1 + 0.01, kind: 'CRANE', text: `TIE TC-1 · collar at +${h} m into the core-side slab` });
+      if (k >= 0) ev.push({ t: project.steps[k].t1 + 0.01, kind: 'CRANE', text: `TIE ${cid} · collar at +${h} m into the slab edge` });
     }
-    for (const zone of ZONES) {
+    for (const zone of this.zoneIds) {
       const mine = project.steps.filter((s) => s.zone === zone);
       if (!mine.length) continue;
       const lastStep = mine[mine.length - 1];
@@ -177,7 +186,8 @@ export class Timeline {
       const minLead = floors.length ? Math.min(...floors.map((c) => c.coreLevel - c.level)) : null;
       const lead = minLead === null ? '' : ` · core lead ≥ ${minLead} floor${minLead === 1 ? '' : 's'} ${leadOk ? '✓' : '✗'}`;
       const lift = peak > 0 ? ` · peak lift ${Math.round(peak * 100)} % ${peak <= 1 ? '✓' : '✗'}` : '';
-      ev.push({ t: lastStep.t1, kind: 'CHK', text: `CHK ${zone} · ${mine.length}/${mine.length} steps · ${fmtInt(pcs)} pcs · ${fmtMass(mass)}${lift}${lead}` });
+      const label = project.zones.find((z) => z.id === zone)?.label ?? zone;
+      ev.push({ t: lastStep.t1, kind: 'CHK', text: `CHK ${label} · ${mine.length}/${mine.length} steps · ${fmtInt(pcs)} pcs · ${fmtMass(mass)}${lift}${lead}` });
     }
     for (const e of this.presentation.events) ev.push({ t: e.t, kind: e.kind, text: e.text });
     for (let t = 2; t < project.duration - 0.5; t += 2) ev.push({ t, kind: 'PERF', text: 'PERF' });
@@ -211,10 +221,10 @@ export class Timeline {
   }
 
   craneAt(t: number, i: number): CraneState {
-    let mastTop = i >= 0 ? this.mastAfter[i] : MAST_START;
+    let mastTop = i >= 0 ? this.mastAfter[i] : this.mastStart;
     const parked = mastTop - 5;
     const builtTop = i >= 0 ? this.cumTop[i] : 0;
-    let ties = TIE_HEIGHTS.filter((h) => builtTop >= h + 3);
+    let ties = this.tieHeights.filter((h) => builtTop >= h + 3 && h < mastTop - 6);
     let visible = t >= this.erectT;
     // struck at the start of the material pass: head first, then the mast comes down
     const strike = (t - this.presentation.strikeT) / 0.8;
@@ -247,7 +257,7 @@ export class Timeline {
     const t = Math.min(Math.max(tIn, 0), project.duration);
     const i = this.stepIndexAt(t);
     const step = i >= 0 ? project.steps[i] : null;
-    const zoneDone = Object.fromEntries(ZONES.map((x) => [x, 0])) as Record<ZoneId, number>;
+    const zoneDone = Object.fromEntries(this.zoneIds.map((x) => [x, 0])) as Record<ZoneId, number>;
     for (let k = 0; k <= i; k++) zoneDone[project.steps[k].zone]++;
     const stage = project.stages.reduce((acc, s) => (t >= s.start && s.available ? s.n : acc), 1);
     const stageProgress = project.stages.map((s) => {
@@ -265,7 +275,8 @@ export class Timeline {
     let stepStatus = 'WAITING';
     if (step) {
       const busy = t < step.t1;
-      stepStatus = step.method === 'cast' ? (busy ? 'POURING' : 'CAST ✓') : step.method === 'manual' ? (busy ? 'SETTING OUT' : 'DONE ✓') : busy ? 'LOWERING' : 'PLACED ✓';
+      const manual = step.code === 'SO-01' ? 'SETTING OUT' : step.motion === 'pour' ? 'LAYING' : 'FITTING';
+      stepStatus = step.method === 'cast' ? (busy ? 'POURING' : 'CAST ✓') : step.method === 'manual' ? (busy ? manual : 'DONE ✓') : busy ? 'LOWERING' : 'PLACED ✓';
     }
     return {
       t,
@@ -329,4 +340,4 @@ export function fmtCarbon(kg: number): string {
   return `≈ ${fmtInt(kg / 1000)} tCO₂e`;
 }
 
-export { fmtInt, levelY };
+export { fmtInt };

@@ -50,6 +50,8 @@ export const CRANE: Crane = {
   maxKg: 12000,
   tipKg: 2440,
   capacityAt: (r: number) => Math.min(12000, 12000 * Math.pow(20 / Math.max(r, 1), 1.45)),
+  tieX: -14.2,
+  mastStart: 44,
 };
 
 class Sink {

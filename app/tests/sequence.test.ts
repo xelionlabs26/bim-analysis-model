@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildProject } from '../src/data/project';
 import { ROOF_LEVEL } from '../src/data/generator';
 import { Timeline } from '../src/engine/timeline';
-import { CUT_AT } from '../src/engine/presentation';
+import { ARBOR_CUT_AT as CUT_AT } from '../src/data/project';
 import { drawingScale, scaleBarLength } from '../src/ui/overlays';
 
 const project = buildProject();

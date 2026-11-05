@@ -7,7 +7,7 @@ import { lineFragment, lineVertex } from './shaders';
 const MAX_MAST = 160;
 const W = 1.0; // half-width of a 2.0 m mast
 const SECTION = 4;
-const TIES = [30, 62, 94];
+const TIE_EVERY = 32;
 
 function lineMat(color: Color) {
   return new ShaderMaterial({
@@ -60,9 +60,9 @@ export class CraneRig {
     this.group.add(new LineSegments(segments(v), this.mastMat));
 
     // tie collars from the mast to the slab edge (world x = −14.2)
-    const ex = -14.2 - crane.base[0];
+    const ex = crane.tieX - crane.base[0];
     const tv: number[] = [];
-    for (const h of TIES) tv.push(W, h, -W, ex, h, -3, W, h, W, ex, h, 3, W, h, -W, ex, h, 3, -W, h, -W, W, h, -W, -W, h, W, W, h, W);
+    for (let h = 30; h < MAX_MAST; h += TIE_EVERY) tv.push(W, h, -W, ex, h, -3, W, h, W, ex, h, 3, W, h, -W, ex, h, 3, -W, h, -W, W, h, -W, -W, h, W, W, h, W);
     this.tieMat = lineMat(ink);
     this.tieMat.uniforms.uTop.value = -1;
     this.group.add(new LineSegments(segments(tv), this.tieMat));

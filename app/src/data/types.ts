@@ -6,26 +6,33 @@ export const MATERIALS = [
   'concrete',
   'glulam',
   'clt',
+  'timber',
   'glass',
   'aluminium',
   'terracotta',
+  'masonry',
   'steel',
+  'gypsum',
+  'insulation',
+  'membrane',
   'pod',
   'soil',
   'planting',
   'pv',
+  'generic',
   'context',
 ] as const;
 export type MaterialId = (typeof MATERIALS)[number];
 
 /**
- * `density` is an *effective* density for the box we model: thin or hollow
- * elements (glazing units, baguette fins, pods) are drawn as solid boxes, so
- * their density is scaled to give a realistic element mass.
+ * `density` is an *effective* density for the generated tower's boxes: thin or
+ * hollow elements (glazing units, baguette fins, pods) are drawn as solid boxes,
+ * so their density is scaled to give a realistic element mass. Imported models
+ * have real solid geometry and use REAL_DENSITY instead.
  * `carbon` is an indicative A1–A3 factor in kgCO2e per kg from generic
  * published averages — order-of-magnitude only, not project EPDs.
  * `biogenic` marks timber whose stored carbon is reported separately.
- * `bulk` materials (soil) arrive in 1 t bags or are blown in, so they are not
+ * `bulk` materials (soil) arrive in bags or are blown in, so they are not
  * checked as single crane picks.
  */
 export const MATERIAL_INFO: Record<MaterialId, { label: string; density: number; carbon: number; colour: string; biogenic?: boolean; bulk?: boolean }> = {
@@ -33,37 +40,97 @@ export const MATERIAL_INFO: Record<MaterialId, { label: string; density: number;
   concrete: { label: 'reinforced concrete C40/50', density: 2450, carbon: 0.16, colour: '#bdbdb6' },
   glulam: { label: 'glulam GL28h · spruce', density: 470, carbon: 0.4, colour: '#d8ae74', biogenic: true },
   clt: { label: 'CLT 5-ply · spruce', density: 470, carbon: 0.35, colour: '#e6c690', biogenic: true },
+  timber: { label: 'softwood timber', density: 480, carbon: 0.3, colour: '#d9b789', biogenic: true },
   glass: { label: 'triple-glazed unit', density: 560, carbon: 1.44, colour: '#9fbcc6' },
   aluminium: { label: 'anodised aluminium · bronze', density: 600, carbon: 8.0, colour: '#8a7058' },
   terracotta: { label: 'terracotta baguette', density: 800, carbon: 0.48, colour: '#c0704a' },
+  masonry: { label: 'brick · block masonry', density: 1850, carbon: 0.22, colour: '#b9785d' },
   steel: { label: 'galvanised steel', density: 1500, carbon: 1.55, colour: '#7d8288' },
+  gypsum: { label: 'plasterboard', density: 850, carbon: 0.39, colour: '#e9e7e1' },
+  insulation: { label: 'insulation', density: 35, carbon: 1.9, colour: '#e8d777' },
+  membrane: { label: 'roofing membrane', density: 1200, carbon: 2.6, colour: '#3f4447' },
   pod: { label: 'prefab bathroom pod', density: 250, carbon: 1.2, colour: '#eceee9' },
   soil: { label: 'lightweight planter soil', density: 1100, carbon: 0.02, colour: '#7b6a55', bulk: true },
   planting: { label: 'trees · shrubs', density: 60, carbon: 0, colour: '#6f9a5c' },
   pv: { label: 'PV modules · glass-glass', density: 375, carbon: 16, colour: '#33475e' },
+  generic: { label: 'unspecified material', density: 1000, carbon: 0.3, colour: '#cfcfc8' },
   context: { label: 'neighbouring buildings', density: 0, carbon: 0, colour: '#dcdcd6' },
+};
+
+/** Solid densities (kg/m³) for imported geometry, where volumes are real. */
+export const REAL_DENSITY: Partial<Record<MaterialId, number>> = {
+  concrete: 2400,
+  glulam: 470,
+  clt: 470,
+  timber: 480,
+  glass: 2500,
+  aluminium: 2700,
+  terracotta: 1900,
+  masonry: 1850,
+  steel: 7850,
+  gypsum: 850,
+  insulation: 35,
+  membrane: 1200,
+  soil: 1600,
+  planting: 600,
+  pv: 2500,
+  generic: 1000,
 };
 
 /** Biogenic carbon held in timber, kgCO2e per kg (≈ 50 % carbon content, ~12 % moisture). */
 export const TIMBER_BIOGENIC = 1.6;
 
-/** One rigid part: an oriented box. `size` is in the box's local axes. */
+/** Where an imported part came from. */
+export interface PartRef {
+  guid: string;
+  ifcType: string;
+  name: string;
+  storey: string;
+  category: string;
+}
+
+/**
+ * One rigid part. Generated parts are oriented boxes (`size` in the box's
+ * local axes). Imported parts carry a mesh (`mesh` indexes Project.meshes);
+ * their pos/size describe the axis-aligned bounds and `volume` is the real one.
+ */
 export interface Part {
   pos: Vec3;
   size: Vec3;
   quat: Quat;
   mat: MaterialId;
+  mesh?: number;
+  volume?: number;
+  /** Material mix by volume share (layered walls); defaults to [mat, 1]. */
+  mix?: [MaterialId, number][];
+  ref?: PartRef;
 }
 
-export type ZoneId = 'SITE' | 'PODIUM' | 'LOWER' | 'MIDDLE' | 'UPPER' | 'CROWN';
-export const ZONES: ZoneId[] = ['SITE', 'PODIUM', 'LOWER', 'MIDDLE', 'UPPER', 'CROWN'];
+/** Triangle mesh in world coordinates (metres, app axes), with feature lines. */
+export interface MeshData {
+  positions: Float32Array;
+  indices: Uint32Array;
+  edges: Float32Array;
+  closed: boolean;
+  min: Vec3;
+  max: Vec3;
+}
+
+export type ZoneId = string;
+
+export interface ZoneDef {
+  id: ZoneId;
+  label: string;
+  y0: number; // height span drawn in the structure stack
+  y1: number;
+}
 
 /** How a step's parts arrive: lowered by the tower crane, cast in place, or set by hand. */
 export type Method = 'crane' | 'cast' | 'manual';
 /** How a part animates in: lowered from above, poured upward, or bored downward. */
 export type Motion = 'lower' | 'pour' | 'bore';
 
-/** A step as authored by the generator (no timing yet). */
+/** A step as authored by the generator or the IFC sequencer (no timing yet). */
 export interface StepDef {
   zone: ZoneId;
   member: string;
@@ -97,7 +164,6 @@ export interface StageDef {
   start: number;
   end: number;
   sheet: string;
-  /** false = presentation stage scheduled for a later milestone (M5). */
   available: boolean;
   zones: ZoneId[];
 }
@@ -124,6 +190,7 @@ export interface Step extends Omit<StepDef, 'parts'> {
   biogenicKg: number; // carbon stored in timber (positive number)
   centroid: Vec3;
   top: number; // highest point of this step's parts
+  bottom: number; // lowest point of this step's parts
   halfExtent: number; // max |x| / |z|
   lift: LiftCheck | null; // null unless method === 'crane'
 }
@@ -146,6 +213,46 @@ export interface Crane {
   capacityAt: (r: number) => number;
   maxKg: number;
   tipKg: number;
+  /** x of the slab edge the tie collars brace to. */
+  tieX: number;
+  /** Mast height when erected, m. */
+  mastStart: number;
+}
+
+/** Camera key for the section fly-through, t relative to the section stage start. */
+export interface CameraKey {
+  t: number;
+  target: Vec3;
+  az: number; // degrees, from south (+Z) towards east (+X)
+  el: number;
+  dist: number;
+  fov: number;
+}
+
+/** A captioned moment in stages 07–08; dt is relative to its stage's start. */
+export interface ShotSpec {
+  id: string;
+  stage: 'material' | 'section';
+  dt: number;
+  title: string;
+  spec: string;
+  anchor: Vec3 | null;
+}
+
+export interface PresentationSpec {
+  cut: { normal: Vec3; at: number; open: number };
+  keys: CameraKey[];
+  shots: ShotSpec[];
+  /** Extra log lines, dt relative to the section stage start. */
+  log: { dt: number; kind: 'CAM' | 'VIEW'; text: string }[];
+}
+
+export interface ProjectMeta {
+  tagline: string; // under the wordmark
+  caption: string; // caption card subtitle
+  watermark: string;
+  source: 'generator' | 'ifc';
+  fileName?: string;
 }
 
 export interface Project {
@@ -158,13 +265,22 @@ export interface Project {
   gifa: number; // gross internal floor area, m², for carbon intensity
   height: number;
   levels: Level[];
+  zones: ZoneDef[];
   stages: StageDef[];
   steps: Step[];
   parts: ScheduledPart[];
+  meshes: MeshData[];
   context: Part[];
+  contextMeshes: MeshData[];
   crane: Crane;
   duration: number;
   totalMassKg: number;
   totalCarbonKg: number;
   totalBiogenicKg: number;
+  /** Density overrides (kg/m³) used for mass; generated projects use effective densities. */
+  density?: Partial<Record<MaterialId, number>>;
+  presentation: PresentationSpec;
+  meta: ProjectMeta;
+  /** Import diagnostics for IFC projects. */
+  report?: Record<string, unknown>;
 }

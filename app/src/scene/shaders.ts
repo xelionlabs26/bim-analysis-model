@@ -182,6 +182,7 @@ export const groundVertex = /* glsl */ `
 
 export const groundFragment = /* glsl */ `
   uniform vec3 uLine;
+  uniform vec2 uFade;
   varying vec3 vW;
   float gridLine(vec2 p, float spacing, float w) {
     vec2 g = abs(fract(p / spacing - 0.5) - 0.5) * spacing;
@@ -191,7 +192,7 @@ export const groundFragment = /* glsl */ `
   }
   void main() {
     float r = length(vW.xz);
-    float fade = 1.0 - smoothstep(32.0, 78.0, r);
+    float fade = 1.0 - smoothstep(uFade.x, uFade.y, r);
     float minor = gridLine(vW.xz, 3.5, 0.6) * 0.12;
     float major = gridLine(vW.xz, 7.0, 0.9) * 0.26;
     float a = max(minor, major) * fade;
@@ -218,5 +219,155 @@ export const lineFragment = /* glsl */ `
   void main() {
     if (vY > uTop) discard;
     gl_FragColor = vec4(uColor, uOpacity);
+  }
+`;
+
+// ── merged-mesh path (imported IFC geometry) ────────────────────────────────
+// Per-part data lives in a float texture, three texels per part:
+//   [t0, dur, drop, mode] [r, g, b, pass] [stage, minY, maxY, open]
+
+const meshCommon = /* glsl */ `
+  attribute float aPart;
+  uniform sampler2D uParts;
+  uniform float uTime;
+  uniform float uMask;
+  uniform float uHold;
+  varying vec3 vWorld;
+  varying vec3 vColor;
+  varying float vActive;
+  varying float vContext;
+  varying float vPass;
+  varying float vOpen;
+  varying float vBuilt;
+
+  float stageOn(float s) { return mod(floor(uMask / exp2(s - 1.0)), 2.0); }
+  vec4 partTexel(int i) { return texelFetch(uParts, ivec2(i % 1024, i / 1024), 0); }
+
+  vec3 placeMesh(out float stageVis) {
+    int i = int(aPart + 0.5) * 3;
+    vec4 a = partTexel(i);
+    vec4 b = partTexel(i + 1);
+    vec4 c = partTexel(i + 2);
+    float t0 = a.x, dur = a.y, drop = a.z, mode = a.w;
+    float p = clamp((uTime - t0) / dur, 0.0, 1.0);
+    float e = 1.0 - pow(1.0 - p, 3.0);
+    vBuilt = step(t0, uTime);
+    vec3 wp = position;
+    if (mode < 0.5) wp.y += drop * (1.0 - e);
+    else if (mode < 1.5) wp.y = c.y + (wp.y - c.y) * max(e, 1e-3);
+    else if (mode < 2.5) wp.y = c.z - (c.z - wp.y) * max(e, 1e-3);
+    vContext = step(2.5, mode);
+    vActive = (1.0 - smoothstep(t0 + dur, t0 + dur + uHold, uTime)) * (1.0 - vContext);
+    vColor = b.rgb;
+    vPass = b.a;
+    vOpen = c.w;
+    stageVis = stageOn(c.x);
+    vWorld = wp;
+    return wp;
+  }
+`;
+
+const meshFrag = /* glsl */ `
+  varying vec3 vWorld;
+  varying vec3 vColor;
+  varying float vActive;
+  varying float vContext;
+  varying float vPass;
+  varying float vOpen;
+  varying float vBuilt;
+  uniform vec4 uCut;
+  uniform float uCutOn;
+  bool cutAway() { return uCutOn > 0.5 && dot(vWorld, uCut.xyz) > uCut.w; }
+  float hash3(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float noise3(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+      mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y),
+      f.z);
+  }
+`;
+
+export const meshFillVertex = /* glsl */ `
+  ${meshCommon}
+  void main() {
+    float stageVis;
+    vec3 wp = placeMesh(stageVis);
+    float vis = vBuilt * stageVis * (1.0 - vContext);
+    gl_Position = vis > 0.5 ? projectionMatrix * viewMatrix * vec4(wp, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+  }
+`;
+
+export const meshFillFragment = /* glsl */ `
+  uniform vec3 uPaper;
+  uniform vec3 uInkColor;
+  uniform vec3 uActiveFill;
+  uniform vec3 uWetColor;
+  uniform vec3 uPoche;
+  uniform float uShade;
+  uniform float uColour;
+  uniform vec2 uWash;
+  uniform float uDpr;
+  ${meshFrag}
+  void main() {
+    if (cutAway()) discard;
+    float front = vPass < 1.5 ? uWash.x : uWash.y;
+    float jitter = (noise3(vWorld * 0.22) - 0.5) * 7.0 + (noise3(vWorld * 0.9) - 0.5) * 2.0;
+    float h = vWorld.y + jitter;
+    float painted = vPass < 0.5 ? 0.0 : 1.0 - smoothstep(front - 0.8, front + 0.8, h);
+    float colourAmt = max(uColour, painted);
+    if (!gl_FrontFacing && vOpen < 0.5) {
+      vec2 fc = gl_FragCoord.xy / uDpr;
+      float hatch = step(mod(fc.x - fc.y, 6.0), 1.1);
+      vec3 poche = mix(uPoche, vColor * 0.82, colourAmt);
+      gl_FragColor = vec4(mix(poche, uInkColor, 0.08 + 0.42 * hatch), 1.0);
+      return;
+    }
+    vec3 N = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+    vec3 L = normalize(vec3(-0.45, 1.0, 0.6));
+    float lambert = max(dot(N, L), 0.0);
+    float light = mix(1.0, 0.74 + 0.26 * lambert, uShade);
+    vec3 base = mix(uPaper, vColor, colourAmt) * light;
+    float wet = vPass < 0.5 ? 0.0 : 1.0 - smoothstep(0.0, 2.2, abs(h - front));
+    base = mix(base, uWetColor, wet * 0.5);
+    gl_FragColor = vec4(mix(base, uActiveFill, vActive * 0.9), 1.0);
+  }
+`;
+
+/** Feature lines for built parts (ink) — or, with uGhostLines, for parts not yet built. */
+export const meshLineVertex = /* glsl */ `
+  ${meshCommon}
+  uniform float uGhostLines;
+  uniform float uGhost;
+  void main() {
+    float stageVis;
+    vec3 wp = placeMesh(stageVis);
+    float want = uGhostLines > 0.5 ? max((1.0 - vBuilt) * uGhost, vContext) : vBuilt * (1.0 - vContext);
+    float vis = want * stageVis;
+    gl_Position = vis > 0.5 ? projectionMatrix * viewMatrix * vec4(wp, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+  }
+`;
+
+export const meshLineFragment = /* glsl */ `
+  uniform vec3 uInkColor;
+  uniform vec3 uActiveInk;
+  uniform vec3 uGhostColor;
+  uniform float uGhostLines;
+  uniform float uInk;
+  ${meshFrag}
+  void main() {
+    if (cutAway()) discard;
+    if (uGhostLines > 0.5) {
+      gl_FragColor = vec4(mix(uGhostColor, uInkColor, vContext), mix(0.2, 0.18, vContext));
+      return;
+    }
+    if (uInk < 0.5) discard;
+    gl_FragColor = vec4(mix(uInkColor, uActiveInk, vActive), 1.0);
   }
 `;

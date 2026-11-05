@@ -1,6 +1,5 @@
 import { fmtCarbon, fmtInt, fmtMass, pad2, type SequenceState, type Timeline } from '../engine/timeline';
-import { ZONES, type Project, type Step, type ZoneId } from '../data/types';
-import { levelY } from '../data/generator';
+import type { Project, Step } from '../data/types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -12,26 +11,17 @@ export interface PerfSample {
   res: number;
 }
 
-/** Height band of each zone, used to draw the progress stack to scale. */
-const ZONE_SPAN: Record<ZoneId, [number, number]> = {
-  SITE: [-6, 0],
-  PODIUM: [0, levelY(3)],
-  LOWER: [levelY(3), levelY(13)],
-  MIDDLE: [levelY(13), levelY(23)],
-  UPPER: [levelY(23), levelY(32)],
-  CROWN: [levelY(32), levelY(32) + 6],
-};
-
-export function liftText(step: Step | null): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
+export function liftText(step: Step | null, craneId = 'TC-1'): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
   if (!step) return { text: '—', level: 'none' };
-  if (step.method === 'cast') return { text: step.code === 'PL-01' ? 'bored in situ · CFA rig' : 'cast in place · pump + jump form', level: 'none' };
+  if (step.method === 'cast') return { text: step.motion === 'bore' ? 'bored in situ · piling rig' : 'cast in place · pump + formwork', level: 'none' };
   if (step.method === 'manual') return { text: 'by hand · site team', level: 'none' };
   const l = step.lift;
-  if (!l) return { text: 'TC-1 · bulk bags', level: 'none' };
+  if (!l) return { text: `${craneId} · bulk bags`, level: 'none' };
   const pct = Math.round(l.util * 100);
   const level = l.util > 1 ? 'over' : l.util >= 0.8 ? 'warn' : 'ok';
   const tail = level === 'over' ? ' ✗ over chart' : level === 'warn' ? ' ⚠' : '';
-  return { text: `TC-1 · R ${l.radius.toFixed(1)} m · ${fmtTonnes(l.pieceKg)} of ${fmtTonnes(l.capacityKg)} · ${pct} %${tail}`, level };
+  if (l.capacityKg <= 0) return { text: `${craneId} · R ${l.radius.toFixed(1)} m · beyond the jib ✗`, level: 'over' };
+  return { text: `${craneId} · R ${l.radius.toFixed(1)} m · ${fmtTonnes(l.pieceKg)} of ${fmtTonnes(l.capacityKg)} · ${pct} %${tail}`, level };
 }
 
 const fmtTonnes = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1)} t` : `${Math.round(kg / 10) * 10} kg`);
@@ -76,7 +66,8 @@ export class SequenceUI {
       const n = this.p.steps.filter((s) => s.stage === st.n).length;
       const pillsN = st.kind === 'assembly' ? Math.max(3, Math.ceil(n / 5)) : st.kind === 'material' ? 4 : 7;
       const track = `<div class="g-track"><div class="g-bar" style="left:${(st.start / D) * 100}%;width:${((st.end - st.start) / D) * 100}%">${'<i></i>'.repeat(pillsN)}</div></div>`;
-      row.innerHTML = `<span class="lab"><i>${pad2(st.n)}</i>${st.code}</span>${track}<span class="pct">0%</span>`;
+      row.innerHTML = `<span class="lab"><i>${pad2(st.n)}</i><em></em></span>${track}<span class="pct">0%</span>`;
+      row.querySelector('.lab em')!.textContent = st.code;
       g.append(row);
       this.ganttRows.push({ el: row, pills: [...row.querySelectorAll<HTMLElement>('.g-bar i')], pct: row.querySelector('.pct')! });
     }
@@ -87,20 +78,25 @@ export class SequenceUI {
   }
 
   private buildStructure() {
-    const order = [...ZONES].reverse(); // crown at the top
+    const zones = [...this.p.zones].reverse(); // top zone first
     const stack = $('zoneStack');
     const tbl = $('zoneTable');
-    const total = ZONE_SPAN.CROWN[1] - ZONE_SPAN.SITE[0];
-    order.forEach((zone, i) => {
-      const [a, b] = ZONE_SPAN[zone];
+    stack.innerHTML = '';
+    tbl.innerHTML = '';
+    const lo = Math.min(...zones.map((z) => z.y0));
+    const hi = Math.max(...zones.map((z) => z.y1));
+    const total = Math.max(1e-6, hi - lo);
+    zones.forEach((zone, i) => {
       const bar = document.createElement('i');
-      bar.style.height = `${((b - a) / total) * 100}%`;
-      bar.style.width = zone === 'SITE' ? '100%' : zone === 'PODIUM' ? '86%' : zone === 'CROWN' ? '58%' : `${64 + (i % 2) * 6}%`;
+      bar.style.height = `${(Math.max(zone.y1 - zone.y0, total * 0.04) / total) * 100}%`;
+      const k = zones.length - 1 - i; // 0 at the bottom
+      bar.style.width = k === 0 ? '100%' : i === 0 && zones.length > 2 ? '58%' : `${Math.max(56, 88 - k * 6)}%`;
       bar.innerHTML = '<b></b>';
       stack.append(bar);
       this.stack.push(bar);
       const row = document.createElement('div');
-      row.innerHTML = `<span>${zone}</span><span>0 / ${this.tl.zoneTotal[zone]}</span>`;
+      row.innerHTML = `<span></span><span>0 / ${this.tl.zoneTotal[zone.id]}</span>`;
+      row.firstElementChild!.textContent = zone.label;
       tbl.append(row);
       this.zoneRows.push(row);
     });
@@ -108,12 +104,16 @@ export class SequenceUI {
 
   private buildCards() {
     const wrap = $('stageCards');
+    wrap.innerHTML = '';
+    wrap.style.setProperty('--n', String(this.p.stages.length));
     for (const st of this.p.stages) {
       const b = document.createElement('button');
       b.className = 'scard';
       b.title = `Jump to ${st.title}`;
       b.innerHTML = `<div class="thumb"><img alt="" hidden /><span class="chip-t">${st.start.toFixed(1)}s</span><span class="chip-s">${st.sheet}</span></div>
-        <div class="meta"><b>${pad2(st.n)}. ${st.title}</b><span>${st.subtitle}</span></div><i class="prog"></i>`;
+        <div class="meta"><b></b><span></span></div><i class="prog"></i>`;
+      b.querySelector('.meta b')!.textContent = `${pad2(st.n)}. ${st.title}`;
+      b.querySelector('.meta span')!.textContent = st.subtitle;
       b.addEventListener('click', () => this.onSeek(st.start + 0.001));
       wrap.append(b);
       this.cards.push(b);
@@ -128,6 +128,7 @@ export class SequenceUI {
 
   private buildMembers() {
     const list = $('memberList');
+    list.innerHTML = '';
     for (const s of this.p.steps) {
       const r = document.createElement('div');
       r.className = 'm-row ghost';
@@ -137,33 +138,32 @@ export class SequenceUI {
       list.append(r);
       this.memberRows.push(r);
     }
-    $<HTMLInputElement>('memberSearch').addEventListener('input', (e) => {
-      const q = (e.target as HTMLInputElement).value.trim().toLowerCase();
-      for (const r of this.memberRows) r.hidden = !!q && !r.dataset.search!.includes(q);
-    });
+    this.filterMembers($<HTMLInputElement>('memberSearch').value);
+  }
+
+  filterMembers(raw: string) {
+    const q = raw.trim().toLowerCase();
+    for (const r of this.memberRows) r.hidden = !!q && !r.dataset.search!.includes(q);
   }
 
   private buildScrubber() {
     const ticks = $('scrubTicks');
     const track = $('scrubTrack');
     const D = this.p.duration;
+    ticks.innerHTML = '';
+    track.querySelectorAll('.scrub-tick').forEach((t) => t.remove());
     for (const st of this.p.stages) {
-      ticks.insertAdjacentHTML('beforeend', `<span style="left:${(st.start / D) * 100}%">${st.tick}</span>`);
+      ticks.insertAdjacentHTML('beforeend', `<span style="left:${(st.start / D) * 100}%"></span>`);
+      ticks.lastElementChild!.textContent = st.tick;
       track.insertAdjacentHTML('beforeend', `<span class="scrub-tick" style="left:${(st.start / D) * 100}%"></span>`);
     }
     ticks.insertAdjacentHTML('beforeend', `<span style="left:calc(100% - 30px)">END</span>`);
-    let dragging = false;
-    const seekFromEvent = (e: PointerEvent) => {
-      const r = track.getBoundingClientRect();
-      this.onSeek(((e.clientX - r.left) / r.width) * D);
-    };
-    track.addEventListener('pointerdown', (e) => {
-      dragging = true;
-      track.setPointerCapture(e.pointerId);
-      seekFromEvent(e);
-    });
-    track.addEventListener('pointermove', (e) => dragging && seekFromEvent(e));
-    track.addEventListener('pointerup', () => (dragging = false));
+    fitScrubberLabels();
+    if (!scrubObserver && typeof ResizeObserver !== 'undefined') {
+      scrubObserver = new ResizeObserver(() => fitScrubberLabels());
+      scrubObserver.observe(ticks);
+      void document.fonts?.ready.then(fitScrubberLabels);
+    }
   }
 
   /** Caption and operation card while the material pass or the section is running. */
@@ -189,7 +189,7 @@ export class SequenceUI {
       $('opStatus').textContent = w.active ? 'WASH' : 'COLOURED ✓';
       $('opQty').textContent = `${fmtInt(tot.pcs)} pcs · pass ${pass}`;
       $('opMat').textContent = tot.materials.join(' · ');
-      liftEl.textContent = s.crane.visible ? 'TC-1 being struck · mobile crane at street level' : 'TC-1 struck · no lifts';
+      liftEl.textContent = s.crane.visible ? `${p.crane.id} being struck · mobile crane at street level` : `${p.crane.id} struck · no lifts`;
       $('opXYZ').textContent = w.active ? `wash front +${Math.max(0, w.front[k]).toFixed(1)} m` : 'all surfaces coloured';
       $('opMass').textContent = `${fmtMass(tot.kg)} · ${fmtCarbon(tot.co2).replace('≈ ', '')}`;
     } else {
@@ -198,7 +198,7 @@ export class SequenceUI {
       $('opStatus').textContent = c.on ? 'CUT · FLY-THROUGH' : 'CLOSED ✓';
       $('opQty').textContent = `${fmtInt(this.tl.presentation.cutParts)} parts in section`;
       $('opMat').textContent = 'poché · cut faces hatched';
-      liftEl.textContent = 'TC-1 struck · no lifts';
+      liftEl.textContent = `${p.crane.id} struck · no lifts`;
       $('opXYZ').textContent = c.on ? `plane x = ${c.d.toFixed(1)} m` : 'plane open';
       $('opMass').textContent = `${fmtMass(p.totalMassKg)} · ${fmtCarbon(p.totalCarbonKg).replace('≈ ', '')}`;
     }
@@ -252,17 +252,17 @@ export class SequenceUI {
     $('opMat').textContent = step?.material ?? '—';
     $('opXYZ').textContent = step ? step.centroid.map((v) => v.toFixed(1)).join(' · ') : '—';
     $('opMass').textContent = step ? `${fmtMass(step.massKg)} · ${step.carbonKg >= 1 ? fmtCarbon(step.carbonKg).replace('≈ ', '') : '—'}` : '—';
-    const lift = liftText(step);
+    const lift = liftText(step, p.crane.id);
     const liftEl = $('opLift');
     liftEl.textContent = lift.text;
     liftEl.dataset.level = lift.level;
     if (pres.kind) this.updatePresentation(s);
 
     // structure: zone stack + carbon
-    const order = [...ZONES].reverse();
-    order.forEach((zone, i) => {
+    const order = [...p.zones].reverse();
+    order.forEach(({ id: zone }, i) => {
       const done = s.zoneDone[zone];
-      const tot = s.zoneTotal[zone];
+      const tot = Math.max(1, s.zoneTotal[zone]);
       const active = step?.zone === zone && !s.complete;
       (this.stack[i].firstElementChild as HTMLElement).style.height = `${(done / tot) * 100}%`;
       this.stack[i].classList.toggle('on', active);
@@ -316,5 +316,22 @@ export class SequenceUI {
         }
       });
     }
+  }
+}
+
+let scrubObserver: ResizeObserver | null = null;
+
+/** Stage labels on the scrubber that would run into each other (or into END) are hidden; their ticks stay. */
+function fitScrubberLabels() {
+  const spans = [...$('scrubTicks').children] as HTMLElement[];
+  if (spans.length < 2) return;
+  for (const s of spans) s.style.visibility = '';
+  const end = spans[spans.length - 1].getBoundingClientRect();
+  let right = -Infinity;
+  for (const s of spans.slice(0, -1)) {
+    const r = s.getBoundingClientRect();
+    if (!r.width) continue;
+    if (r.left < right + 6 || r.right > end.left - 6) s.style.visibility = 'hidden';
+    else right = r.right;
   }
 }

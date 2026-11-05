@@ -14,7 +14,7 @@
           <span class="logo" data-icon="logo"></span>
           <div>
             <h1 class="wordmark">ARBOR <em>BUILD</em></h1>
-            <p class="tagline">HYBRID MASS TIMBER · 32 STOREYS · INSTALL ORDER</p>
+            <p class="tagline" id="tagline">HYBRID MASS TIMBER · 32 STOREYS · INSTALL ORDER</p>
           </div>
         </div>
         <div class="header-drawing" id="headerDrawing"></div>
@@ -71,15 +71,15 @@
         </div>
 
         <section class="caption" id="caption">
-          <h2>Arbor House — Assembly Drawing</h2>
-          <p class="sub">32-storey hybrid timber residential tower · built in install order</p>
+          <h2 id="capTitle">Arbor House — Assembly Drawing</h2>
+          <p class="sub" id="capSub">32-storey hybrid timber residential tower · built in install order</p>
           <p class="mono red" id="capStep">STEP 000 / 000</p>
           <p class="member" id="capMember">—</p>
           <p class="spec" id="capSpec">—</p>
         </section>
 
         <section class="titleblock" id="titleBlock">
-          <div class="tb-row full"><label>DRAWING</label><b>ARBOR HOUSE</b></div>
+          <div class="tb-row full"><label>DRAWING</label><b id="tbName">ARBOR HOUSE</b></div>
           <div class="tb-row"><label>DWG NO.</label><span class="mono" id="tbDwg">AR-32 / A-201</span></div>
           <div class="tb-row"><label>SCALE</label><span class="mono" id="tbScale">1:500</span></div>
           <div class="tb-row"><label>PHASE</label><span class="mono red" id="tbPhase">GROUNDWORKS</span></div>
@@ -114,6 +114,12 @@
         </div>
 
         <div class="drawer card" id="drawer" hidden></div>
+        <input type="file" id="fileIfc" accept=".ifc,.ifc.txt" hidden />
+        <div class="drop-hint" id="dropHint" hidden><b>Drop the IFC file</b><span>It is read in your browser · nothing is uploaded</span></div>
+        <div class="loading card" id="loading" role="status" hidden>
+          <span id="loadingLabel">Reading the IFC file</span>
+          <div class="bar"><i id="loadingBar"></i></div>
+        </div>
       </main>
 
       <!-- RIGHT PANEL ────────────────────────────────────────────────────── -->

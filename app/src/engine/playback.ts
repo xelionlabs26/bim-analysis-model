@@ -6,7 +6,12 @@ export class Playback {
   loop = true;
   private listeners = new Set<() => void>();
 
-  constructor(readonly duration: number) {}
+  constructor(public duration: number) {}
+
+  setDuration(d: number) {
+    this.duration = d;
+    this.t = Math.min(this.t, d);
+  }
 
   /** Advance by wall-clock dt (seconds). */
   tick(dt: number) {

@@ -1,5 +1,5 @@
 import { fmtCarbon, fmtInt, fmtMass, pad2, type SequenceState, type Timeline } from '../engine/timeline';
-import type { Project, Step } from '../data/types';
+import { liftLevel, reviewedLift, type Project, type Step } from '../data/types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -11,17 +11,18 @@ export interface PerfSample {
   res: number;
 }
 
-export function liftText(step: Step | null, craneId = 'TC-1'): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
+export function liftText(step: Step | null, craneId = 'TC-1', warnAt = 0.85, riggingKg = 0): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
   if (!step) return { text: '—', level: 'none' };
   if (step.method === 'cast') return { text: step.motion === 'bore' ? 'bored in situ · piling rig' : 'cast in place · pump + formwork', level: 'none' };
   if (step.method === 'manual') return { text: 'by hand · site team', level: 'none' };
   const l = step.lift;
   if (!l) return { text: `${craneId} · bulk bags`, level: 'none' };
-  const pct = Math.round(l.util * 100);
-  const level = l.util > 1 ? 'over' : l.util >= 0.8 ? 'warn' : 'ok';
+  const { kg, util } = reviewedLift(l.pieceKg, l.capacityKg, riggingKg);
+  const pct = Math.round(util * 100);
+  const level = liftLevel(util, warnAt);
   const tail = level === 'over' ? ' ✗ over chart' : level === 'warn' ? ' ⚠' : '';
   if (l.capacityKg <= 0) return { text: `${craneId} · R ${l.radius.toFixed(1)} m · beyond the jib ✗`, level: 'over' };
-  return { text: `${craneId} · R ${l.radius.toFixed(1)} m · ${fmtTonnes(l.pieceKg)} of ${fmtTonnes(l.capacityKg)} · ${pct} %${tail}`, level };
+  return { text: `${craneId} · R ${l.radius.toFixed(1)} m · ${fmtTonnes(kg)} of ${fmtTonnes(l.capacityKg)} · ${pct} %${tail}`, level };
 }
 
 const fmtTonnes = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1)} t` : `${Math.round(kg / 10) * 10} kg`);
@@ -37,6 +38,10 @@ export class SequenceUI {
   private lastMemberUpdate = -1;
   private passTotals: ReturnType<Timeline['presentation']['passTotals']>[] = [];
   perf: PerfSample = { fps: 60, draws: 3, tris: 0, res: 1.5 };
+  /** Utilisation that needs a lift plan review; follows the checks' threshold. */
+  liftWarn = 0.85;
+  /** Rigging added to each pick (the checks' allowance). */
+  liftRigKg = 0;
 
   constructor(
     private p: Project,
@@ -252,10 +257,13 @@ export class SequenceUI {
     $('opMat').textContent = step?.material ?? '—';
     $('opXYZ').textContent = step ? step.centroid.map((v) => v.toFixed(1)).join(' · ') : '—';
     $('opMass').textContent = step ? `${fmtMass(step.massKg)} · ${step.carbonKg >= 1 ? fmtCarbon(step.carbonKg).replace('≈ ', '') : '—'}` : '—';
-    const lift = liftText(step, p.crane.id);
+    const lift = liftText(step, p.crane.id, this.liftWarn, this.liftRigKg);
     const liftEl = $('opLift');
     liftEl.textContent = lift.text;
     liftEl.dataset.level = lift.level;
+    const liftLabel = liftEl.previousElementSibling as HTMLElement;
+    const labelText = `LIFT · TOWER CRANE ${p.crane.id}${this.liftRigKg > 0 ? ` · INCL. ${Math.round(this.liftRigKg)} KG RIGGING` : ''}`;
+    if (liftLabel.textContent !== labelText) liftLabel.textContent = labelText;
     if (pres.kind) this.updatePresentation(s);
 
     // structure: zone stack + carbon

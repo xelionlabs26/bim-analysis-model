@@ -163,6 +163,13 @@ Elements in critical and major issues are hatched **FLAGGED** once they are plac
 - Masses are estimated from volume and generic densities, the crane chart is indicative, and the road load is a generic one. Check the local rules for each.
 - Not modelled yet: MEWP and scaffold access, laydown and delivery routes, and 4D clashes with temporary works other than the crane mast.
 
+## Crane reach overlay
+The crane's reach is drawn on the ground, as on a site logistics plan, while the crane stands. `K` hides it along with the crane.
+- **Slew circle** (dashed) at the jib's length. A dotted circle marks where full chart capacity ends (20 m on Arbor House; a third of the jib on imported models). A fine dashed circle marks the counter-jib's tail swing.
+- **Pick ring** at the radius of the current lift's critical piece, with a line from the mast to a marker on that piece. It follows the active operation and eases to the next radius as the jib slews. Between lifts it fades.
+- **Colour** shows the pick's utilisation against the chart at that radius: green within the chart, amber from the lift-plan review threshold, red over the chart. The ring, its label, the operation panel and the REACH-CRANE check all read a pick the same way: the same threshold (85 % by default) and the same rigging allowance (0 kg by default). Both are set under Issues ▸ Rules and thresholds.
+- **Labels** hang from the circles. The reach label (jib, chart, tail) sits on the side nearest the viewer. The pick label (radius, piece mass against capacity, utilisation) sits at the piece's bearing. Each slides round its circle to stay clear of the toolbar, caption, title block, scale bar, scrubber and transport, and to cover as little of the other annotation as it can.
+
 ## What is computed (not authored)
 - **Install order rules** are checked in tests: core lead, frame → pods → slab, façade trailing, sky gardens after their façades, crane erected before the first lift.
 - **Crane reach check:** every crane-lifted piece is checked against an *indicative* flat-top load chart
@@ -191,6 +198,6 @@ project's steps and computes mass, carbon and lift checks; `src/data/project.ts`
 extracts elements, storeys, materials and properties, and `src/ifc/sequence.ts` turns them into a project.
 `src/engine/timeline.ts` holds the state at time *t*, the crane state and the log; `src/engine/presentation.ts`
 drives the material pass and the section. `src/scene/*` covers instanced and merged-mesh rendering, GPU-side
-animation, the line-work crane and the issue highlight. `src/ui/*` holds the panels and overlays. `src/checks/*`
+animation, the line-work crane, its reach overlay (`reach.ts`) and the issue highlight. `src/ui/*` holds the panels and overlays. `src/checks/*`
 holds the buildability rules (`rules.ts`), their geometry (`scene.ts`, exact rays against boxes and meshes)
 and the runner; `src/export/*` writes ZIP, BCF 2.1 and CSV; `src/ui/issues.ts` is the Issues tab.

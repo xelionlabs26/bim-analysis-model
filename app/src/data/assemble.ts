@@ -111,7 +111,7 @@ function liftCheck(parts: Part[], crane: Crane, density?: Partial<Record<Materia
     const kg = partMassKg(p, density);
     const cap = r > crane.jib ? 0 : crane.capacityAt(r);
     const util = cap > 0 ? kg / cap : Infinity;
-    if (!worst || util > worst.util) worst = { radius: r, pieceKg: kg, capacityKg: cap, util };
+    if (!worst || util > worst.util) worst = { radius: r, pieceKg: kg, capacityKg: cap, util, at: [p.pos[0], p.pos[1], p.pos[2]] };
   }
   return worst;
 }

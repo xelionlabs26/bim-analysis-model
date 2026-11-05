@@ -31,6 +31,7 @@ import { ACTIVE_HOLD } from '../data/assemble';
 import type { CraneState } from '../engine/timeline';
 import { PASS_OF, type CameraPose, type CutState } from '../engine/presentation';
 import { CraneRig } from './crane';
+import { CraneReach } from './reach';
 import { FlagLayer, IssueHighlight } from './highlight';
 import type { IssueView } from '../checks/view';
 import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex, meshFillFragment, meshFillVertex, meshLineFragment, meshLineVertex } from './shaders';
@@ -65,6 +66,10 @@ export class Viewer {
   readonly camera = new PerspectiveCamera(FOV, 1, 1, 2400);
   readonly controls: OrbitControls;
   crane!: CraneRig;
+  reach!: CraneReach;
+  /** Utilisation from which the reach ring turns amber (the checks' review threshold). */
+  reachWarnAt = 0.85;
+  reachRigKg = 0;
   private model = new Group();
   private fillMat: ShaderMaterial;
   private ghostMat: ShaderMaterial;
@@ -294,6 +299,10 @@ export class Viewer {
     if (this.crane) this.scene.remove(this.crane.group);
     this.crane = new CraneRig(project.crane, css('--ink'), css('--part'), css('--brand'));
     this.scene.add(this.crane.group);
+    if (this.reach) this.scene.remove(this.reach.group);
+    this.reach = new CraneReach(project.crane, { ink: css('--ink'), muted: css('--muted'), ok: css('--green'), warn: css('--warn'), over: css('--bad') });
+    this.reach.setResolution(this.size.w, this.size.h);
+    this.scene.add(this.reach.group);
     this.autoFrame = true;
   }
 
@@ -319,6 +328,7 @@ export class Viewer {
     this.camera.setViewOffset(this.size.w, this.size.h, shift, 0, this.size.w, this.size.h);
     this.camera.updateProjectionMatrix();
     this.highlight?.setResolution(this.size.w, this.size.h);
+    this.reach?.setResolution(this.size.w, this.size.h);
   }
 
   /** Show one issue's elements in x-ray with its lines, or clear it. */
@@ -383,6 +393,7 @@ export class Viewer {
     this.fillMat.uniforms.uTime.value = t;
     this.fillMat.uniforms.uDpr.value = this.renderer.getPixelRatio();
     this.crane.update(crane);
+    this.reach.update(crane, this.reachWarnAt, this.reachRigKg);
     this.pathActive = !!pose && this.autoFrame;
     if (pose && this.autoFrame) {
       this.followPose(pose, snap ? 1 : 1 - Math.exp(-dt * poseRate));
@@ -503,8 +514,10 @@ export class Viewer {
     // stills show work as placed, without the "just placed" accent
     if (opts.overlays) u.uHold.value = 0;
     const craneVisible = this.crane.group.visible;
+    const reachVisible = this.reach.group.visible;
     const hl = this.highlight.group.visible, fl = this.flags.mesh.visible;
     this.crane.group.visible = false;
+    this.reach.group.visible = false;
     this.highlight.group.visible = opts.overlays;
     this.flags.mesh.visible = opts.overlays && fl;
     this.highlight.setResolution(w * 2, h * 2);
@@ -525,6 +538,7 @@ export class Viewer {
     u.uDpr.value = prev.dpr;
     u.uHold.value = prev.hold;
     this.crane.group.visible = craneVisible;
+    this.reach.group.visible = reachVisible;
     this.highlight.group.visible = hl;
     this.flags.mesh.visible = fl;
     this.highlight.setResolution(this.size.w, this.size.h);

@@ -181,6 +181,34 @@ export interface LiftCheck {
   pieceKg: number; // the critical piece in this step
   capacityKg: number; // crane capacity at that radius
   util: number; // pieceKg / capacityKg of the critical piece
+  at: Vec3; // where the critical piece sits
+}
+
+/** How hard a pick works the crane: under the review threshold, at or above it, or over the chart. */
+export type LiftLevel = 'ok' | 'warn' | 'over';
+
+/** One threshold for the operation panel, the reach overlay and the checks (85 % by default). */
+export function liftLevel(util: number, warnAt = 0.85): LiftLevel {
+  return util > 1 ? 'over' : util >= warnAt ? 'warn' : 'ok';
+}
+
+/** A pick as the checks read it: the piece plus the rigging allowance, against the chart at its radius. */
+export function reviewedLift(pieceKg: number, capacityKg: number, riggingKg = 0): { kg: number; util: number } {
+  const kg = pieceKg + riggingKg;
+  return { kg, util: capacityKg > 0 ? kg / capacityKg : Infinity };
+}
+
+/** Radius out to which the chart gives the crane's full capacity (where capacity starts to fall). */
+export function chartKnee(crane: Crane): number {
+  const full = crane.maxKg * (1 - 1e-9);
+  let lo = 0, hi = crane.jib;
+  if (crane.capacityAt(hi) >= full) return hi;
+  for (let k = 0; k < 48; k++) {
+    const m = (lo + hi) / 2;
+    if (crane.capacityAt(m) >= full) lo = m;
+    else hi = m;
+  }
+  return lo;
 }
 
 /** A step after scheduling. */

@@ -1,6 +1,8 @@
-import type { Callout, SequenceState, Timeline } from '../engine/timeline';
-import type { Project } from '../data/types';
+import type { Callout, CraneState, SequenceState, Timeline } from '../engine/timeline';
+import { chartKnee, liftLevel, reviewedLift, type Project } from '../data/types';
 import type { Viewer } from '../scene/viewer';
+import { modelBounds } from '../checks/view';
+import { placeOnRing, type Obstacle, type RingPoint } from './place';
 
 const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000];
 const BAR_LENGTHS = [1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -31,6 +33,19 @@ export class Overlays {
   private rulerLine: SVGLineElement;
   private hbox: HTMLDivElement;
   private frameNo = 0;
+  private reachEl: HTMLDivElement;
+  private pickEl: HTMLDivElement;
+  private knee: number;
+  /** Utilisation from which a pick reads amber (the checks' review threshold). */
+  liftWarn = 0.85;
+  /** Rigging added to each pick (the checks' allowance). */
+  liftRigKg = 0;
+  /** Where each reach label hung last frame (so it slides rather than hops). */
+  private reachAt: { k: number; corner: number } | null = null;
+  private pickAt: { k: number; corner: number } | null = null;
+  private controlBoxes: Obstacle[] = [];
+  private controlsFrame = -Infinity;
+  private bounds: { lo: [number, number, number]; hi: [number, number, number] };
 
   constructor(
     private svg: SVGSVGElement,
@@ -54,6 +69,112 @@ export class Overlays {
     this.hbox.className = 'hbox';
     this.hbox.textContent = `H = ${project.height.toFixed(1)} m`;
     html.append(this.hbox);
+    // the crane's reach (the slew circle) and the current pick's radius
+    const c = project.crane;
+    this.knee = chartKnee(c);
+    const t = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1).replace(/\.0$/, '')} t` : `${Math.round(kg)} kg`);
+    this.reachEl = document.createElement('div');
+    this.reachEl.className = 'reach-label';
+    this.reachEl.innerHTML = '<b></b><span></span>';
+    this.reachEl.firstElementChild!.textContent = `${c.id} · REACH ${c.jib} m`;
+    this.reachEl.lastElementChild!.textContent = `${t(c.maxKg)} to ${this.knee.toFixed(0)} m · ${t(c.tipKg)} at the tip · tail ${c.counterJib} m`;
+    this.pickEl = document.createElement('div');
+    this.pickEl.className = 'reach-label pick';
+    this.pickEl.innerHTML = '<b></b><span></span>';
+    html.append(this.reachEl, this.pickEl);
+    this.project = project;
+    this.bounds = modelBounds(project);
+  }
+
+  private project: Project;
+
+  /** The viewport's controls in overlay pixels; they move only on resize or when the caption's text wraps, so a few reads a second do. */
+  private controls(host: DOMRect): Obstacle[] {
+    if (this.frameNo - this.controlsFrame < 12) return this.controlBoxes;
+    this.controlsFrame = this.frameNo;
+    const out: Obstacle[] = [];
+    const root = this.html.parentElement ?? document;
+    for (const el of root.querySelectorAll<HTMLElement>('.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading')) {
+      if (el.hidden || el.style.visibility === 'hidden') continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      out.push({ x0: r.left - host.left - 6, y0: r.top - host.top - 6, x1: r.right - host.left + 6, y1: r.bottom - host.top + 6, weight: Infinity });
+    }
+    return (this.controlBoxes = out);
+  }
+
+  /** Annotation already drawn: level datums and member callouts (by how strongly they show), and the building as built so far. */
+  private annotation(host: DOMRect, builtTop: number): Obstacle[] {
+    const out: Obstacle[] = [];
+    for (const el of this.html.querySelectorAll<HTMLElement>('.callout, .datum, .hbox')) {
+      const op = el.style.opacity === '' ? 1 : parseFloat(el.style.opacity);
+      if (!(op > 0.05)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      out.push({ x0: r.left - host.left - 4, y0: r.top - host.top - 4, x1: r.right - host.left + 4, y1: r.bottom - host.top + 4, weight: Math.min(1, op + 0.2) });
+    }
+    // labels read better on the ground beside the building than over its linework
+    const { lo, hi } = this.bounds;
+    const top = Math.min(hi[1], Math.max(lo[1] + 0.5, builtTop));
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const q = this.viewer.project([i & 1 ? hi[0] : lo[0], i & 2 ? top : lo[1], i & 4 ? hi[2] : lo[2]]);
+      if (q.behind) return out;
+      x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y);
+    }
+    if (Number.isFinite(x0)) out.push({ x0, y0, x1, y1, weight: 0.35 });
+    return out;
+  }
+
+  /**
+   * The reach labels hang from their circles: the pick's at the bearing of the
+   * piece, the reach's at the side nearest the viewer, each slid round to the
+   * nearest spot clear of the controls and over as little annotation as it can.
+   */
+  private updateReach(s: CraneState, shown: boolean, w: number, h: number, builtTop: number) {
+    const c = this.project.crane;
+    const visible = shown && s.visible && s.headVisible;
+    this.reachEl.hidden = !visible;
+    this.pickEl.hidden = !visible || !s.pick;
+    if (!visible) return;
+    const host = this.html.getBoundingClientRect();
+    const obstacles = [...this.controls(host), ...this.annotation(host, builtTop)];
+    const screen = { x0: 8, y0: 8, x1: w - 8, y1: h - 8 };
+    const ring = (r: number): RingPoint[] => {
+      const out: RingPoint[] = [];
+      for (let k = 0; k < 120; k++) {
+        const a = (k / 120) * Math.PI * 2;
+        const q = this.viewer.project([c.base[0] + Math.cos(a) * r, 0.05, c.base[2] + Math.sin(a) * r]);
+        out.push({ x: q.x, y: q.y, a, behind: q.behind });
+      }
+      return out;
+    };
+    const hang = (el: HTMLDivElement, at: { x: number; y: number } | null) => {
+      el.style.opacity = at ? '' : '0';
+      if (at) el.style.transform = `translate(${Math.round(at.x)}px, ${Math.round(at.y)}px)`;
+    };
+    const pick = s.pick;
+    if (pick) {
+      const lift = reviewedLift(pick.kg, pick.capKg, this.liftRigKg);
+      const level = liftLevel(lift.util, this.liftWarn);
+      this.pickEl.dataset.level = level;
+      this.pickEl.classList.toggle('idle', !pick.active);
+      const kg = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v / 10) * 10} kg`);
+      this.pickEl.firstElementChild!.textContent = `R ${pick.radius.toFixed(1)} m${level === 'over' ? ' ✗' : level === 'warn' ? ' ⚠' : ''}`;
+      this.pickEl.lastElementChild!.textContent = pick.capKg > 0 ? `${kg(lift.kg)} of ${kg(pick.capKg)} · ${Math.round(lift.util * 100)} %` : 'beyond the jib';
+      const bearing = Math.atan2(pick.at[2] - c.base[2], pick.at[0] - c.base[0]);
+      const size = { w: this.pickEl.offsetWidth, h: this.pickEl.offsetHeight };
+      const at = placeOnRing(ring(Math.max(0.5, pick.radius)), size, screen, obstacles, bearing, this.pickAt);
+      this.pickAt = at;
+      hang(this.pickEl, at);
+      // the reach label keeps off the pick's
+      if (at) obstacles.push({ x0: at.x - 6, y0: at.y - 6, x1: at.x + size.w + 6, y1: at.y + size.h + 6, weight: 2 });
+    } else this.pickAt = null;
+    const cam = this.viewer.camera.position;
+    const towardViewer = Math.atan2(cam.z - c.base[2], cam.x - c.base[0]);
+    const at = placeOnRing(ring(c.jib), { w: this.reachEl.offsetWidth, h: this.reachEl.offsetHeight }, screen, obstacles, towardViewer, this.reachAt);
+    this.reachAt = at;
+    hang(this.reachEl, at);
   }
 
   private svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string>): SVGElementTagNameMap[K] {
@@ -63,12 +184,13 @@ export class Overlays {
     return e;
   }
 
-  update(state: SequenceState) {
+  update(state: SequenceState, craneShown = true) {
     this.frameNo++;
     const { w, h } = this.viewer.viewportSize;
     this.svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
     this.updateDatums(state, w, h);
     this.updateCallouts(state, w, h);
+    this.updateReach(state.crane, craneShown, w, h, state.builtTop);
   }
 
   private updateDatums(state: SequenceState, w: number, h: number) {

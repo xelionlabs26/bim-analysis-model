@@ -559,3 +559,18 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .iss-rules .set { display: grid; grid-template-columns: 1fr 92px; gap: 4px 10px; align-items: center; font-size: 12px; margin: 6px 0 8px; }
 .iss-rules .set input { width: 92px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; font: 12px var(--mono); background: var(--card); }
 .iss-rules .opts { display: flex; gap: 6px; }
+
+/* ── Crane reach overlay ──────────────────────────────────────────────── */
+.reach-label { position: absolute; left: 0; top: 0; white-space: nowrap; font: 10.5px var(--mono); letter-spacing: 0.04em; color: var(--ink-2); transition: opacity 0.2s; padding: 2px 7px 3px 6px; background: var(--card-glass); border-left: 2px solid var(--ink-2); pointer-events: none; }
+.reach-label b { display: block; font-weight: 600; color: var(--ink); letter-spacing: 0.08em; }
+.reach-label span { display: block; color: var(--muted); }
+.reach-label.pick b { font-size: 11.5px; }
+.reach-label.pick[data-level='ok'] { border-left-color: var(--green); }
+.reach-label.pick[data-level='warn'] { border-left-color: var(--warn); }
+.reach-label.pick[data-level='over'] { border-left-color: var(--bad); }
+.reach-label.pick[data-level='ok'] b { color: var(--green); }
+.reach-label.pick[data-level='warn'] b { color: var(--warn); }
+.reach-label.pick[data-level='over'] b { color: var(--bad); }
+.reach-label.pick span { color: var(--ink-2); }
+.reach-label.pick.idle { opacity: 0.45; }
+@media (max-width: 1100px) { .reach-label:not(.pick) span { display: none; } }

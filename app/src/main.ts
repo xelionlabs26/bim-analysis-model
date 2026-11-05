@@ -114,6 +114,7 @@ function mount(p: Project) {
   checkRun++;
   document.body.dataset.checks = '';
   issuesUI = new IssuesUI(p, viewer, timeForStep, { select: selectIssue, exportBcf: () => void exportBcf(), exportCsv: () => void exportCsv() });
+  syncLiftWarn();
   renderRulesPanel();
   renderHeaderDrawing($('headerDrawing'), p, p.stages[0].sheet);
   $('tagline').textContent = p.meta.tagline;
@@ -709,7 +710,7 @@ function loop(now: number) {
   // an issue is a deliberate jump: a quick move (instant with reduced motion); the fly-through eases slowly
   viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame || (!!focusPose && reduceMotion), focusPose ?? state.presentation.pose, focusPose ? 9 : 3.2);
   if (focusPose && !viewer.autoFrame) focusPose = null; // the view was dragged away
-  overlays.update(state);
+  overlays.update(state, view.crane);
   ui.update(state, view.tab === 'members');
   issuesUI.update(state);
 
@@ -792,6 +793,7 @@ async function startChecks() {
   });
   if (run !== checkRun || p !== project) return; // a newer project or run took over
   report = r;
+  syncLiftWarn();
   issuesUI.setReport(r);
   viewer.setFlags([...new Set(r.issues.filter((i) => FLAG_RULES.has(i.rule) && (i.severity === 'critical' || i.severity === 'major')).flatMap((i) => i.primary))]);
   renderRulesPanel();
@@ -838,6 +840,12 @@ function selectIssue(i: Issue | null) {
     view.tab = 'issues';
     syncButtons();
   }
+}
+
+/** The operation panel, the reach ring and its label read lifts as the checks do: same review threshold, same rigging allowance. */
+function syncLiftWarn() {
+  ui.liftWarn = overlays.liftWarn = viewer.reachWarnAt = checkSettings.craneWarn;
+  ui.liftRigKg = overlays.liftRigKg = viewer.reachRigKg = checkSettings.riggingKg;
 }
 
 /** Rules, their verification status and the thresholds, inside the Issues pane. */

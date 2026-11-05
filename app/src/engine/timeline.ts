@@ -39,6 +39,21 @@ export interface CraneState {
   lifting: boolean;
   ties: number[]; // heights of tie collars in place
   headVisible: boolean; // false while the crane is being struck
+  /** The pick the reach overlay draws: the current (or last) lift's critical piece. */
+  pick: CranePick | null;
+}
+
+export interface CranePick {
+  /** Ring radius, m: the critical piece's radius, eased from the last pick while the jib slews. */
+  radius: number;
+  /** Where the critical piece sits (world). */
+  at: Vec3;
+  util: number;
+  kg: number;
+  capKg: number;
+  /** True from the slew towards this pick until it is landed. */
+  active: boolean;
+  stepIndex: number;
 }
 
 export interface SequenceState {
@@ -88,6 +103,7 @@ export class Timeline {
   private readonly mastAfter: number[] = [];
   private readonly lifts: Lift[];
   private readonly liftT0: number[];
+  private readonly liftOfStep = new Map<number, number>();
   readonly erectT: number;
   readonly presentation: Presentation;
   readonly zoneTotal: Record<ZoneId, number>;
@@ -144,6 +160,7 @@ export class Timeline {
         return { step: s, angle: Math.atan2(-dz, dx), radius: Math.min(crane.jib - 1, Math.max(4, Math.hypot(dx, dz))) };
       });
     this.liftT0 = this.lifts.map((l) => l.step.t0);
+    this.lifts.forEach((l, k) => this.liftOfStep.set(l.step.index, k));
     this.zoneTotal = Object.fromEntries(this.zoneIds.map((z) => [z, steps.filter((s) => s.zone === z).length])) as Record<ZoneId, number>;
     this.presentation = new Presentation(project);
     this.events = this.buildEvents();
@@ -232,10 +249,10 @@ export class Timeline {
       if (strike >= 1) visible = false;
       mastTop *= 1 - strike;
       ties = ties.filter((h) => h < mastTop);
-      return { visible, mastTop, slew: 0, radius: 22, hookY: mastTop, lifting: false, ties, headVisible: false };
+      return { visible, mastTop, slew: 0, radius: 22, hookY: mastTop, lifting: false, ties, headVisible: false, pick: null };
     }
     const k = Timeline.floorIndex(this.liftT0, t + SLEW_LEAD);
-    if (k < 0) return { visible, mastTop, slew: 0, radius: 22, hookY: parked, lifting: false, ties, headVisible: true };
+    if (k < 0) return { visible, mastTop, slew: 0, radius: 22, hookY: parked, lifting: false, ties, headVisible: true, pick: null };
     const cur = this.lifts[k];
     const prev = k > 0 ? this.lifts[k - 1] : { angle: 0, radius: 22 };
     const s = cur.step;
@@ -249,7 +266,32 @@ export class Timeline {
     const lifting = t >= s.t0 && t <= s.t1;
     if (lifting) hookY = parked + (target - parked) * easeOut((t - s.t0) / Math.max(1e-3, s.t1 - s.t0));
     else if (t > s.t1) hookY = target + (parked - target) * smoothstep(s.t1, s.t1 + 0.18, t);
-    return { visible, mastTop, slew, radius, hookY, lifting, ties, headVisible: true };
+    return { visible, mastTop, slew, radius, hookY, lifting, ties, headVisible: true, pick: this.pickAt(t, i, s) };
+  }
+
+  /**
+   * The pick the reach ring shows: the active operation's when it is a crane lift
+   * (steps overlap, so the jib may already be slewing to the next one), otherwise
+   * the crane's current or last lift. The ring eases from the previous pick's
+   * radius over the slew.
+   */
+  private pickAt(t: number, i: number, crane: Step): CranePick | null {
+    const cur = i >= 0 ? this.project.steps[i] : null;
+    const s = cur && cur.method === 'crane' && cur.lift ? cur : crane.lift ? crane : null;
+    if (!s || !s.lift) return null;
+    let k = (this.liftOfStep.get(s.index) ?? 0) - 1;
+    while (k >= 0 && !this.lifts[k].step.lift) k--;
+    const from = k >= 0 ? this.lifts[k].step.lift!.radius : s.lift.radius;
+    const p = smoothstep(s.t0 - SLEW_LEAD, s.t0, t);
+    return {
+      radius: from + (s.lift.radius - from) * p,
+      at: s.lift.at,
+      util: s.lift.util,
+      kg: s.lift.pieceKg,
+      capKg: s.lift.capacityKg,
+      active: t >= s.t0 - SLEW_LEAD && t <= s.t1 + 0.25,
+      stepIndex: s.index,
+    };
   }
 
   stateAt(tIn: number): SequenceState {

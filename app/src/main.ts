@@ -25,6 +25,13 @@ import { renderHeaderDrawing, startClock } from './ui/header';
 import { hydrateIcons, ICONS, setIcon } from './ui/icons';
 import { readIfc } from './ifc/model';
 import { projectFromIfc } from './ifc/sequence';
+import { runChecks } from './checks/run';
+import { DEFAULT_SETTINGS, type CheckReport, type CheckSettings, type Issue, type RuleId } from './checks/types';
+import { issueView, modelBounds, type ModelBounds } from './checks/view';
+import { IssuesUI, rulesTable } from './ui/issues';
+import { bcfZip } from './export/bcf';
+import { issuesCsv } from './export/csv';
+import type { CameraPose } from './engine/presentation';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -64,8 +71,15 @@ const view = {
   stageMask: 511,
   resolution: 1.5,
   rail: 'model',
-  tab: 'seq' as 'seq' | 'members',
+  tab: 'seq' as 'seq' | 'members' | 'issues',
+  flags: true,
 };
+let issuesUI: IssuesUI;
+let report: CheckReport | null = null;
+let checkSettings: CheckSettings = { ...DEFAULT_SETTINGS, truck: [...DEFAULT_SETTINGS.truck] };
+let checkRun = 0;
+/** Camera pose that frames the selected issue; released when playback resumes or the view is dragged. */
+let focusPose: CameraPose | null = null;
 viewer.setResolution(view.resolution);
 viewer.setAutoRotate(view.autoRotate);
 
@@ -95,6 +109,12 @@ function mount(p: Project) {
     playback.toggle(false);
     playback.seek(timeForStep(i));
   });
+  report = null;
+  focusPose = null;
+  checkRun++;
+  document.body.dataset.checks = '';
+  issuesUI = new IssuesUI(p, viewer, timeForStep, { select: selectIssue, exportBcf: () => void exportBcf(), exportCsv: () => void exportCsv() });
+  renderRulesPanel();
   renderHeaderDrawing($('headerDrawing'), p, p.stages[0].sheet);
   $('tagline').textContent = p.meta.tagline;
   $('capTitle').textContent = `${p.name} — Assembly Drawing`;
@@ -127,10 +147,17 @@ function syncButtons() {
   document.querySelectorAll<HTMLElement>('.rail-item').forEach((b) => b.classList.toggle('on', b.dataset.id === view.rail));
   $('tabSeq').classList.toggle('on', view.tab === 'seq');
   $('tabMembers').classList.toggle('on', view.tab === 'members');
+  $('tabIssues').classList.toggle('on', view.tab === 'issues');
   $('paneSeq').hidden = view.tab !== 'seq';
   $('paneMembers').hidden = view.tab !== 'members';
+  $('paneIssues').hidden = view.tab !== 'issues';
+  $('btnFlags').classList.toggle('on', view.flags);
 }
-playback.onChange(syncButtons);
+playback.onChange(() => {
+  // pressing play hands the camera back to the sequence
+  if (playback.playing && focusPose) focusPose = null;
+  syncButtons();
+});
 
 // ── Rail ───────────────────────────────────────────────────────────────────
 const RAIL: { id: string; label: string; icon: string }[] = [
@@ -467,6 +494,14 @@ bind('stagePrev', () => jumpStage(-1));
 bind('stageNext', () => jumpStage(1));
 bind('tabSeq', () => ((view.tab = 'seq'), syncButtons()));
 bind('tabMembers', () => ((view.tab = 'members'), syncButtons()));
+bind('tabIssues', () => ((view.tab = 'issues'), syncButtons()));
+bind('btnFlags', () => {
+  view.flags = !view.flags;
+  viewer.setFlagsVisible(view.flags);
+  syncButtons();
+});
+bind('btnBcf', () => void exportBcf());
+bind('btnCsv', () => void exportCsv());
 bind('btnLogClose', () => document.querySelector('.log')!.classList.toggle('collapsed'));
 $<HTMLSelectElement>('selStyle').addEventListener('change', (e) => setStyle((e.target as HTMLSelectElement).value as RenderStyle));
 $<HTMLInputElement>('memberSearch').addEventListener('input', (e) => ui.filterMembers((e.target as HTMLInputElement).value));
@@ -492,7 +527,7 @@ viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncBu
 // Inside a claude.ai artifact the frame blocks page-started downloads, so the
 // save goes through the `downloads` capability (the viewer confirms it).
 // Standalone (dev server, saved copy) it falls back to a normal download.
-type DownloadsNS = { save(req: { filename: string; data: string }): Promise<{ status: 'saved' | 'delivered' }> };
+type DownloadsNS = { save(req: { filename: string; data: string | Blob }): Promise<{ status: 'saved' | 'delivered' }> };
 type ClaudeHost = { use(name: 'downloads'): Promise<DownloadsNS | null> };
 const host = (window as unknown as { claude?: ClaudeHost }).claude;
 const downloadsReady: Promise<DownloadsNS | null> | null = typeof host?.use === 'function' ? host.use('downloads') : null;
@@ -527,6 +562,25 @@ function sequenceJson(): string {
         carbonNote: 'indicative A1–A3 from generic factors, not project EPDs',
       },
       crane: { id: project.crane.id, base: project.crane.base, jibM: project.crane.jib, maxKg: project.crane.maxKg, tipKg: project.crane.tipKg },
+      checks: report
+        ? {
+            verdict: report.rules.map((r) => ({ rule: r.id, checked: r.checked, flagged: r.flagged, status: !r.applicable || !r.checked ? 'unverified' : r.flagged ? 'flagged' : 'passed', note: r.note })),
+            settings: report.settings,
+            issues: report.issues.map((i) => ({
+              id: i.id,
+              severity: i.severity,
+              rule: i.rule,
+              title: i.title,
+              detail: i.detail,
+              action: i.action,
+              step: project.steps[i.step]?.id ?? null,
+              value: i.value ?? null,
+              limit: i.limit ?? null,
+              unit: i.unit ?? null,
+              elements: [...new Set([...i.primary, ...i.secondary])].slice(0, 200).map((k) => project.parts[k].ref?.guid ?? `part ${k}`),
+            })),
+          }
+        : 'unverified: the checks had not finished when this was saved',
       stages: project.stages,
       steps: project.steps.map((s) => ({
         id: s.id,
@@ -552,38 +606,43 @@ function sequenceJson(): string {
   );
 }
 
-bind('btnDownload', async () => {
-  const filename = `${project.id}-sequence.json`;
+/** Save a generated file: through the viewer's save prompt when hosted, a normal download otherwise. */
+async function saveFile(filename: string, data: string | Uint8Array, mime: string, note = '') {
+  const blob = new Blob([data as BlobPart], { type: mime });
   if (downloadsReady) {
     const downloads = await downloadsReady.catch(() => null);
-    if (!downloads) return;
+    if (!downloads) {
+      toast('Saving files is not available in this view.');
+      return;
+    }
     try {
-      const res = await downloads.save({ filename, data: sequenceJson() });
-      if (res.status === 'saved') toast(`Saved ${filename}`);
+      const res = await downloads.save({ filename, data: blob });
+      if (res.status === 'saved') toast(`Saved ${filename}${note ? `. ${note}` : ''}`);
     } catch (err) {
       const code = (err as { code?: string } | null)?.code;
       if (code === 'declined') return;
       if (code === 'rate_limited') toast('A save prompt is already open.');
-      else {
-        toast('Saving files is not available in this view.');
-        $('btnDownload').hidden = true;
-      }
+      else if (code === 'extension_not_enabled' || code === 'rejected_extension') toast(`This view cannot save .${filename.split('.').pop()} files.`);
+      else toast('Saving files is not available in this view.');
     }
     return;
   }
-  const url = URL.createObjectURL(new Blob([sequenceJson()], { type: 'application/json' }));
+  const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: filename });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   toast(`Downloading ${filename}`);
-});
+}
+
+bind('btnDownload', () => void saveFile(`${project.id}-sequence.json`, sequenceJson(), 'application/json'));
 
 // ── Keyboard ───────────────────────────────────────────────────────────────
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'escape') {
     (document.activeElement as HTMLElement | null)?.blur();
-    selectRail('model');
+    if (issuesUI.selected) issuesUI.select(null);
+    else selectRail('model');
     return;
   }
   const typing = e.target instanceof HTMLSelectElement || (e.target instanceof HTMLInputElement && e.target.type !== 'checkbox');
@@ -600,6 +659,8 @@ window.addEventListener('keydown', (e) => {
     k: actions.crane,
     s: actions.section,
     i: () => selectRail('import'),
+    ']': () => issuesUI.step(1),
+    '[': () => issuesUI.step(-1),
     arrowleft: () => jumpStep(-1),
     arrowright: () => jumpStep(1),
     home: () => playback.seek(0),
@@ -645,9 +706,12 @@ function loop(now: number) {
   const state = timeline.stateAt(playback.t);
   viewer.setWash(state.presentation.wash.front);
   viewer.setCut(view.section.on ? manualCut() : state.presentation.cut);
-  viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame, state.presentation.pose);
+  // an issue is a deliberate jump: a quick move (instant with reduced motion); the fly-through eases slowly
+  viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame || (!!focusPose && reduceMotion), focusPose ?? state.presentation.pose, focusPose ? 9 : 3.2);
+  if (focusPose && !viewer.autoFrame) focusPose = null; // the view was dragged away
   overlays.update(state);
   ui.update(state, view.tab === 'members');
+  issuesUI.update(state);
 
   // camera readouts, scale
   const ro = viewer.readout();
@@ -710,6 +774,141 @@ function makeThumbnails() {
     ui.setThumbnail(i, viewer.snapshot(st.end - 0.001, top, h));
   });
   document.body.dataset.ready = '1';
+  void startChecks();
+}
+
+// ── Buildability checks ────────────────────────────────────────────────────
+let boundsCache: { p: Project; b: ModelBounds } | null = null;
+const bounds = () => (boundsCache?.p === project ? boundsCache.b : (boundsCache = { p: project, b: modelBounds(project) }).b);
+
+/** Rules whose critical and major findings are hatched on the model (FLAGGED). */
+const FLAG_RULES = new Set<RuleId>(['ORDER-SUPPORT', 'TEMP-PROPS', 'REACH-CRANE', 'REACH-PATH', 'CLASH-HARD', 'CLASH-TEMP', 'ACCESS-HEADROOM']);
+
+async function startChecks() {
+  const run = ++checkRun;
+  const p = project;
+  const r = await runChecks(p, checkSettings, (label, share) => {
+    if (run === checkRun) issuesUI.running(label, share);
+  });
+  if (run !== checkRun || p !== project) return; // a newer project or run took over
+  report = r;
+  issuesUI.setReport(r);
+  viewer.setFlags([...new Set(r.issues.filter((i) => FLAG_RULES.has(i.rule) && (i.severity === 'critical' || i.severity === 'major')).flatMap((i) => i.primary))]);
+  renderRulesPanel();
+  document.body.dataset.checks = String(r.issues.length);
+}
+
+/**
+ * What to draw for an issue: everything for small ones; for issues spanning many
+ * floors (edge protection up a tower) only what lies in its framing box, so the
+ * first case reads clearly. The register and the BCF keep every element.
+ */
+function issueDrawing(i: Issue) {
+  const [lo, hi] = i.box;
+  const m = 1;
+  const inBox = (k: number) => {
+    const part = project.parts[k];
+    const h = part.size.map((v) => v / 2);
+    return [0, 1, 2].every((a) => part.pos[a] + h[a] >= lo[a] - m && part.pos[a] - h[a] <= hi[a] + m);
+  };
+  const near = (v: Vec3) => [0, 1, 2].every((a) => v[a] >= lo[a] - m && v[a] <= hi[a] + m);
+  const many = i.primary.length + i.secondary.length > 80;
+  // an open edge is about the edge: draw the edge and what closes it, not the whole slab in red
+  if (i.rule === 'TEMP-EDGE') return { primary: [], secondary: many ? i.secondary.filter(inBox) : i.secondary, lines: i.lines.length > 200 ? i.lines.filter(([a, b]) => near(a) || near(b)) : i.lines };
+  return {
+    primary: many ? i.primary.filter(inBox) : i.primary,
+    secondary: many ? i.secondary.filter(inBox) : i.secondary,
+    lines: i.lines.length > 200 ? i.lines.filter(([a, b]) => near(a) || near(b)) : i.lines,
+  };
+}
+
+function selectIssue(i: Issue | null) {
+  if (!i) {
+    viewer.setIssue(null);
+    focusPose = null;
+    return;
+  }
+  playback.toggle(false);
+  playback.seek(timeForStep(i.step));
+  viewer.setIssue(issueDrawing(i));
+  const v = issueView(i, viewer.viewportSize.w / Math.max(1, viewer.viewportSize.h), bounds());
+  focusPose = { target: v.target, az: v.az, el: v.el, dist: v.dist, fov: v.fov };
+  viewer.autoFrame = true;
+  if (view.tab !== 'issues') {
+    view.tab = 'issues';
+    syncButtons();
+  }
+}
+
+/** Rules, their verification status and the thresholds, inside the Issues pane. */
+function renderRulesPanel() {
+  const body = $('issRulesBody');
+  const s = checkSettings;
+  const field = (id: string, label: string, value: number, step: number) => `<label for="${id}">${label}</label><input id="${id}" type="number" step="${step}" min="0" value="${value}" />`;
+  body.innerHTML = `${rulesTable(report)}
+    <div class="set">
+      ${field('setClash', 'Clash tolerance (mm)', Math.round(s.clashTol * 1000), 1)}
+      ${field('setHead', 'Stair headroom (m)', s.headroom, 0.01)}
+      ${field('setFall', 'Fall needing protection (m)', s.fallHeight, 0.1)}
+      ${field('setGuard', 'Guard height (mm)', Math.round(s.guardHeight * 1000), 10)}
+      ${field('setAid', 'Lifting aid above (kg)', s.liftAidKg, 5)}
+      ${field('setCrane', 'Lift plan review above (%)', Math.round(s.craneWarn * 100), 1)}
+      ${field('setRig', 'Rigging allowance (kg)', s.riggingKg, 10)}
+      ${field('setTruckL', 'Standard load length (m)', s.truck[0], 0.1)}
+      ${field('setTruckW', 'Standard load width (m)', s.truck[1], 0.05)}
+      ${field('setTruckH', 'Standard load height (m)', s.truck[2], 0.05)}
+    </div>
+    <div class="opts"><button id="btnRerun" class="xbtn">Run the checks again</button><button id="btnDefaults" class="xbtn">Defaults</button></div>`;
+  const num = (id: string) => Math.max(0, Number(($(id) as HTMLInputElement).value) || 0);
+  $('btnRerun').addEventListener('click', () => {
+    checkSettings = {
+      clashTol: num('setClash') / 1000,
+      headroom: num('setHead'),
+      fallHeight: num('setFall'),
+      guardHeight: num('setGuard') / 1000,
+      personKg: checkSettings.personKg,
+      liftAidKg: num('setAid'),
+      craneWarn: num('setCrane') / 100,
+      riggingKg: num('setRig'),
+      truck: [num('setTruckL'), num('setTruckW'), num('setTruckH')],
+    };
+    rerunChecks();
+  });
+  $('btnDefaults').addEventListener('click', () => {
+    checkSettings = { ...DEFAULT_SETTINGS, truck: [...DEFAULT_SETTINGS.truck] };
+    rerunChecks();
+  });
+}
+
+function rerunChecks() {
+  issuesUI.select(null);
+  issuesUI = new IssuesUI(project, viewer, timeForStep, { select: selectIssue, exportBcf: () => void exportBcf(), exportCsv: () => void exportCsv() });
+  report = null;
+  renderRulesPanel();
+  void startChecks();
+}
+
+async function exportCsv() {
+  if (!report) return;
+  await saveFile(`${project.id}-issues.csv`, issuesCsv(project, report, timeForStep), 'text/csv');
+}
+
+async function exportBcf() {
+  if (!report || !report.issues.length) return;
+  const r = report;
+  const shots = new Map<string, Uint8Array>();
+  const keep = issuesUI.selected;
+  for (let k = 0; k < r.issues.length; k++) {
+    const i = r.issues[k];
+    toast(`Rendering BCF snapshots · ${k + 1} / ${r.issues.length}`);
+    viewer.setIssue(issueDrawing(i));
+    shots.set(i.id, await viewer.issuePng(issueView(i, 1.6, bounds()), timeForStep(i.step)));
+    await new Promise((res) => setTimeout(res, 0));
+  }
+  viewer.setIssue(keep ? issueDrawing(keep) : null);
+  const bytes = bcfZip(project, r, shots);
+  // the claude.ai save prompt accepts .zip, not .bcfzip; BCF tools read either once renamed
+  await saveFile(downloadsReady ? `${project.id}-issues.bcf.zip` : `${project.id}-issues.bcfzip`, bytes, 'application/zip', downloadsReady ? 'Rename it to .bcfzip if your BCF tool asks.' : '');
 }
 
 // test / automation hook
@@ -723,6 +922,11 @@ function makeThumbnails() {
   playback,
   viewer,
   importIfcText,
+  get checks() {
+    return report;
+  },
+  selectIssue: (id: string) => issuesUI.selectById(id),
+  bcfBytes: () => (report ? bcfZip(project, report) : null),
 };
 
 mount(project);

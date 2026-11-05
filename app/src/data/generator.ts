@@ -256,7 +256,13 @@ function frame(zone: ZoneId, L: number): StepDef {
     { zone, member: `${lv(L)} · GLULAM COLUMNS & BEAMS`, spec: `GL28h · columns ${mm} × ${mm} mm · beams 360 × 720 mm`, code: 'GL-01', method: 'crane', drop: 2.0, level: L, kind: 'frame' },
     (s) => {
       const sb = setBack(L);
-      for (const [x, z] of gridPoints()) if (!(sb && z > 7)) s.box([x, (y0 + y1) / 2, z], [c, y1 - y0, c], 'glulam');
+      // where the sky garden leaves this floor out, the corner column runs down to the one below
+      const void_ = SKY_GARDENS.includes(L - 1);
+      for (const [x, z] of gridPoints()) {
+        if (sb && z > 7) continue;
+        const drop = void_ && inSkyCorner(x, z) ? 0.2 : 0;
+        s.box([x, (y0 - drop + y1) / 2, z], [c, y1 - y0 + drop, c], 'glulam');
+      }
       const by = y1 - 0.36;
       for (const z of [-14, -7, 7, 14]) if (!(sb && z > 7)) for (let i = 0; i < 4; i++) s.box([-10.5 + 7 * i, by, z], [6.6, 0.72, 0.36], 'glulam');
       for (const x of [-14, -7, 7, 14]) for (let i = 0; i < (sb ? 3 : 4); i++) s.box([x, by, -10.5 + 7 * i], [0.36, 0.72, 6.6], 'glulam');
@@ -537,19 +543,33 @@ function crown(): StepDef[] {
       for (let i = 0; i < 10; i++) s.box([-11 + i * 2.45, y + 0.5, i % 2 ? -11.2 : -9.6], [1.4, 0.5, 1.4], 'planting', i);
     }),
   );
+  // the BMU goes in before the PV canopy is built over its track
+  out.push(
+    step({ zone: Z, member: 'ROOF · BMU TRACK & GANTRY', spec: 'building maintenance unit · perimeter track · 14 m reach', code: 'BM-01', method: 'crane', drop: 2.0 }, (s) => {
+      const y = ROOF + 0.65;
+      s.box([0, y, -8.2], [17, 0.3, 0.3], 'steel');
+      s.box([0, y, 5.6], [17, 0.3, 0.3], 'steel');
+      s.box([-8.2, y, -1.3], [0.3, 0.3, 13.8], 'steel');
+      s.box([8.2, y, -1.3], [0.3, 0.3, 13.8], 'steel');
+      s.box([0, ROOF + 1.6, 5.6], [2.4, 1.6, 1.6], 'steel');
+      s.beam([0, ROOF + 2.6, 5.6], [0, ROOF + 3.0, 11.8], 0.4, 0.4, 'steel');
+    }),
+  );
   out.push(
     step({ zone: Z, member: 'ROOF · GARDEN TREES', spec: '8 multi-stem trees · craned in with root balls', code: 'GR-02', method: 'crane', drop: 2.4 }, (s) => {
       for (const [x, z] of [[-11.5, -11.5], [11.5, -11.5], [11.5, 4.4], [-11.5, 4.4], [0, -11.8], [-11.8, -3.6], [11.8, -3.6], [5.6, 5.9]]) s.tree(x, ROOF + 0.5, z, 4.6, x * 0.1 + z * 0.07);
     }),
   );
-  const pvY = ROOF + 4.2;
+  // the canopy clears the lift overrun (+4.5 m) and bears on its walls over the core
+  const clear = 4.5;
+  const pvY = ROOF + clear + 0.8; // top of the rafters
   out.push(
-    step({ zone: Z, member: 'ROOF · PV CANOPY FRAME', spec: 'glulam pergola · 300 × 300 mm posts · 4.2 m clear', code: 'PV-01', method: 'crane', drop: 2.0 }, (s) => {
+    step({ zone: Z, member: 'ROOF · PV CANOPY FRAME', spec: `glulam pergola · 300 × 300 mm posts · ${clear} m clear · bears on the core overrun`, code: 'PV-01', method: 'crane', drop: 2.0 }, (s) => {
       const g = [-10.5, -3.5, 3.5, 10.5];
       const gz = [-10.5, -3.5, 3.5];
-      for (const x of g) for (const z of gz) s.box([x, ROOF + 2.1, z], [0.3, 4.2, 0.3], 'glulam');
-      for (const z of gz) s.box([0, pvY - 0.2, z], [21.6, 0.4, 0.24], 'glulam');
-      for (const x of g) s.box([x, pvY - 0.5, -3.5], [0.24, 0.4, 14.6], 'glulam');
+      for (const x of g) for (const z of gz) if (!(Math.abs(x) < CORE && Math.abs(z) < CORE)) s.box([x, ROOF + clear / 2, z], [0.3, clear, 0.3], 'glulam');
+      for (const z of gz) s.box([0, ROOF + clear + 0.2, z], [21.6, 0.4, 0.24], 'glulam');
+      for (const x of g) s.box([x, ROOF + clear + 0.6, -3.5], [0.24, 0.4, 14.6], 'glulam');
     }),
   );
   out.push(
@@ -557,7 +577,7 @@ function crown(): StepDef[] {
       const tilt = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), (10 * Math.PI) / 180);
       for (let i = 0; i < 8; i++) {
         for (let j = 0; j < 4; j++) {
-          s.parts.push({ pos: [-9.45 + 2.7 * i, pvY + 0.12, -9.4 + 3.6 * j], size: [2.5, 0.04, 3.3], quat: [tilt.x, tilt.y, tilt.z, tilt.w], mat: 'pv' });
+          s.parts.push({ pos: [-9.45 + 2.7 * i, pvY + 0.31, -9.4 + 3.6 * j], size: [2.5, 0.04, 3.3], quat: [tilt.x, tilt.y, tilt.z, tilt.w], mat: 'pv' }); // lower edge on the rafters
         }
       }
     }),
@@ -579,17 +599,6 @@ function crown(): StepDef[] {
         }
         s.yawFrom(from, SIDE_ANGLE[side]);
       }
-    }),
-  );
-  out.push(
-    step({ zone: Z, member: 'ROOF · BMU TRACK & GANTRY', spec: 'building maintenance unit · perimeter track · 14 m reach', code: 'BM-01', method: 'crane', drop: 2.0 }, (s) => {
-      const y = ROOF + 0.65;
-      s.box([0, y, -8.2], [17, 0.3, 0.3], 'steel');
-      s.box([0, y, 5.6], [17, 0.3, 0.3], 'steel');
-      s.box([-8.2, y, -1.3], [0.3, 0.3, 13.8], 'steel');
-      s.box([8.2, y, -1.3], [0.3, 0.3, 13.8], 'steel');
-      s.box([0, ROOF + 1.6, 5.6], [2.4, 1.6, 1.6], 'steel');
-      s.beam([0, ROOF + 2.6, 5.6], [0, ROOF + 3.0, 11.8], 0.4, 0.4, 'steel');
     }),
   );
   out.push(

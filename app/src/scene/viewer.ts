@@ -26,11 +26,13 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { MATERIAL_INFO, type Motion, type Project } from '../data/types';
+import { MATERIAL_INFO, type Motion, type Project, type Vec3 } from '../data/types';
 import { ACTIVE_HOLD } from '../data/assemble';
 import type { CraneState } from '../engine/timeline';
 import { PASS_OF, type CameraPose, type CutState } from '../engine/presentation';
 import { CraneRig } from './crane';
+import { FlagLayer, IssueHighlight } from './highlight';
+import type { IssueView } from '../checks/view';
 import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex, meshFillFragment, meshFillVertex, meshLineFragment, meshLineVertex } from './shaders';
 
 export type RenderStyle = 'ink' | 'ink+paint' | 'paint';
@@ -80,6 +82,9 @@ export class Viewer {
   pathActive = false;
   private resolution = 1.5;
   private size = { w: 1, h: 1 };
+  private highlight!: IssueHighlight;
+  private flags!: FlagLayer;
+  private current!: Project;
 
   constructor(private host: HTMLElement, project: Project) {
     this.renderer = new WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
@@ -126,10 +131,12 @@ export class Viewer {
       depthWrite: false,
       side: DoubleSide,
     });
+    this.highlight = new IssueHighlight({ primary: css('--bad'), secondary: css('--issue-b'), line: css('--bad') });
+    this.flags = new FlagLayer({ uTime: uniforms.uTime, uDpr: uniforms.uDpr }, css('--bad'));
     const ground = new Mesh(new PlaneGeometry(400, 400).rotateX(-Math.PI / 2), this.groundMat);
     ground.position.y = -0.005;
     ground.renderOrder = 1;
-    this.scene.add(ground, this.model);
+    this.scene.add(ground, this.model, this.flags.mesh, this.highlight.group);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enablePan = false;
@@ -154,6 +161,9 @@ export class Viewer {
 
   /** Replace the model: instanced boxes (generated parts), merged mesh (imported parts), context, crane. */
   setProject(project: Project) {
+    this.current = project;
+    this.highlight?.set(project, null);
+    this.flags?.set(project, []);
     for (const child of [...this.model.children]) {
       this.model.remove(child);
       child.traverse((o) => {
@@ -308,6 +318,21 @@ export class Viewer {
     const shift = this.size.w > 700 ? -0.07 * this.size.w : 0;
     this.camera.setViewOffset(this.size.w, this.size.h, shift, 0, this.size.w, this.size.h);
     this.camera.updateProjectionMatrix();
+    this.highlight?.setResolution(this.size.w, this.size.h);
+  }
+
+  /** Show one issue's elements in x-ray with its lines, or clear it. */
+  setIssue(spec: { primary: number[]; secondary: number[]; lines: [Vec3, Vec3][] } | null) {
+    this.highlight.set(this.current, spec);
+  }
+
+  /** Hatch these parts (FLAGGED) once they are placed. */
+  setFlags(parts: number[]) {
+    this.flags.set(this.current, parts);
+  }
+
+  setFlagsVisible(on: boolean) {
+    this.flags.mesh.visible = on;
   }
 
   setStyle(style: RenderStyle) {
@@ -354,13 +379,13 @@ export class Viewer {
   }
 
   /** Per-frame: update sequence time, crane, auto-frame, orbit, render. */
-  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false, pose: CameraPose | null = null) {
+  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false, pose: CameraPose | null = null, poseRate = 3.2) {
     this.fillMat.uniforms.uTime.value = t;
     this.fillMat.uniforms.uDpr.value = this.renderer.getPixelRatio();
     this.crane.update(crane);
     this.pathActive = !!pose && this.autoFrame;
     if (pose && this.autoFrame) {
-      this.followPose(pose, snap ? 1 : 1 - Math.exp(-dt * 3.2));
+      this.followPose(pose, snap ? 1 : 1 - Math.exp(-dt * poseRate));
       this.renderer.render(this.scene, this.camera);
       return;
     }
@@ -446,7 +471,6 @@ export class Viewer {
 
   /** Render a still of the model at time t, fitted to `top` × `half`, as a data URL. */
   snapshot(t: number, top: number, half: number, opts: { az?: number; el?: number; wash?: [number, number]; cut?: CutState } = {}, w = 360, h = 200): string {
-    const rt = new WebGLRenderTarget(w * 2, h * 2, { samples: 4 });
     const cam = new PerspectiveCamera(FOV, w / h, 1, 2400);
     const frameTop = Math.max(top + 3, 10);
     const tn = Math.tan(((FOV * Math.PI) / 180) / 2);
@@ -456,10 +480,34 @@ export class Viewer {
     const ty = frameTop * 0.48;
     cam.position.set(Math.sin(az) * Math.cos(el) * d, ty + Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
     cam.lookAt(0, ty, 0);
+    return this.renderStill(cam, t, w, h, { wash: opts.wash, cut: opts.cut, overlays: false }).toDataURL('image/png');
+  }
+
+  /** An issue still for BCF: its camera, the model as built at t, the x-ray highlight, on paper. */
+  async issuePng(view: IssueView, t: number, w = 960, h = 600): Promise<Uint8Array> {
+    const cam = new PerspectiveCamera(view.fov, w / h, 0.1, 2400);
+    cam.position.set(...view.position);
+    cam.lookAt(...view.target);
+    const canvas = this.renderStill(cam, t, w, h, { overlays: true, background: css('--viewport').getStyle(), scale: 1 });
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/png'));
+    return new Uint8Array(blob ? await blob.arrayBuffer() : new ArrayBuffer(0));
+  }
+
+  private renderStill(cam: PerspectiveCamera, t: number, w0: number, h0: number, opts: { wash?: [number, number]; cut?: CutState; overlays: boolean; background?: string; scale?: number }): HTMLCanvasElement {
+    // thumbnails render at twice their size for crisp ink; issue stills at their own size
+    const sc = opts.scale ?? 2;
+    const w = (w0 * sc) / 2, h = (h0 * sc) / 2;
+    const rt = new WebGLRenderTarget(w * 2, h * 2, { samples: 4 });
     const u = this.fillMat.uniforms;
-    const prev = { t: u.uTime.value, wash: (u.uWash.value as Vector2).clone(), cut: (u.uCut.value as Vector4).clone(), on: u.uCutOn.value, dpr: u.uDpr.value };
+    const prev = { t: u.uTime.value, wash: (u.uWash.value as Vector2).clone(), cut: (u.uCut.value as Vector4).clone(), on: u.uCutOn.value, dpr: u.uDpr.value, hold: u.uHold.value };
+    // stills show work as placed, without the "just placed" accent
+    if (opts.overlays) u.uHold.value = 0;
     const craneVisible = this.crane.group.visible;
+    const hl = this.highlight.group.visible, fl = this.flags.mesh.visible;
     this.crane.group.visible = false;
+    this.highlight.group.visible = opts.overlays;
+    this.flags.mesh.visible = opts.overlays && fl;
+    this.highlight.setResolution(w * 2, h * 2);
     u.uTime.value = t;
     u.uDpr.value = 2;
     this.setWash(opts.wash ?? [-1e4, -1e4]);
@@ -475,7 +523,11 @@ export class Viewer {
     (u.uCut.value as Vector4).copy(prev.cut);
     u.uCutOn.value = prev.on;
     u.uDpr.value = prev.dpr;
+    u.uHold.value = prev.hold;
     this.crane.group.visible = craneVisible;
+    this.highlight.group.visible = hl;
+    this.flags.mesh.visible = fl;
+    this.highlight.setResolution(this.size.w, this.size.h);
     rt.dispose();
     const canvas = document.createElement('canvas');
     canvas.width = w * 2;
@@ -494,7 +546,18 @@ export class Viewer {
         px[i + 2] = Math.min(255, (px[i + 2] * 255) / a);
       }
     }
-    ctx.putImageData(img, 0, 0);
-    return canvas.toDataURL('image/png');
+    if (!opts.background) {
+      ctx.putImageData(img, 0, 0);
+      return canvas;
+    }
+    // composite onto paper for viewers that do not show transparency
+    const layer = document.createElement('canvas');
+    layer.width = canvas.width;
+    layer.height = canvas.height;
+    layer.getContext('2d')!.putImageData(img, 0, 0);
+    ctx.fillStyle = opts.background;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(layer, 0, 0);
+    return canvas;
   }
 }

@@ -55,6 +55,7 @@
         <div class="watermark" aria-hidden="true">ARBOR</div>
         <svg class="overlay" id="overlaySvg"></svg>
         <div class="overlay" id="overlayHtml"></div>
+        <svg class="overlay issue-svg" id="issueSvg" aria-hidden="true"></svg>
 
         <div class="toolbar">
           <button class="chip icon-only" id="btnMenu" title="Render style" data-icon="menu"></button>
@@ -68,6 +69,7 @@
           </label>
           <button class="chip toggle on" id="btnGhost">Ghost</button>
           <button class="chip toggle on" id="btnCrane">Crane</button>
+          <button class="chip toggle on" id="btnFlags" title="Hatch elements with critical or major issues (FLAGGED)">Flags</button>
         </div>
 
         <section class="caption" id="caption">
@@ -129,6 +131,7 @@
           <div class="seg" role="tablist">
             <button role="tab" class="on" id="tabSeq">Sequence</button>
             <button role="tab" id="tabMembers">Members</button>
+            <button role="tab" id="tabIssues">Issues <span class="tab-badge" id="issBadge">…</span></button>
           </div>
           <button class="sq" id="btnDownload" title="Save the sequence as JSON" data-icon="download"></button>
           <button class="sq red" id="btnPlay2" title="Play / pause" data-icon="pause"></button>
@@ -148,6 +151,7 @@
             <div class="op-row"><label>QUANTITY</label><span class="mono big" id="opQty">—</span></div>
             <div class="op-row"><label>MATERIAL</label><span class="mono big ellipsis" id="opMat">—</span></div>
             <div class="op-row full"><label>LIFT · TOWER CRANE TC-1</label><span class="mono big ellipsis lift" id="opLift" data-level="none">—</span></div>
+            <div class="op-row full"><label>CHECKS · THIS STEP</label><span class="mono big checks" id="opChecks">checking…</span></div>
             <div class="op-row"><label>PLACED AT X · Y · Z</label><span class="mono big" id="opXYZ">—</span></div>
             <div class="op-row"><label>MASS · CARBON</label><span class="mono big ellipsis" id="opMass">—</span></div>
           </div>
@@ -170,6 +174,21 @@
           <div class="members" id="memberList"></div>
         </div>
 
+        <div class="tabpane" id="paneIssues" hidden>
+          <div class="iss-top">
+            <p class="iss-verdict" id="issVerdict">Checking the sequence…</p>
+            <div class="iss-exports">
+              <button class="xbtn" id="btnBcf" title="Download the issues as BCF 2.1 for Revit, ArchiCAD, Solibri or BIMcollab" disabled>BCF</button>
+              <button class="xbtn" id="btnCsv" title="Download the issue register as CSV" disabled>CSV</button>
+            </div>
+          </div>
+          <div class="iss-progress" id="issProgress"><i></i></div>
+          <div class="iss-families mono" id="issFamilies"></div>
+          <details class="iss-rules"><summary class="mono">RULES AND THRESHOLDS</summary><div id="issRulesBody"></div></details>
+          <div class="iss-sev mono" id="issSev"></div>
+          <ol class="iss-list" id="issList"></ol>
+        </div>
+
         <div class="log">
           <div class="log-head">
             <h4>BUILD LOG</h4><span class="badge" id="logBadge">ASSEMBLING</span>
@@ -185,7 +204,7 @@
         <div class="stages-head">
           <h3>STAGES</h3>
           <span class="mono muted" id="stagesMeta">8 STAGES</span>
-          <span class="legend mono"><i class="l-placed"></i>PLACED <i class="l-active"></i>ACTIVE <i class="l-ghost"></i>GHOST</span>
+          <span class="legend mono"><i class="l-placed"></i>PLACED <i class="l-active"></i>ACTIVE <i class="l-ghost"></i>GHOST <i class="l-flag"></i>FLAGGED</span>
         </div>
         <div class="stages-row">
           <button class="round" id="stagePrev" data-icon="chevL" title="Previous stage"></button>

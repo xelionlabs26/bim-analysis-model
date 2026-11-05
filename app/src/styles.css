@@ -19,6 +19,7 @@
   --green: #4d7f45;
   --warn: #b7791f;
   --bad: #b3261e;
+  --issue-b: #2f6db3;        /* what an issue's elements conflict with */
   --part: #fbfbf8;
   --wet: #f4c48c;            /* fresh wash front */
   --poche: #2f3632;          /* section cut, drawing mode */
@@ -458,3 +459,103 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .loading span { font: 600 13px var(--sans); }
 .loading .bar { max-width: none; }
 @media (prefers-reduced-motion: reduce) { .loading .bar i { transition: none; } }
+
+/* ── Issues (milestone 7) ─────────────────────────────────────────────── */
+.tab-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 3px; border-radius: 9px; font: 600 10.5px/16px var(--mono); text-align: center; background: var(--well); color: var(--muted); }
+.tab-badge.sev-critical { background: var(--bad); color: #fff; }
+.tab-badge.sev-major { background: var(--warn); color: #fff; }
+.tab-badge.sev-minor, .tab-badge.sev-note { background: var(--line); color: var(--ink-2); }
+.tab-badge.ok { background: var(--green); color: #fff; }
+.iss-top { display: flex; align-items: center; gap: 8px; margin: 8px 0 6px; }
+.iss-verdict { flex: 1; margin: 0; font-size: 12.5px; color: var(--ink-2); min-width: 0; }
+.iss-verdict b { color: var(--ink); }
+.iss-exports { display: flex; gap: 6px; flex: none; }
+.xbtn { border: 1px solid var(--brand-line); background: var(--card); color: var(--brand); border-radius: 9px; padding: 4px 10px; font: 600 11.5px var(--mono); letter-spacing: 0.06em; }
+.xbtn:hover:not(:disabled) { background: var(--brand-tint); }
+.iss-progress { height: 3px; border-radius: 2px; background: var(--well); overflow: hidden; margin-bottom: 6px; }
+.iss-progress i { display: block; height: 100%; width: 0; background: var(--brand); transition: width 0.2s; }
+.iss-families, .iss-sev { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.fam, .sev { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 3px 7px; font: 10.5px var(--mono); letter-spacing: 0.06em; display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.fam b { font-weight: 600; }
+.fam.ok b { color: var(--green); }
+.fam.bad b { color: var(--bad); }
+.fam.unv b { color: var(--muted); }
+.fam.on, .sev.on { border-color: var(--ink-2); }
+.sev:not(.on) { opacity: 0.5; }
+.sev i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.sev-critical i, .iss.sev-critical .dot { background: var(--bad); }
+.sev-major i, .iss.sev-major .dot { background: var(--warn); }
+.sev-minor i, .iss.sev-minor .dot { background: #d6b25e; }
+.sev-note i, .iss.sev-note .dot { background: var(--muted); }
+.iss-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
+.iss { border-bottom: 1px solid var(--line); }
+.iss-row { width: 100%; display: grid; grid-template-columns: 10px 56px 1fr auto; gap: 7px; align-items: baseline; text-align: left; border: 0; background: transparent; padding: 6px 4px; }
+.iss-row:hover { background: var(--well); }
+.iss .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; align-self: center; }
+.iss .id { font-size: 11px; color: var(--ink-2); }
+.iss .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iss .s { font-size: 10.5px; color: var(--muted); }
+.iss.sel { background: var(--well); }
+.iss.sel .t { white-space: normal; font-weight: 600; }
+.iss.sev-critical.sel { box-shadow: inset 3px 0 0 var(--bad); }
+.iss.sev-major.sel { box-shadow: inset 3px 0 0 var(--warn); }
+.iss-body { padding: 0 8px 8px 21px; }
+.iss-body p { margin: 0 0 6px; color: var(--ink-2); }
+.iss-body .a b { color: var(--brand); font-weight: 600; margin-right: 4px; }
+.iss-body .r { font-size: 10.5px; color: var(--muted); }
+.iss-body .els { list-style: none; margin: 0; padding: 0; font-size: 10.5px; }
+.iss-body .els li { padding: 1px 0 1px 12px; position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iss-body .els li::before { content: ''; position: absolute; left: 0; top: 6px; width: 7px; height: 7px; border-radius: 2px; }
+.iss-body .els li.a::before { background: var(--bad); }
+.iss-body .els li.b::before { background: var(--issue-b); }
+.iss-body .els li.more { color: var(--muted); }
+.iss-empty { padding: 14px 4px; color: var(--muted); }
+.iss-mark { position: absolute; top: -5px; width: 7px; height: 7px; margin-left: -3.5px; border-radius: 50%; border: 1.5px solid var(--card); cursor: pointer; z-index: 2; }
+.iss-mark.sev-critical { background: var(--bad); }
+.iss-mark.sev-major { background: var(--warn); }
+.scard .chip-i { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); background: var(--bad); color: #fff; font: 600 10px var(--mono); border-radius: 7px; padding: 1px 6px; }
+.m-row .iss-n { display: inline-block; min-width: 15px; margin-right: 5px; border-radius: 6px; font: 600 9.5px/14px var(--mono); text-align: center; color: #fff; font-style: normal; }
+.iss-n.sev-critical { background: var(--bad); }
+.iss-n.sev-major { background: var(--warn); }
+.iss-n.sev-minor, .iss-n.sev-note { background: var(--muted); }
+.g-bar i.flag { box-shadow: 0 0 0 1.5px var(--bad); }
+.checks { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.checks[data-level='ok'] { color: var(--green); }
+.checks .chk { border: 0; border-radius: 6px; padding: 0 6px; font: 600 11px/18px var(--mono); color: #fff; }
+.checks .chk.sev-critical { background: var(--bad); }
+.checks .chk.sev-major { background: var(--warn); }
+.checks .chk.sev-minor, .checks .chk.sev-note { background: var(--muted); }
+.issue-svg { pointer-events: none; }
+.issue-svg .pin line { stroke: var(--ink); stroke-width: 1.2; }
+.issue-svg .pin circle { fill: none; stroke: var(--bad); stroke-width: 2.4; }
+.issue-svg .pin circle.core { fill: var(--bad); stroke: none; }
+.issue-svg .pin rect { fill: var(--bad); }
+.issue-svg .pin.sev-major circle { stroke: var(--warn); }
+.issue-svg .pin.sev-major circle.core, .issue-svg .pin.sev-major rect { fill: var(--warn); }
+.issue-svg .pin.sev-minor circle, .issue-svg .pin.sev-note circle { stroke: var(--ink-2); }
+.issue-svg .pin.sev-minor circle.core, .issue-svg .pin.sev-minor rect, .issue-svg .pin.sev-note circle.core, .issue-svg .pin.sev-note rect { fill: var(--ink-2); }
+.issue-svg .pin text { fill: #fff; font: 600 11px var(--mono); }
+.legend .l-flag { height: 10px; width: 16px; border-top: 0; background: repeating-linear-gradient(135deg, var(--bad) 0 2px, transparent 2px 5px); }
+.drawer table.rules { width: 100%; border-collapse: collapse; font-size: 10.5px; margin: 4px 0 10px; }
+.drawer table.rules th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 4px; border-bottom: 1px solid var(--line); }
+.drawer table.rules td { padding: 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.drawer table.rules td span { display: block; color: var(--muted); font-size: 9.5px; }
+.drawer table.rules tr.flagged td:last-child { color: var(--bad); font-weight: 600; }
+.drawer table.rules tr.passed td:last-child { color: var(--green); }
+.drawer table.rules tr.unverified td:last-child { color: var(--muted); }
+.drawer .set { display: grid; grid-template-columns: 1fr 86px; gap: 4px 10px; align-items: center; font-size: 12px; margin: 6px 0 10px; }
+.drawer .set input { width: 86px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; font: 12px var(--mono); background: var(--card); }
+.drawer.checks-drawer { width: 380px; max-height: calc(100% - 160px); overflow: auto; }
+.iss-rules { margin: 0 0 6px; }
+.iss-rules summary { cursor: pointer; font-size: 10.5px; letter-spacing: 0.1em; color: var(--muted); padding: 2px 0; }
+.iss-rules[open] summary { color: var(--ink-2); }
+.iss-rules table.rules { width: 100%; border-collapse: collapse; font-size: 10.5px; margin: 4px 0 8px; }
+.iss-rules table.rules th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 4px; border-bottom: 1px solid var(--line); }
+.iss-rules table.rules td { padding: 3px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.iss-rules table.rules td span { display: block; color: var(--muted); font-size: 9.5px; }
+.iss-rules table.rules tr.flagged td:last-child { color: var(--bad); font-weight: 600; white-space: nowrap; }
+.iss-rules table.rules tr.passed td:last-child { color: var(--green); }
+.iss-rules table.rules tr.unverified td:last-child { color: var(--muted); }
+.iss-rules .set { display: grid; grid-template-columns: 1fr 92px; gap: 4px 10px; align-items: center; font-size: 12px; margin: 6px 0 8px; }
+.iss-rules .set input { width: 92px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; font: 12px var(--mono); background: var(--card); }
+.iss-rules .opts { display: flex; gap: 6px; }

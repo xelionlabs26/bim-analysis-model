@@ -87,6 +87,14 @@ export interface PartRef {
   name: string;
   storey: string;
   category: string;
+  /** Build phase the sequencer gave it. */
+  phase?: 'structure' | 'envelope' | 'fitout' | 'landscape';
+  /** GlobalId of the wall or slab whose opening this element fills (doors, windows). */
+  host?: string;
+  /** GlobalId of the element that aggregates this one (a roof's slabs, a stair's flights). */
+  parent?: string;
+  /** The file gave it no usable material, so one was assumed from its type. */
+  defaulted?: boolean;
 }
 
 /**
@@ -253,6 +261,10 @@ export interface ProjectMeta {
   watermark: string;
   source: 'generator' | 'ifc';
   fileName?: string;
+  /** IFC only: the recentring offset (app axes, metres), to map back to IFC world coordinates. */
+  ifcOffset?: Vec3;
+  /** IFC only: the IfcProject GlobalId, for BCF headers. */
+  ifcProject?: string;
 }
 
 export interface Project {

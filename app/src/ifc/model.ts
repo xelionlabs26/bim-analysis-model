@@ -134,6 +134,7 @@ export interface ImportReport {
   openingsCut: number;
   openingsSkipped: number;
   openingsOutside: number;
+  openingsOutsideHosts: string[];
   clipsApplied: number;
   booleansApproximated: number;
   lengthUnit: string;
@@ -143,6 +144,9 @@ export interface ImportReport {
 export interface IfcModel {
   name: string;
   projectName: string;
+  projectGuid: string;
+  /** GlobalIds of the elements that aggregate others (roofs, stairs, curtain walls), by entity id. */
+  parents: Map<number, string>;
   storeys: Storey[];
   elements: ImportedElement[];
   site: ImportedElement[]; // terrain etc., drawn as context only
@@ -292,6 +296,7 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   const raw: { el: Omit<ImportedElement, 'positions' | 'indices' | 'edges' | 'min' | 'max' | 'volume' | 'closed'>; mesh: Mesh }[] = [];
   const openingMisses = new Map<string, number>(); // host category → openings left uncut
   let openingsOutside = 0; // openings placed clear of their host (exporter quirks): nothing to cut
+  const outsideHosts = new Set<string>(); // GlobalIds of those hosts
   let noGeometry = 0;
   let last = performance.now();
   for (let k = 0; k < candidates.length; k++) {
@@ -314,7 +319,10 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
     // every opening of this element is cut by one of its items, lies clear of it, or is reported as not cut
     for (const o of allOps) {
       if (g.opened.has(o)) g.report.openingsCut++;
-      else if (o.pos.length && !boxesTouch(o.pos, mesh.pos)) openingsOutside++;
+      else if (o.pos.length && !boxesTouch(o.pos, mesh.pos)) {
+        openingsOutside++;
+        outsideHosts.add(str(e.args[0]));
+      }
       else {
         g.report.openingsSkipped++;
         openingMisses.set(category, (openingMisses.get(category) ?? 0) + 1);
@@ -409,6 +417,8 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   return {
     name: pickName([buildingName, projectName], fileName),
     projectName,
+    projectGuid: project ? str(project.args[0]) : '',
+    parents: new Map([...new Set(elements.map((e) => e.parent).filter((x): x is number => x !== null))].map((id) => [id, str(f.get(id)?.args[0] ?? '')] as [number, string])),
     storeys,
     elements,
     site,
@@ -426,6 +436,7 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
       openingsCut: g.report.openingsCut,
       openingsSkipped: g.report.openingsSkipped,
       openingsOutside,
+      openingsOutsideHosts: [...outsideHosts],
       clipsApplied: g.report.clipsApplied,
       booleansApproximated: g.report.booleansApproximated,
       lengthUnit: lengthName,

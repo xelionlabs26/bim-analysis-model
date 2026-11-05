@@ -271,6 +271,7 @@ export interface SequenceResult {
 export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): SequenceResult {
   const els = model.elements;
   const byId = new Map(els.map((e) => [e.id, e]));
+  const guidOf = new Map<number, string>([...model.parents, ...els.map((e) => [e.id, e.guid] as [number, string])]);
   const meshes: MeshData[] = [];
   // storey bands from geometry: the highest storey at or below an element's bottom
   let storeys = model.storeys.slice();
@@ -317,7 +318,17 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
       mix: mm.mix,
       mesh: meshIndex,
       volume: el.volume,
-      ref: { guid: el.guid, ifcType: el.type, name: el.name, storey: el.storey >= 0 ? model.storeys[el.storey]?.name ?? '' : '', category: el.category },
+      ref: {
+        guid: el.guid,
+        ifcType: el.type,
+        name: el.name,
+        storey: el.storey >= 0 ? model.storeys[el.storey]?.name ?? '' : '',
+        category: el.category,
+        phase: c.phase,
+        host: el.fills !== null ? guidOf.get(el.fills) : undefined,
+        parent: el.parent !== null ? guidOf.get(el.parent) : undefined,
+        defaulted: mm.defaulted || undefined,
+      },
     };
     return { ...c, part, band: bandOf(el.min[1]), defaulted: mm.defaulted };
   });
@@ -472,6 +483,8 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
       watermark: (name.split(/[\s_-]+/)[0] || 'IFC').toUpperCase().slice(0, 7),
       source: 'ifc',
       fileName,
+      ifcOffset: model.offset,
+      ifcProject: model.projectGuid || undefined,
     },
     presentation: (p) => genericPresentation(p, levels.map((l) => ({ name: l.name, y: l.elevation })), { cx, cz }),
     report,

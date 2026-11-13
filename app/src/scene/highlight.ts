@@ -2,11 +2,12 @@
  * Issue overlays drawn over the model:
  * - the selected issue's elements in x-ray: parts at fault red, what they
  *   conflict with blue, visible faces strong and hidden ones faint, so a beam
- *   buried in a wall still reads;
+ *   buried in a wall still reads; like the model, the x-ray hides on stages
+ *   Layers turns off and beyond the section cut;
  * - its measurement lines (open edges, clearances, lift paths) as thick lines;
  * - FLAGGED parts with a hatch that appears once each part is placed.
  */
-import { BufferGeometry, Color, DoubleSide, EdgesGeometry, Float32BufferAttribute, Group, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, ShaderMaterial, Vector2, type IUniform } from 'three';
+import { BufferGeometry, Color, DoubleSide, EdgesGeometry, Float32BufferAttribute, Group, LineSegments, Mesh, ShaderMaterial, Vector2, type IUniform } from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
@@ -50,18 +51,90 @@ export function partTriangles(p: Project, parts: number[], cap = 8000): { pos: n
   return { pos, part };
 }
 
-function xrayLayer(p: Project, parts: number[], color: Color, order: number): Group {
+// The x-ray shows a part only where the model does: on a stage left on in Layers, and not cut away by the section.
+const xrayVertex = /* glsl */ `
+  attribute float aStage;
+  uniform float uMask;
+  varying float vOn;
+  varying vec3 vWorld;
+  ${stageOnGlsl}
+  void main() {
+    vOn = stageOn(aStage);
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    gl_Position = vOn > 0.5 ? projectionMatrix * viewMatrix * wp : vec4(2.0, 2.0, 2.0, 1.0);
+  }
+`;
+const xrayFragment = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uOpacity;
+  uniform vec4 uCut;
+  uniform float uCutOn;
+  varying float vOn;
+  varying vec3 vWorld;
+  ${cutAwayGlsl}
+  void main() {
+    if (vOn < 0.5 || cutAway()) discard;
+    gl_FragColor = vec4(uColor, uOpacity);
+  }
+`;
+
+/** The viewer's own uniforms the x-ray follows: the stage mask (Layers) and the section cut. */
+export interface XrayUniforms {
+  uMask: IUniform;
+  uCut: IUniform;
+  uCutOn: IUniform;
+}
+
+/** An x-ray material: flat colour at `opacity`, hidden on stages Layers turns off and beyond the section cut. */
+export function xrayMaterial(uniforms: XrayUniforms, color: Color, opacity: number, opts: { depthTest?: boolean; polygonOffset?: boolean } = {}): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: { uMask: uniforms.uMask, uCut: uniforms.uCut, uCutOn: uniforms.uCutOn, uColor: { value: color.clone() }, uOpacity: { value: opacity } },
+    vertexShader: xrayVertex,
+    fragmentShader: xrayFragment,
+    transparent: true,
+    depthWrite: false,
+    depthTest: opts.depthTest ?? true,
+    side: DoubleSide,
+    ...(opts.polygonOffset ? { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 } : {}),
+  });
+}
+
+function xrayLayer(p: Project, parts: number[], color: Color, order: number, uniforms: XrayUniforms): Group {
   const g = new Group();
   if (!parts.length) return g;
-  const { pos } = partTriangles(p, parts);
+  const { pos, part } = partTriangles(p, parts);
+  const stageOf = part.map((i) => p.parts[i].stage);
   const geo = new BufferGeometry();
   geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
-  const hidden = new Mesh(geo, new MeshBasicMaterial({ color, transparent: true, opacity: 0.16, depthTest: false, depthWrite: false, side: DoubleSide }));
+  geo.setAttribute('aStage', new Float32BufferAttribute(stageOf, 1));
+  const hidden = new Mesh(geo, xrayMaterial(uniforms, color, 0.16, { depthTest: false }));
   hidden.renderOrder = order;
-  const shown = new Mesh(geo, new MeshBasicMaterial({ color, transparent: true, opacity: 0.5, depthWrite: false, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  const shown = new Mesh(geo, xrayMaterial(uniforms, color, 0.5, { polygonOffset: true }));
   shown.renderOrder = order + 1;
-  const edges = new LineSegments(new EdgesGeometry(geo, 25), new LineBasicMaterial({ color, transparent: true, opacity: 0.95, depthTest: false }));
+  // edges per stage, so each carries its stage and hides with it
+  const epos: number[] = [];
+  const estage: number[] = [];
+  for (const st of [...new Set(stageOf)]) {
+    const sub: number[] = [];
+    for (let v = 0; v < stageOf.length; v += 3) if (stageOf[v] === st) sub.push(...pos.slice(v * 3, v * 3 + 9));
+    const sg = new BufferGeometry();
+    sg.setAttribute('position', new Float32BufferAttribute(sub, 3));
+    const eg = new EdgesGeometry(sg, 25);
+    const ep = eg.getAttribute('position');
+    for (let k = 0; k < ep.count; k++) {
+      epos.push(ep.getX(k), ep.getY(k), ep.getZ(k));
+      estage.push(st);
+    }
+    sg.dispose();
+    eg.dispose();
+  }
+  const egeo = new BufferGeometry();
+  egeo.setAttribute('position', new Float32BufferAttribute(epos, 3));
+  egeo.setAttribute('aStage', new Float32BufferAttribute(estage, 1));
+  const edges = new LineSegments(egeo, xrayMaterial(uniforms, color, 0.95, { depthTest: false }));
   edges.renderOrder = order + 2;
+  for (const o of [hidden, shown, edges]) o.frustumCulled = false;
   g.add(hidden, shown, edges);
   return g;
 }
@@ -71,8 +144,10 @@ export class IssueHighlight {
   private lineMats: LineMaterial[] = [];
   private res = new Vector2(1, 1);
 
+  /** `uniforms` are the viewer's own, so the x-ray follows its stage mask and section cut. */
   constructor(
     private colours: { primary: Color; secondary: Color; line: Color },
+    private uniforms: XrayUniforms,
   ) {
     this.group.renderOrder = 20;
   }
@@ -94,7 +169,7 @@ export class IssueHighlight {
     this.clear();
     if (!spec) return;
     const secondary = spec.secondary.filter((i) => !spec.primary.includes(i));
-    this.group.add(xrayLayer(p, secondary, this.colours.secondary, 30), xrayLayer(p, spec.primary, this.colours.primary, 34));
+    this.group.add(xrayLayer(p, secondary, this.colours.secondary, 30, this.uniforms), xrayLayer(p, spec.primary, this.colours.primary, 34, this.uniforms));
     if (spec.lines.length) {
       const flat: number[] = [];
       for (const [a, b] of spec.lines.slice(0, 20000)) flat.push(a[0], a[1], a[2], b[0], b[1], b[2]);

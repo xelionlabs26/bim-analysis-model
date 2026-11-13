@@ -47,7 +47,7 @@ export async function runChecks(project: Project, settings: CheckSettings = DEFA
     } catch (err) {
       // one rule failing on an odd model must not take the rest of the register with it
       const why = err instanceof Error ? err.message : String(err);
-      for (const id of ids) out.set(id, { issues: [], result: { checked: 0, applicable: false, note: `check failed: ${why}` } });
+      for (const id of ids) out.set(id, { issues: [], result: { checked: 0, applicable: false, notChecked: true, note: `check failed: ${why}` } });
     }
     await yieldNow();
   }

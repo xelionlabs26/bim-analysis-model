@@ -70,23 +70,40 @@ const IFC_WORDS = (
   'WALL STANDARD CASE SLAB BEAM COLUMN DOOR WINDOW ROOF STAIR RAMP FLIGHT RAILING COVERING CURTAIN PLATE MEMBER FOOTING PILE ' +
   'BUILDING ELEMENT PROXY PART ASSEMBLY FURNISHING FURNITURE SYSTEM CHIMNEY SHADING DEVICE DISCRETE ACCESSORY MECHANICAL FASTENER ' +
   'REINFORCING BAR MESH TENDON TRANSPORT GEOGRAPHIC FLOW TERMINAL SEGMENT FITTING CONTROLLER STORAGE MOVING TREATMENT ' +
-  'DISTRIBUTION CONTROL ENERGY CONVERSION SANITARY LIGHT FIXTURE PIPE DUCT CABLE CARRIER AIR ELECTRIC APPLIANCE OUTLET'
+  'DISTRIBUTION CONTROL ENERGY CONVERSION SANITARY LIGHT FIXTURE PIPE DUCT CABLE CARRIER AIR ELECTRIC APPLIANCE OUTLET ' +
+  // geometry items, for the Import drawer's "Not drawn" line
+  'ADVANCED BREP FACETED FACE BASED SURFACE MODEL SWEPT SOLID AREA DISK EXTRUDED REVOLVED BOOLEAN CLIPPING RESULT MAPPED ' +
+  'ITEM TRIANGULATED POLYGONAL TESSELLATED SET SHELL CURVE BOUNDED HALF SPACE CSG PRIMITIVE WITH VOIDS TAPERED FIXED ' +
+  'REFERENCE SECTIONED SPINE BLOCK SPHERE RIGHT CIRCULAR CYLINDER CONE RECTANGULAR PYRAMID GEOMETRIC BOUNDING BOX ' +
+  'INDEXED POLY POLYLINE COMPOSITE TRIMMED CIRCLE ELLIPSE LINE POINT CARTESIAN ANNOTATION FILL TEXT LITERAL OFFSET ' +
+  'DIRECTRIX DERIVED PROFILE EXTRUSION PLANE B SPLINE KNOTS RATIONAL CLOSED OPEN EDGE LOOP VERTEX ORIENTED PATH SUBEDGE ' +
+  'OPENING SITE STOREY PROJECT ZONE VIRTUAL GRID'
 )
   .split(' ')
   .sort((a, b) => b.length - a.length);
 
-/** An IFC class as the schema writes it (IFCWALLSTANDARDCASE reads IfcWallStandardCase); a name it cannot split is left as it is. */
+/**
+ * An IFC class as the schema writes it (IFCWALLSTANDARDCASE reads
+ * IfcWallStandardCase, IFCADVANCEDBREP IfcAdvancedBrep); a tail it cannot
+ * split into words reads as one word (IFCFOOBAR: IfcFoobar), never in capitals.
+ */
 export function ifcName(t: string): string {
   if (!/^IFC[A-Z]+$/.test(t)) return t;
-  let rest = t.slice(3);
-  let out = 'Ifc';
-  while (rest) {
-    const w = IFC_WORDS.find((x) => rest.startsWith(x));
-    if (!w) return t;
-    out += w[0] + w.slice(1).toLowerCase();
-    rest = rest.slice(w.length);
+  const rest = t.slice(3);
+  const words = splitWords(rest);
+  return 'Ifc' + (words ?? [rest]).map((w) => w[0] + w.slice(1).toLowerCase()).join('');
+}
+
+/** The run of capitals as known words, longest first with backtracking; null when it will not split. */
+function splitWords(rest: string, depth = 0): string[] | null {
+  if (!rest) return [];
+  if (depth > 12) return null;
+  for (const w of IFC_WORDS) {
+    if (!rest.startsWith(w)) continue;
+    const tail = splitWords(rest.slice(w.length), depth + 1);
+    if (tail) return [w, ...tail];
   }
-  return out;
+  return null;
 }
 
 /** The import drawer's warning about assumed materials: what happened, what it does to the figures, what to do. */
@@ -103,14 +120,18 @@ export function defaultedText(s: DefaultedSummary): { head: string; body: string
   };
 }
 
-/** The message after a model loads, and whether it is a warning (the file was cut off). */
-export function loadedMessage(fileName: string, elements: number, seconds: number, report: { truncated?: boolean; defaultedMaterials?: number } | undefined): { text: string; kind: 'info' | 'warn' } {
+/**
+ * The message after a model loads, and whether it is a warning (the file was
+ * cut off). `client` is the presentation view, where the Import drawer it
+ * points to is put away: it then points to the full view.
+ */
+export function loadedMessage(fileName: string, elements: number, seconds: number, report: { truncated?: boolean; defaultedMaterials?: number } | undefined, client = false): { text: string; kind: 'info' | 'warn' } {
   if (report?.truncated) {
-    return { text: `Loaded ${fileName}, but the file ends early, so elements are probably missing. Open Import for details, or download or export the file again.`, kind: 'warn' };
+    return { text: `Loaded ${fileName}, but the file ends early, so elements are probably missing. ${client ? 'Open Import in the full view (P)' : 'Open Import'} for details, or download or export the file again.`, kind: 'warn' };
   }
   const assumed = Number(report?.defaultedMaterials) || 0;
   return {
-    text: `Loaded ${fileName} · ${fmtInt(elements)} elements · ${seconds.toFixed(1)} s${assumed ? ` · ${fmtInt(assumed)} with an assumed material (see Import)` : ''}`,
+    text: `Loaded ${fileName} · ${fmtInt(elements)} elements · ${seconds.toFixed(1)} s${assumed ? ` · ${fmtInt(assumed)} with an assumed material (${client ? 'see Import in the full view' : 'see Import'})` : ''}`,
     kind: 'info',
   };
 }

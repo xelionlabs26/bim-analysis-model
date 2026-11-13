@@ -6,6 +6,7 @@ import { moreSides, orbitTouchAction, revealScroll, ScrubDrag, stripScroll, toas
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 const CSS = read('../src/styles.css');
 const HTML = read('../index.html');
+const MAIN = read('../src/main.ts');
 
 /** The body of the first block that opens with `head` (a media or container query). */
 const block = (head: string) => {
@@ -147,5 +148,156 @@ describe('short and mid-size windows', () => {
   it('folds the title block to one line where it would meet the toolbar (quick win 16)', () => {
     expect(block('@container vp (max-width: 800px)')).toMatch(/\.titleblock\s*\{[^}]*top: calc\(var\(--toolbar-bottom/);
     for (const k of ['tb-name', 'tb-scale', 'tb-sheet']) expect(HTML).toMatch(new RegExp(`class="tb-row[^"]*${k}"`));
+  });
+});
+
+describe('drawers and the over-chart banner on a phone (R54, O4)', () => {
+  it('brings an opened drawer up above the pinned play bar, and the Members search for Parts', () => {
+    const fn = MAIN.match(/function selectRail\([\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).toMatch(/if \(isNarrow\(\) && view\.rail !== 'model'\)/);
+    expect(fn).toMatch(/revealScroll\(\$\('tabMembers'\)\.getBoundingClientRect\(\)\.top\)/);
+    expect(fn).toMatch(/revealScroll\(\$\('viewport'\)\.getBoundingClientRect\(\)\.top\)/);
+  });
+
+  it('places the banner above the play bar and the issue sheet, fixed to the screen', () => {
+    const at = CSS.indexOf('.lift-banner.note .lb-text b');
+    const tail = CSS.slice(at, CSS.indexOf('\n}\n', at) + 3);
+    expect(tail).toMatch(/@media \(max-width: 1100px\) \{\s*\.lift-banner \{ position: fixed; bottom: calc\(var\(--playbar-h, 120px\) \+ var\(--sheet-h, 0px\) \+ 8px\);/);
+  });
+});
+
+// ── the APP-3 layout batch: phone first load, drawers, tabs, the status card, the hero ──
+import { centreSpot } from '../src/ui/place';
+import { importHint, introCards, presentNote } from '../src/ui/present';
+const ISSUES = read('../src/ui/issues.ts');
+/** The later one-column block (after the issue sheet), where the toast is placed. */
+const lateNarrow = () => {
+  const at = CSS.indexOf('/* narrow screens, for rules that come after the narrow block above');
+  return CSS.slice(at, CSS.indexOf('\n}\n', at));
+};
+
+describe('the phone opens on the model (R55, O16)', () => {
+  it('moves the status card out of the header and puts the rail under the model on a narrow screen, keeping the header a landmark', () => {
+    const fn = MAIN.match(/function arrange\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).toMatch(/if \(isNarrow\(\)\) \{\s*if \(vp\.nextElementSibling !== rail\) vp\.after\(rail\);\s*if \(rail\.nextElementSibling !== status\) rail\.after\(status\);/);
+    expect(fn).toMatch(/header\.append\(status\)/);
+    expect(MAIN).toMatch(/narrow\?\.addEventListener\('change', \(\) => \{\s*arrange\(\);/);
+    expect(HTML).toMatch(/<header class="header">/);
+    expect(CSS).not.toMatch(/\.header\s*\{[^}]*display: contents/);
+  });
+
+  it('hides the caption on a phone while the large Play button is up (the status card says the same)', () => {
+    const fn = MAIN.match(/function syncCaption\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).toMatch(/const heroUp = hero && isNarrow\(\);/);
+    expect(fn).toMatch(/!heroUp/);
+  });
+
+  it('lets the first-run cards scroll away with the page, and keeps framed issues and pins clear of them (R56)', () => {
+    expect(CSS).toMatch(/@media \(max-width: 1100px\) \{\s*\/\* the wordmark[^@]*\.intro \{ position: absolute; top: 8px;/);
+    expect(MAIN).toMatch(/const FRAME_CHROME = '[^']*#intro'/);
+    expect(ISSUES).toMatch(/const PIN_CHROME = '[^']*#intro'/);
+  });
+
+  it('fades the end of the rail that has more to scroll to (R58)', () => {
+    const n = narrowBlock();
+    expect(n).toMatch(/\.rail-items\.more-end \{ mask-image/);
+    expect(n).toMatch(/\.rail-items\.more-start \{ mask-image/);
+    expect(MAIN).toMatch(/if \(isNarrow\(\)\) fadeOne\(railItems\);/);
+    expect(MAIN).toMatch(/railItems\.addEventListener\('scroll', fade, \{ passive: true \}\)/);
+  });
+});
+
+describe('phone details (R25–R27, R52)', () => {
+  it('wraps the status facts on a narrow phone instead of running them out of the card (R25)', () => {
+    expect(narrowBlock()).toMatch(/\.status-facts \{[^}]*flex-wrap: wrap;[^}]*white-space: normal;/);
+    expect(narrowBlock()).toMatch(/\.status-facts > \* \{ white-space: nowrap; \}/);
+  });
+
+  it('puts a toast that stays above the issue sheet too, clear of its buttons (R26)', () => {
+    expect(lateNarrow()).toMatch(/\.toast \{[^}]*bottom: calc\(var\(--playbar-h, 120px\) \+ var\(--sheet-h, 0px\) \+ 10px\)/);
+  });
+
+  it('draws the focus ring inside the keys of the sideways-scrolling transport, where it is not clipped (R27)', () => {
+    expect(narrowBlock()).toMatch(/\.playbar \.tkey:focus-visible, \.playbar \.tbtn:focus-visible \{ outline-offset: -3px; \}/);
+  });
+
+  it('lets the selected row open in place while the Issues list is on screen, rather than covering it with the sheet (R52)', () => {
+    expect(CSS).toMatch(/\.app\.list-in-view \.issue-sheet:not\(\[hidden\]\) \{ display: none; \}/);
+    expect(CSS).toMatch(/\.app\.list-in-view \.iss\.sel \.iss-body \{ display: block; \}/);
+    const fn = MAIN.match(/function listInView\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).toMatch(/isNarrow\(\) && !pane\.hidden/);
+    // picking an issue takes the page up to the model: the sheet comes back before the framing measures it
+    expect(MAIN.match(/function selectIssue\([\s\S]*?\n\}/)?.[0]).toMatch(/listInView\(\);\s*\}\s*frameIssue\(i\);/);
+  });
+});
+
+describe('drawers, tabs and the status card at mid widths (R51, R41, R28, R29)', () => {
+  it('caps every drawer above the play controls, and above the pinned play bar on a narrow screen (R51)', () => {
+    expect(CSS).toMatch(/\.drawer \{[^}]*max-height: calc\(100% - var\(--toolbar-bottom, 50px\) - 172px\); overflow: auto;/);
+    expect(narrowBlock()).toMatch(/\.drawer \{ max-height: min\([^}]*var\(--playbar-h, 120px\)/);
+    expect(CSS).not.toMatch(/\.drawer\.wide \{[^}]*max-height/);
+  });
+
+  it('never wraps a tab label or its badge, and tightens the tabs and buttons in a 380 px panel (R41, R28)', () => {
+    expect(CSS).toMatch(/\.seg button \{[^}]*white-space: nowrap;/);
+    expect(CSS).toMatch(/\.tab-badge \{ display: inline-block; white-space: nowrap;/);
+    const b = block('@container panel (max-width: 470px)');
+    expect(b).toMatch(/\.seg button \{ padding: 6px 8px; font-size: 13px; \}/);
+    expect(b).toMatch(/\.panel-head \.sq \{ width: 34px; height: 34px; \}/);
+  });
+
+  it('gives the phase and step room in a 380–400 px status card (R29)', () => {
+    const at = CSS.indexOf('@container status (max-width: 400px)');
+    expect(at).toBeGreaterThan(0);
+    const b = CSS.slice(at, CSS.indexOf('}\n}', at));
+    expect(b).toMatch(/\.status-main \{ min-width: 96px; \}/);
+    expect(b).toMatch(/#statusFacts \.head \{ visibility: hidden; width: 0;/);
+  });
+});
+
+describe('the large Play button keeps off the caption (R53)', () => {
+  // 1280 x 720: the viewport is 706 x 450; the toolbar, caption, title block, scale bar, scrubber and transport, padded 8 px
+  const chrome = [
+    { x0: 7, y0: 7, x1: 553, y1: 59 },
+    { x0: 7, y0: 55, x1: 423, y1: 202 },
+    { x0: 471, y0: 55, x1: 699, y1: 113 },
+    { x0: 22, y0: 252, x1: 180, y1: 300 },
+    { x0: 23, y0: 305, x1: 683, y1: 355 },
+    { x0: 51, y0: 357, x1: 655, y1: 439 },
+  ];
+  const hero = { w: 286, h: 78 };
+  const hits = (at: { x: number; y: number }, b: { x0: number; y0: number; x1: number; y1: number }) =>
+    at.x - hero.w / 2 < b.x1 && at.x + hero.w / 2 > b.x0 && at.y - hero.h / 2 < b.y1 && at.y + hero.h / 2 > b.y0;
+
+  it('sits in the clear part of the model nearest its middle', () => {
+    const at = centreSpot({ x0: 0, y0: 0, x1: 706, y1: 450 }, chrome, hero)!;
+    expect(at).not.toBeNull();
+    for (const b of chrome) expect(hits(at, b)).toBe(false);
+    expect(Math.abs(at.x - 353)).toBeLessThan(60);
+  });
+
+  it('keeps the stylesheet place when nothing clear holds it', () => {
+    expect(centreSpot({ x0: 0, y0: 0, x1: 300, y1: 200 }, [{ x0: 0, y0: 60, x1: 300, y1: 140 }], hero)).toBeNull();
+  });
+
+  it('is placed whenever the cards move, and on a phone only in the part of the model above the fold', () => {
+    const fn = MAIN.match(/function placeHero\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).toMatch(/Math\.min\(r\.height, window\.innerHeight - r\.top\)/);
+    expect(MAIN).toMatch(/const HERO_CHROME = '[^']*#caption[^']*#playbar'/);
+    expect(MAIN.match(/function syncRestBox\(\)[\s\S]*?\n\}/)?.[0]).toMatch(/placeHero\(\);/);
+  });
+});
+
+describe('words for a touch screen (R57, O8)', () => {
+  it('tells a phone to tap, not to press keys or drop a file', () => {
+    expect(introCards('Arbor House', true)[1].body).toBe('Tap Play to watch it from the first step.');
+    expect(introCards('Arbor House', false)[1].body).toMatch(/Space/);
+    expect(presentNote(true)).not.toMatch(/Press P/);
+    expect(presentNote(false)).toMatch(/Press P/);
+    expect(importHint(true)).not.toMatch(/drop/i);
+    expect(importHint(false)).toMatch(/drop an \.ifc file/);
+    expect(MAIN).toMatch(/introCards\(project\.name, isTouch\(\)\)/);
+    expect(MAIN).toMatch(/toast\(presentNote\(isTouch\(\)\)\)/);
+    expect(MAIN).toMatch(/\$\{importHint\(isTouch\(\)\)\}/);
   });
 });

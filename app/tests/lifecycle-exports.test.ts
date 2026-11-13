@@ -14,7 +14,7 @@ import { DEFAULT_SETTINGS, type CheckReport, type CheckSettings, type Issue } fr
 import { toIfc } from '../src/checks/view';
 import { readIfc } from '../src/ifc/model';
 import { projectFromIfc } from '../src/ifc/sequence';
-import { bcfZip, topicGuid, topicGuids } from '../src/export/bcf';
+import { bcfZip, projectGuid, topicGuid, topicGuids } from '../src/export/bcf';
 import { csvCell, issuesCsv } from '../src/export/csv';
 import { sequenceJson } from '../src/export/sequence';
 import { unzip } from '../src/export/zip';
@@ -172,6 +172,79 @@ describe('BCF topic GUIDs', () => {
     for (const d of dirs) {
       expect(new TextDecoder().decode(files.get(`${d}/markup.bcf`))).toContain(`<Topic Guid="${d}"`);
     }
+  });
+});
+
+describe('BCF identity of an imported model', () => {
+  const pavilion = () => readIfc(readFileSync(join(here, 'fixtures/pavilion-ifc4.ifc'), 'latin1'), () => {}, 'pavilion-ifc4.ifc');
+
+  it('keeps every topic GUID and the project id when the same file is saved under another name', async () => {
+    const model = await pavilion();
+    const a = projectFromIfc(model, 'Pavilion_rev1.ifc').project;
+    const b = projectFromIfc(model, 'Pavilion_rev2 (final).ifc').project;
+    expect(a.meta.fileName).not.toBe(b.meta.fileName);
+    const [ra, rb] = [await run(a), await run(b)];
+    expect(ra.issues.length).toBeGreaterThan(0);
+    expect(rb.issues.map((i) => i.id)).toEqual(ra.issues.map((i) => i.id));
+    const [ga, gb] = [topicGuids(a, ra.issues), topicGuids(b, rb.issues)];
+    ra.issues.forEach((i, k) => expect(gb.get(rb.issues[k])).toBe(ga.get(i)));
+    // and two different issues still get different GUIDs
+    expect(new Set(ga.values()).size).toBe(ra.issues.length);
+    expect(projectGuid(b)).toBe(projectGuid(a));
+    const projectId = (p: Project, r: CheckReport) => /ProjectId="([^"]+)"/.exec(new TextDecoder().decode(unzip(bcfZip(p, r)).get('project.bcfp')))![1];
+    expect(projectId(b, rb)).toBe(projectId(a, ra));
+    // the file name still names the file in each topic's header
+    const markup = new TextDecoder().decode(unzip(bcfZip(b, rb)).get(`${gb.get(rb.issues[0])}/markup.bcf`));
+    expect(markup).toContain('<Filename>Pavilion_rev2 (final).ifc</Filename>');
+  });
+
+  it('keeps the file name in a generated model\'s GUIDs', async () => {
+    const p = mk([step('L0 · GROUND SLAB', 'cast', [box([0, -0.1, 0], [6.4, 0.2, 6.4])]), step('L1 · PRECAST SLAB', 'crane', [box([0, 3.1, 0], [6.4, 0.2, 2.1])])]);
+    const r = await run(p);
+    const issue = r.issues[0];
+    expect(issue).toBeTruthy();
+    const renamed = { ...p, meta: { ...p.meta, fileName: 'other.json' } };
+    expect(topicGuid(renamed, issue)).not.toBe(topicGuid(p, issue));
+  });
+
+  it('names the author the export is given, escaped, and Arbor Build otherwise', async () => {
+    const model = await pavilion();
+    const p = projectFromIfc(model, 'pavilion-ifc4.ifc').project;
+    const r = await run(p);
+    const authors = (z: Uint8Array) => [...unzip(z)].filter(([n]) => n.endsWith('/markup.bcf')).map(([, d]) => /<CreationAuthor>([^<]*)<\/CreationAuthor>/.exec(new TextDecoder().decode(d))![1]);
+    expect(new Set(authors(bcfZip(p, r)))).toEqual(new Set(['Arbor Build']));
+    expect(new Set(authors(bcfZip(p, r, new Map(), new Date(0), { author: 'Smith & Jones <Build>' })))).toEqual(new Set(['Smith &amp; Jones &lt;Build&gt;']));
+    expect(new Set(authors(bcfZip(p, r, new Map(), new Date(0), { author: '  ' })))).toEqual(new Set(['Arbor Build']));
+  });
+});
+
+describe('exports of a file that ends early', () => {
+  it('mark the JSON incomplete and leave no check passed; the CSV carries the model-data issue', async () => {
+    const model = await readIfc(readFileSync(join(here, 'fixtures/pavilion-ifc4.ifc'), 'latin1'), () => {}, 'pavilion-ifc4.ifc');
+    const whole = projectFromIfc(model, 'pavilion-ifc4.ifc').project;
+    const rWhole = await run(whole);
+    const jWhole = JSON.parse(sequenceJson(whole, rWhole));
+    expect(jWhole.project.incomplete).toBeUndefined();
+    const passedWhole = jWhole.checks.verdict.filter((v: { status: string }) => v.status === 'passed');
+    expect(passedWhole.length).toBeGreaterThan(0);
+
+    const cut = projectFromIfc(model, 'pavilion-ifc4.ifc').project;
+    cut.report = { ...(cut.report ?? {}), truncated: true };
+    const r = await run(cut);
+    const json = JSON.parse(sequenceJson(cut, r));
+    expect(json.project.incomplete).toBe(true);
+    expect(json.project.incompleteNote).toMatch(/ends early/);
+    expect(json.checks.verdict.some((v: { status: string }) => v.status === 'passed')).toBe(false);
+    for (const v of json.checks.verdict.filter((x: { rule: string }) => passedWhole.some((w: { rule: string }) => w.rule === x.rule && x.rule !== 'MODEL-DATA'))) {
+      expect(v.status).toBe('unverified');
+      expect(v.reason).toBe('file ends early');
+    }
+    const csv = issuesCsv(cut, r, () => 0);
+    const rows = csv.replace(/^\uFEFF/, '').trim().split('\r\n').map(fields);
+    expect(rows[0][0]).toBe('ID'); // still a plain header row first
+    const flag = rows.find((row) => row[2] === 'MODEL-DATA' && /ends early/.test(row[4]));
+    expect(flag, 'the CSV should carry the file-ends-early issue').toBeTruthy();
+    expect(flag![1]).toBe('critical');
   });
 });
 

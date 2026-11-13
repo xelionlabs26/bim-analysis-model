@@ -4,7 +4,11 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildProject } from '../src/data/project';
 import { CORE, EDGE, GIFA, GRID, SET_EDGE, STOREYS } from '../src/data/generator';
-import type { Project } from '../src/data/types';
+import { reviewedLift, type Project } from '../src/data/types';
+import { assembleProject } from '../src/data/assemble';
+import { firstOverPick, riggedLift } from '../src/engine/lifts';
+import { runChecks } from '../src/checks/run';
+import { DEFAULT_SETTINGS } from '../src/checks/types';
 import { readIfc } from '../src/ifc/model';
 import { projectFromIfc } from '../src/ifc/sequence';
 
@@ -95,5 +99,63 @@ describe('Arbor House public realm', () => {
     expect(Number(seats)).toBe(benches);
     // no tree stands on the crane pad
     for (const x of parts.filter((q) => q.mat === 'planting')) expect(x.pos[0] < -18 && Math.abs(x.pos[2]) < 6).toBe(false);
+  });
+});
+
+describe('the critical crane pick is chosen with the rigging, as the checks choose it', () => {
+  // piece A: 9.49 t close in (10 m); piece B: 3.06 t far out (38 m). Without rigging A works the crane harder;
+  // with 300 kg of rigging B does (and is over the chart)
+  const crane = { id: 'TC-T', base: [-20, 0, 0] as [number, number, number], jib: 40, counterJib: 12, maxKg: 10000, tipKg: 1000, capacityAt: (r: number) => Math.min(10000, 10000 * Math.pow(15 / Math.max(r, 1), 1.2)), tieX: -10, mastStart: 20 };
+  const box = (pos: number[], size: number[], mat = 'concrete') => ({ pos, size, quat: [0, 0, 0, 1], mat });
+  const step = (member: string, method: string, parts: unknown[]) => ({ zone: 'Z', member, spec: '', code: 'X-01', method, motion: method === 'cast' ? 'pour' : 'lower', drop: 0, parts });
+  const p = assembleProject({
+    id: 'T-01', name: 'Test', subtitle: '', rev: '', revDate: '', storeys: 2, gifa: 100,
+    levels: [{ code: 'L0', y: 0 }, { code: 'L1', y: 3 }], zones: [{ id: 'Z', label: 'Z', y0: 0, y1: 6 }],
+    stages: [{ code: 'A', tick: 'A', title: 'A', zones: ['Z'], kind: 'assembly', sheet: 'A-1', subtitle: (n: number) => `${n}` }],
+    defs: [
+      step('L0 · SLAB', 'cast', [box([0, -0.1, 0], [40, 0.2, 6])]),
+      step('L1 · PRECAST', 'crane', [box([-10, 0.25, 0], [3.875, 0.5, 2]), box([18, 0.125, 0], [2.5, 0.25, 2])]),
+    ],
+    crane, secondsPerStep: 0.2, meta: { tagline: '', caption: '', watermark: '', source: 'generator' },
+    presentation: () => ({ cut: { normal: [1, 0, 0], at: 0, open: 0 }, keys: [], shots: [], log: [] }),
+  } as unknown as Parameters<typeof assembleProject>[0]);
+  const s = p.steps[1];
+  const [a, b] = [s.partStart, s.partStart + 1];
+
+  it('switches the critical piece when the rigging makes the far piece the worse one', async () => {
+    // without rigging the close, heavy piece is critical, and riggedLift agrees with step.lift
+    expect(s.lift!.radius).toBeCloseTo(10, 6);
+    const bare = riggedLift(p, s.index, 0)!;
+    expect(bare.part).toBe(a);
+    expect(bare.pieceKg).toBeCloseTo(s.lift!.pieceKg, 6);
+    expect(bare.util).toBeCloseTo(s.lift!.util, 9);
+    // with 300 kg of rigging the far, light piece is critical and over the chart
+    const rigged = riggedLift(p, s.index, 300)!;
+    expect(rigged.part).toBe(b);
+    expect(rigged.radius).toBeCloseTo(38, 6);
+    const util = reviewedLift(rigged.pieceKg, rigged.capacityKg, 300).util;
+    expect(util).toBeGreaterThan(1);
+    expect(reviewedLift(s.lift!.pieceKg, s.lift!.capacityKg, 300).util).toBeLessThan(1);
+    // and it is the pick the checks flag, at the same utilisation
+    const r = await runChecks(p, { ...DEFAULT_SETTINGS, truck: [...DEFAULT_SETTINGS.truck], riggingKg: 300 }, undefined, false);
+    const flag = r.issues.find((i) => i.rule === 'REACH-CRANE')!;
+    expect(flag.severity).toBe('critical');
+    expect(flag.primary).toEqual([b]);
+    expect(flag.value!).toBeCloseTo(util, 9);
+  });
+
+  it('stops playback on that pick', () => {
+    expect(firstOverPick(p, 0)).toBeNull();
+    const over = firstOverPick(p, 300)!;
+    expect(over.stepIndex).toBe(s.index);
+    expect(over.part).toBe(b);
+    expect(over.radius).toBeCloseTo(38, 6);
+    expect(over.util).toBeGreaterThan(1);
+    expect(over.kg).toBeCloseTo(over.pieceKg + 300, 6);
+  });
+
+  it('has no rigged pick for a step that is not a crane lift or a project without a tower crane', () => {
+    expect(riggedLift(p, 0, 300)).toBeNull();
+    expect(riggedLift({ ...p, crane: null }, s.index, 300)).toBeNull();
   });
 });

@@ -3,7 +3,7 @@ import { chartKnee, liftLevel, reviewedLift, type Project } from '../data/types'
 import type { Viewer } from '../scene/viewer';
 import type { ReachMode } from '../scene/reach';
 import { modelBounds } from '../checks/view';
-import { placeOnRing, type Obstacle, type RingPoint } from './place';
+import { placeOnRing, type Box, type Obstacle, type RingPoint } from './place';
 
 const SCALES = [50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000];
 const BAR_LENGTHS = [1, 2, 2.5, 5, 10, 20, 25, 50];
@@ -19,6 +19,60 @@ export function drawingScale(pxPerMetre: number): number {
 
 export function scaleBarLength(pxPerMetre: number): number {
   return BAR_LENGTHS.find((l) => l * pxPerMetre >= 90) ?? BAR_LENGTHS[BAR_LENGTHS.length - 1];
+}
+
+/** Camera elevation (degrees) from which the view reads as a plan: level datums and member callouts mean nothing there. */
+export const PLAN_ELEVATION = 70;
+/** A datum label's height in pixels: datums closer together than this would print over each other. */
+export const DATUM_GAP = 15;
+/** How long the boxes of the viewport's cards and controls are reused before they are measured again (ms). */
+export const CHROME_TTL = 250;
+
+/** Whether the view reads as a plan: the crane plan, or any camera looking nearly straight down. */
+export const planLike = (reachMode: ReachMode, elevation: number) => reachMode === 'emph' || elevation >= PLAN_ELEVATION;
+
+const hits = (a: Box, b: Box) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+
+/**
+ * Which level datums show, and how strongly (0 hidden … 1), given each
+ * one's row on screen (the code, the tick and the value) and its own
+ * opacity. A row under a card or control (the title block, the caption, a
+ * drawer, the play bar) is left out; so is a row closer than `gap` to one
+ * already shown, from the top down, so a far-off or flattened tower does not
+ * pile its datums into one illegible band; a row across the selected issue
+ * steps right back, so the subject reads first. In a plan none shows.
+ */
+export function datumOpacity(rows: { box: Box; op: number }[], o: { plan: boolean; blocked: Box[]; issue: Box | null; gap?: number }): number[] {
+  const gap = o.gap ?? DATUM_GAP;
+  const out = rows.map(() => 0);
+  if (o.plan) return out;
+  const order = rows.map((_, i) => i).filter((i) => rows[i].op > 0).sort((a, b) => rows[a].box.y0 - rows[b].box.y0);
+  let last = -Infinity;
+  for (const i of order) {
+    const { box, op } = rows[i];
+    if (o.blocked.some((b) => hits(box, b))) continue;
+    if (box.y0 - last < gap) continue;
+    last = box.y0;
+    out[i] = o.issue && hits(box, o.issue) ? Math.min(op, 0.12) : op;
+  }
+  return out;
+}
+
+/**
+ * Where the 'H =' box sits: above the top datum, pushed down below any card
+ * it would sit under; null (hidden) when that leaves it on the top datum's
+ * own label or off the bottom of the room it has.
+ */
+export function heightBoxAt(want: { x: number; y: number }, size: { w: number; h: number }, topRow: number, blocked: Box[], maxY: number): { x: number; y: number } | null {
+  let y = want.y;
+  for (let k = 0; k < 3; k++) {
+    const box = { x0: want.x, y0: y, x1: want.x + size.w, y1: y + size.h };
+    const under = blocked.filter((b) => hits(box, b));
+    if (!under.length) break;
+    y = Math.max(...under.map((b) => b.y1)) + 2;
+  }
+  if (y + size.h > topRow - 2 || y + size.h > maxY) return null;
+  return { x: want.x, y };
 }
 
 interface CalloutEl {
@@ -47,7 +101,13 @@ export class Overlays {
   private reachAt: { k: number; corner: number } | null = null;
   private pickAt: { k: number; corner: number } | null = null;
   private controlBoxes: Obstacle[] = [];
-  private controlsFrame = -Infinity;
+  /** When the controls were last measured (performance.now), so a page that draws a frame only now and then never places labels against stale boxes. */
+  private controlsAt = -Infinity;
+  /**
+   * The selected issue's box in the world (lo, hi), or null: while an issue is
+   * explained the member callouts step aside and datums across it fade.
+   */
+  issueBox: [[number, number, number], [number, number, number]] | null = null;
   private bounds: { lo: [number, number, number]; hi: [number, number, number] };
 
   constructor(
@@ -93,10 +153,20 @@ export class Overlays {
 
   private project: Project;
 
-  /** The viewport's controls in overlay pixels; they move only on resize or when the caption's text wraps, so a few reads a second do. */
+  /**
+   * Forget the measured controls: called when a drawer, the banner, the
+   * caption or the view's mode changes, so the next frame (perhaps the last
+   * one drawn before the page goes idle) places the labels against them.
+   */
+  chromeChanged() {
+    this.controlsAt = -Infinity;
+  }
+
+  /** The viewport's controls in overlay pixels; they move only on resize, a drawer, the banner or the caption, so a few reads a second do (and chromeChanged clears them at once). */
   private controls(host: DOMRect): Obstacle[] {
-    if (this.frameNo - this.controlsFrame < 12) return this.controlBoxes;
-    this.controlsFrame = this.frameNo;
+    const now = performance.now();
+    if (now - this.controlsAt < CHROME_TTL) return this.controlBoxes;
+    this.controlsAt = now;
     const out: Obstacle[] = [];
     const root = this.html.parentElement ?? document;
     for (const el of root.querySelectorAll<HTMLElement>('.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner')) {
@@ -217,42 +287,68 @@ export class Overlays {
     this.frameNo++;
     const { w, h } = this.viewer.viewportSize;
     this.svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    this.updateDatums(state, w, h);
-    this.updateCallouts(state, w, h);
+    const host = this.html.getBoundingClientRect();
+    const plan = planLike(this.reachMode, this.viewer.readout().el);
+    const issue = this.issueBox ? this.screenBox(this.issueBox) : null;
+    this.updateDatums(state, w, h, this.controls(host), plan, issue);
+    // the member callouts give way to a plan and to the issue being explained
+    this.updateCallouts(state, w, h, plan || !!this.issueBox);
     this.updateReach(state.crane, craneShown, w, h, state.builtTop);
   }
 
-  private updateDatums(state: SequenceState, w: number, h: number) {
+  /** A world box's extent on screen, or null when part of it is behind the camera. */
+  private screenBox([lo, hi]: [[number, number, number], [number, number, number]]): Box | null {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const q = this.viewer.project([i & 1 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 4 ? hi[2] : lo[2]]);
+      if (q.behind) return null;
+      x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y);
+    }
+    return { x0: x0 - 6, y0: y0 - 6, x1: x1 + 6, y1: y1 + 6 };
+  }
+
+  private updateDatums(state: SequenceState, w: number, h: number, chrome: Box[], plan: boolean, issue: Box | null) {
     const x = w - 96;
-    let topY = Infinity;
-    let botY = -Infinity;
-    for (const d of this.datumEls) {
+    const rows = this.datumEls.map((d) => {
       const p = this.viewer.project([0, d.y, 0]);
       const reached = d.level === 'TOP' ? state.complete || state.builtTop >= d.y - 0.01 : state.builtTop >= d.y - 0.05;
-      const visible = p.y > 70 && p.y < h - 150;
-      const op = !visible ? 0 : reached ? 1 : 0.28;
+      const visible = !p.behind && p.y > 70 && p.y < h - 150;
+      // the code, the tick and the value, as drawn below
+      return { y: p.y, box: { x0: x - 74, y0: p.y - 9, x1: x + 74, y1: p.y + 8 }, op: !visible ? 0 : reached ? 1 : 0.28 };
+    });
+    const ops = datumOpacity(rows, { plan, blocked: chrome, issue });
+    let topY = Infinity;
+    let botY = -Infinity;
+    this.datumEls.forEach((d, i) => {
+      const { y } = rows[i];
+      const op = ops[i];
       d.code.style.opacity = String(op);
       d.tick.style.opacity = String(op);
       d.dash.style.opacity = String(op * 0.8);
-      d.code.style.transform = `translate(${x - 66}px, ${p.y - 9}px)`;
+      d.code.style.transform = `translate(${x - 66}px, ${y - 9}px)`;
       d.code.style.width = '140px';
-      d.tick.setAttribute('d', `M${x - 6} ${p.y + 6}L${x + 6} ${p.y - 6}M${x - 7} ${p.y}H${x + 7}`);
+      d.tick.setAttribute('d', `M${x - 6} ${y + 6}L${x + 6} ${y - 6}M${x - 7} ${y}H${x + 7}`);
       d.dash.setAttribute('x1', String(x - 74));
       d.dash.setAttribute('x2', String(x - 10));
-      d.dash.setAttribute('y1', String(p.y));
-      d.dash.setAttribute('y2', String(p.y));
-      if (visible) {
-        topY = Math.min(topY, p.y);
-        botY = Math.max(botY, p.y);
+      d.dash.setAttribute('y1', String(y));
+      d.dash.setAttribute('y2', String(y));
+      if (op > 0.2) {
+        topY = Math.min(topY, y);
+        botY = Math.max(botY, y);
       }
       // codes sit left of the line, values right of it
       (d.code.firstElementChild as HTMLElement).style.cssText = 'display:inline-block;width:60px;text-align:right;margin-right:14px';
-    }
-    const top = this.datumEls.find((d) => d.level === 'TOP')!;
-    const pTop = this.viewer.project([0, top.y, 0]);
-    this.hbox.style.opacity = state.complete ? '1' : '0';
-    this.hbox.style.transform = `translate(${x - 52}px, ${pTop.y - 40}px)`;
-    if (Number.isFinite(topY)) {
+    });
+    // the overall height, above the top of the ladder (the top datum, or the highest one a card leaves showing) and clear of the cards
+    const top = this.datumEls.findIndex((d) => d.level === 'TOP');
+    const shownTop = top >= 0 && ops[top] > 0.2 ? top : rows.reduce((k, r, i) => (ops[i] > 0.2 && (k < 0 || r.y < rows[k].y) ? i : k), -1);
+    const size = { w: this.hbox.offsetWidth || 96, h: this.hbox.offsetHeight || 18 };
+    const at = state.complete && !plan && shownTop >= 0 ? heightBoxAt({ x: x - 52, y: Math.min(rows[top >= 0 ? top : shownTop].y, rows[shownTop].y) - 40 }, size, rows[shownTop].y - 9, chrome, h - 150) : null;
+    this.hbox.style.opacity = at ? '1' : '0';
+    if (at) this.hbox.style.transform = `translate(${at.x}px, ${at.y}px)`;
+    const ruler = Number.isFinite(topY);
+    this.rulerLine.style.opacity = ruler ? '' : '0';
+    if (ruler) {
       this.rulerLine.setAttribute('x1', String(x));
       this.rulerLine.setAttribute('x2', String(x));
       this.rulerLine.setAttribute('y1', String(topY - 14));
@@ -260,8 +356,8 @@ export class Overlays {
     }
   }
 
-  private updateCallouts(state: SequenceState, w: number, h: number) {
-    const recent = state.callouts.slice(0, RANK_OPACITY.length);
+  private updateCallouts(state: SequenceState, w: number, h: number, quiet = false) {
+    const recent = quiet ? [] : state.callouts.slice(0, RANK_OPACITY.length);
     const ids = new Set(recent.map((s) => s.key));
     for (const [id, c] of this.callouts) {
       if (!ids.has(id)) {
@@ -290,11 +386,16 @@ export class Overlays {
       const side = w > 1150 && a.x > w * 0.5 ? 'r' : 'l';
       placed.push({ item, c, ax: a.x, ay: a.y, side, y: a.y - 24, rank });
     });
-    // de-overlap per side, below the caption card
-    const cap = document.getElementById('caption');
-    const minY = cap && cap.style.visibility !== 'hidden' ? cap.offsetTop + cap.offsetHeight + 16 : 80;
+    // de-overlap per side, below the caption card; on the left below an open drawer too, on the right below the title block
+    const bottom = (id: string) => {
+      const el = document.getElementById(id);
+      return el && !el.hidden && el.style.visibility !== 'hidden' && el.offsetHeight > 0 ? el.offsetTop + el.offsetHeight + 16 : 80;
+    };
+    const capY = bottom('caption');
+    const minYs = { l: Math.max(capY, bottom('drawer')), r: Math.max(capY, bottom('titleBlock')) };
     const maxY = h - 260; // stay clear of the scale bar and transport
     for (const side of ['l', 'r'] as const) {
+      const minY = minYs[side];
       const list = placed.filter((p) => p.side === side).sort((a, b) => a.y - b.y);
       let cursor = minY;
       for (const p of list) {

@@ -181,3 +181,25 @@ export function clearPrefs(store: PrefsStore | null): boolean {
     return false;
   }
 }
+
+// ── the crane toggle and the crane plan ─────────────────────────────────────
+
+/**
+ * The crane as the user set it (K, the Crane toggle: saved) and the crane plan
+ * (L: never saved). The plan is about the crane, so it shows the crane while
+ * it is open without changing the user's choice: closing the plan, or saving
+ * the settings while it is open, keeps what the user chose.
+ */
+export interface CraneView {
+  crane: boolean;
+  plan: boolean;
+}
+
+/** Whether the crane is drawn. */
+export const craneShown = (v: CraneView) => v.crane || v.plan;
+
+/** K or the Crane toggle: from the plan, the crane goes and the plan with it; otherwise the choice flips. */
+export const toggleCrane = (v: CraneView): CraneView => (v.plan ? { crane: false, plan: false } : { crane: !v.crane, plan: false });
+
+/** L or the Crane plan button. */
+export const toggleCranePlan = (v: CraneView): CraneView => ({ crane: v.crane, plan: !v.plan });

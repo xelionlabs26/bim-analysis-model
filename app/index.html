@@ -45,6 +45,13 @@
         </div>
       </header>
 
+      <!-- first visit: what this is, how to play it, how to bring your own model (dismissed once per browser); straight after the header, so its buttons come early in the tab order -->
+      <section class="intro card" id="intro" aria-labelledby="introTitle" hidden>
+        <h2 class="intro-title" id="introTitle">Getting started</h2>
+        <div class="intro-cards" id="introCards"></div>
+        <button class="intro-close" id="introClose" title="Close (Esc)">Got it</button>
+      </section>
+
       <!-- RAIL ───────────────────────────────────────────────────────────── -->
       <nav class="rail" id="rail" aria-label="Workspace">
         <div class="rail-items" id="railItems"></div>
@@ -64,6 +71,8 @@
       <!-- VIEWPORT ───────────────────────────────────────────────────────── -->
       <main class="viewport card" id="viewport">
         <div class="watermark" aria-hidden="true">ARBOR</div>
+        <!-- the opening frame: the finished model, paused; this runs the build from the start; first in the model, so it comes early in the tab order -->
+        <button class="hero-play" id="heroPlay" aria-label="Play the build from the start" aria-describedby="heroSub" hidden><span class="hp-ico" data-icon="play" aria-hidden="true"></span><span class="hp-text"><b>Play the build</b><small id="heroSub"></small></span></button>
         <svg class="overlay" id="overlaySvg"></svg>
         <div class="overlay" id="overlayHtml"></div>
         <svg class="overlay issue-svg" id="issueSvg" aria-hidden="true"></svg>
@@ -130,9 +139,6 @@
             <button class="tkey for-expert" id="btnView" title="Next view (V)" aria-label="View" aria-keyshortcuts="V">VIEW<small aria-hidden="true">V</small></button>
           </div>
         </div>
-
-        <!-- the opening frame: the finished model, paused; this runs the build from the start -->
-        <button class="hero-play" id="heroPlay" aria-label="Play the build from the start" aria-describedby="heroSub" hidden><span class="hp-ico" data-icon="play" aria-hidden="true"></span><span class="hp-text"><b>Play the build</b><small id="heroSub"></small></span></button>
 
         <div class="lift-banner card" id="liftBanner" role="alert" hidden>
           <div class="lb-text"><b id="liftBannerHead">Pick over the crane's chart</b><span id="liftBannerBody"></span></div>
@@ -254,13 +260,6 @@
           <button class="sheet-close" id="sheetClose" aria-label="Close the issue" title="Close (Esc)" data-icon="close"></button>
         </div>
         <div class="sheet-body" id="sheetBody"></div>
-      </section>
-
-      <!-- first visit: what this is, how to play it, how to bring your own model (dismissed once per browser) -->
-      <section class="intro card" id="intro" aria-labelledby="introTitle" hidden>
-        <h2 class="intro-title" id="introTitle">Getting started</h2>
-        <div class="intro-cards" id="introCards"></div>
-        <button class="intro-close" id="introClose" title="Close (Esc)">Got it</button>
       </section>
 
       <!-- every keyboard shortcut: the ? key and the ? button in the header -->

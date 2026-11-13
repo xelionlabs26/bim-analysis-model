@@ -1,9 +1,27 @@
 import { fmtCarbon, fmtInt, fmtMass, pad2, type SequenceState, type Timeline } from '../engine/timeline';
-import { liftingLabel, liftLevel, reviewedLift, type Project, type Step } from '../data/types';
+import { liftingLabel, liftLevel, reviewedLift, type LiftCheck, type Project, type Step } from '../data/types';
 import { stripScroll } from './layout';
+import { toIfc } from '../checks/view';
+import type { Vec3 } from '../data/types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/** A time as mm:ss.s; the tenths are rounded first, so 59.96 s reads 01:00.0, never 00:60.0. */
+export function timecode(t: number): string {
+  const tenths = Math.round(Math.max(0, t) * 10);
+  return `${pad2(Math.floor(tenths / 600))}:${((tenths % 600) / 10).toFixed(1).padStart(4, '0')}`;
+}
+
+/** Where a step was placed, in the IFC world frame the exports use (Z up, the file's own origin), to 0.1 m. */
+export function placedAt(centroid: Vec3, ifcOffset?: Vec3): string {
+  return toIfc(centroid, ifcOffset)
+    .map((v) => {
+      const s = v.toFixed(1);
+      return s === '-0.0' ? '0.0' : s;
+    })
+    .join(' · ');
+}
 
 export interface PerfSample {
   fps: number;
@@ -15,14 +33,16 @@ export interface PerfSample {
 /**
  * The operation panel's lift line for a step. `craneId` is the tower crane's,
  * or null on a project without one, where crane picks go in by mobile crane
- * (the checks read those against the mobile crane's chart).
+ * (the checks read those against the mobile crane's chart). `lift` is the
+ * step's critical pick: by default step.lift, or the one chosen with the
+ * rigging allowance as the checks choose it (engine/lifts.ts riggedLift).
  */
-export function liftText(step: Step | null, craneId: string | null = 'TC-1', warnAt = 0.85, riggingKg = 0): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
+export function liftText(step: Step | null, craneId: string | null = 'TC-1', warnAt = 0.85, riggingKg = 0, lift: LiftCheck | null | undefined = step?.lift): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
   if (!step) return { text: '—', level: 'none' };
   if (step.method === 'cast') return { text: step.motion === 'bore' ? 'bored in situ · piling rig' : 'cast in place · pump + formwork', level: 'none' };
   if (step.method === 'manual') return { text: 'by hand · site team', level: 'none' };
   if (craneId === null) return { text: 'mobile crane · set up beside the building', level: 'none' };
-  const l = step.lift;
+  const l = lift;
   if (!l) return { text: `${craneId} · bulk bags`, level: 'none' };
   const { kg, util } = reviewedLift(l.pieceKg, l.capacityKg, riggingKg);
   const pct = Math.round(util * 100);
@@ -67,6 +87,8 @@ export class SequenceUI {
   liftWarn = 0.85;
   /** Rigging added to each pick (the checks' allowance). */
   liftRigKg = 0;
+  /** A step's critical pick as the checks read it (with the rigging); step.lift when unset. */
+  liftFor: ((stepIndex: number) => LiftCheck | null) | null = null;
 
   constructor(
     private p: Project,
@@ -282,8 +304,7 @@ export class SequenceUI {
     if (hdr) hdr.textContent = st.sheet;
 
     // timecode + scrubber
-    const fmt = (t: number) => `${pad2(Math.floor(t / 60))}:${(t % 60).toFixed(1).padStart(4, '0')}`;
-    $('timecode').innerHTML = `${fmt(s.t)} /<br>${pad2(Math.floor(D / 60))}:${pad2(Math.round(D % 60))}`;
+    $('timecode').innerHTML = `${timecode(s.t)} /<br>${timecode(D)}`;
     $('scrubFill').style.width = `${(s.t / D) * 100}%`;
     $('scrubKnob').style.left = `${(s.t / D) * 100}%`;
     const now = s.t.toFixed(1);
@@ -313,9 +334,9 @@ export class SequenceUI {
     $('opStage').textContent = step ? `${pad2(step.stage)} · ${step.zone}` : '—';
     $('opQty').textContent = step ? `${step.partCount} pcs · ${step.code}` : '—';
     $('opMat').textContent = step?.material ?? '—';
-    $('opXYZ').textContent = step ? step.centroid.map((v) => v.toFixed(1)).join(' · ') : '—';
+    $('opXYZ').textContent = step ? placedAt(step.centroid, p.meta.ifcOffset) : '—';
     $('opMass').textContent = step ? `${fmtMass(step.massKg)} · ${step.carbonKg >= 1 ? fmtCarbon(step.carbonKg).replace('≈ ', '') : '—'}` : '—';
-    const lift = liftText(step, p.crane?.id ?? null, this.liftWarn, this.liftRigKg);
+    const lift = liftText(step, p.crane?.id ?? null, this.liftWarn, this.liftRigKg, step ? (this.liftFor?.(step.index) ?? step.lift) : null);
     const liftEl = $('opLift');
     liftEl.textContent = lift.text;
     liftEl.dataset.level = lift.level;

@@ -13,36 +13,38 @@ import '@fontsource/geist-mono/700';
 import './styles.css';
 
 import { buildProject } from './data/project';
-import { ACTIVE_HOLD } from './data/assemble';
 import type { Project, Vec3 } from './data/types';
-import { Timeline } from './engine/timeline';
+import { Timeline, type CraneState } from './engine/timeline';
 import { Playback } from './engine/playback';
 import type { CutState } from './engine/presentation';
 import { ALL_STAGES, CONTEXT_STAGE, VIEW_PRESETS, Viewer, type IssueSpec, type RenderStyle } from './scene/viewer';
 import { Overlays, drawingScale, scaleBarLength } from './ui/overlays';
 import { SequenceUI } from './ui/panels';
 import { carbonFacts, projectFacts, renderHeaderDrawing } from './ui/header';
-import { defaultedSummary, defaultedText, endsEarly, importError, loadedMessage, type DefaultedSummary, type LoadStage } from './ui/report';
+import { defaultedSummary, defaultedText, endsEarly, ifcName, importError, loadedMessage, type DefaultedSummary, type LoadStage } from './ui/report';
 import { hydrateIcons, ICONS, setIcon } from './ui/icons';
 import { readIfc } from './ifc/model';
 import { projectFromIfc } from './ifc/sequence';
 import { runChecks } from './checks/run';
 import { DEFAULT_SETTINGS, RULE_BY_ID, type CheckReport, type CheckSettings, type Issue, type RuleId } from './checks/types';
 import { partLabel, sentenceStart } from './checks/rules';
-import { cranePlanPose, firstOverPick, OverPickWatch, type OverPick } from './engine/lifts';
+import { cranePlanPose, firstOverPick, OverPickWatch, riggedLift, type OverPick, type RiggedLift } from './engine/lifts';
 import { issueView, modelBounds, type ModelBounds } from './checks/view';
 import { chromeBoxes, IssuesUI, rulesTable } from './ui/issues';
-import { issueFrame } from './ui/place';
+import { keepFocus } from './ui/focus';
+import { centreSpot, issueFrame, restFrame } from './ui/place';
 import { bcfZip } from './export/bcf';
 import { issuesCsv } from './export/csv';
 import { sequenceJson } from './export/sequence';
 import type { CameraPose } from './engine/presentation';
-import { nextTab, routeKey } from './ui/keys';
+import { modifierOwnsKey, nextTab, routeKey } from './ui/keys';
 import { applyBrand, brandName } from './ui/brand';
-import { moreSides, NARROW_QUERY, orbitTouchAction, revealScroll, ScrubDrag, toastLife, type ToastKind } from './ui/layout';
-import { keyAction, shortcutSheetHtml, type ActionId } from './ui/shortcuts';
-import { heroLine, introCards, markIntroSeen, openingPlan, presentButton, showIntro, startsInClientMode } from './ui/present';
-import { browserStore, clearPrefs, loadPrefs, readThresholds, RESOLUTIONS, sameSettings, savePrefs, THRESHOLD_FIELDS, thresholdValue, type ViewPrefs } from './ui/prefs';
+import { moreSides, NARROW_QUERY, orbitTouchAction, revealScroll, ScrubDrag, toastLife, toastReplaces, type ToastKind } from './ui/layout';
+import { actionInView, keyAction, shortcutGroupsFor, shortcutSheetHtml, type ActionId } from './ui/shortcuts';
+import { heroLine, importHint, introCards, markIntroSeen, openingPlan, overBannerStays, overPickResponse, presentButton, presentNote, showIntro, startsInClientMode, TOUCH_QUERY } from './ui/present';
+import { browserStore, clearPrefs, craneShown, loadPrefs, readThresholds, RESOLUTIONS, sameSettings, savePrefs, THRESHOLD_FIELDS, thresholdValue, toggleCrane, toggleCranePlan, type ViewPrefs } from './ui/prefs';
+import { timeForStep as settledStepTime } from './ui/steps';
+import { ExportGuard, LoadGate, sampleFallback } from './ui/loads';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -58,11 +60,15 @@ const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').mat
 /** The one-column layout: panel under the model, play bar pinned to the bottom, the selected issue in a sheet. */
 const narrow = window.matchMedia?.(NARROW_QUERY) ?? null;
 const isNarrow = () => !!narrow?.matches;
+/** A touch screen with no hover (a phone or tablet): the words say tap, not press a key or drop a file. */
+const isTouch = () => !!window.matchMedia?.(TOUCH_QUERY).matches;
 /** A ?t= link: a number of seconds ("12" or "12s"), or null. */
 const linkTime = (() => {
   const t = parseFloat(params.get('t') ?? '');
   return Number.isFinite(t) ? t : null;
 })();
+/** ?play=1: a kiosk loop, playing from the start with nobody at the keyboard. */
+const kiosk = params.get('play') === '1';
 /** A page opened on the Duplex sample loads it first: the demo tower is only built if the sample fails. */
 const sampleFirst = params.get('sample') === 'duplex';
 /** The project on show; unset only while a page opened on a sample loads it. */
@@ -78,23 +84,57 @@ let hero = false;
  * with the large Play button.
  */
 const openPlayback = (p: Project) => {
-  const plan = openingPlan({ linkTime, paused: params.get('paused') === '1', autoplay: params.get('play') === '1', duration: p.duration });
+  const plan = openingPlan({ linkTime, paused: params.get('paused') === '1', autoplay: kiosk, duration: p.duration });
+  opening = true;
   playback.seek(plan.t);
   playback.toggle(plan.playing);
+  opening = false;
   hero = plan.hero;
   syncHero();
 };
+/** Set while the page puts the playhead where it opens: that is not the user pressing Play. */
+let opening = false;
 /** The large Play button shown or hidden, with what it plays. */
 function syncHero() {
   const b = $('heroPlay');
-  b.hidden = !hero || !project;
+  const hide = !hero || !project;
+  // a keyboard user who had it focused carries on from the transport's Play button, not from the top of the page
+  if (hide && !b.hidden && document.activeElement === b) $('btnPlay').focus();
+  b.hidden = hide;
   if (project) $('heroSub').textContent = heroLine(project.steps.length, project.duration);
+  placeHero();
+}
+/** Cards and controls the large Play button keeps off (the play bar is fixed over the foot of a phone's screen). */
+const HERO_CHROME = '.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner, #intro, #playbar';
+/**
+ * The large Play button in the clear part of the model, nearest its middle:
+ * off the caption, the toolbar and the title block (ui/place.ts centreSpot);
+ * on a phone, in the part above the pinned play bar. Where nothing clear
+ * holds it, the stylesheet's place stands.
+ */
+function placeHero() {
+  const b = $('heroPlay');
+  if (b.hidden) return;
+  const host = $('viewport');
+  const r = host.getBoundingClientRect();
+  // on a phone the model runs on below the screen: only what shows counts
+  const h = Math.min(r.height, window.innerHeight - r.top);
+  const at = r.width > 0 && h > 0 ? centreSpot({ x0: 0, y0: 0, x1: r.width, y1: h }, chromeBoxes(host, HERO_CHROME, 8, document), { w: b.offsetWidth, h: b.offsetHeight }) : null;
+  b.style.left = at ? `${Math.round(at.x)}px` : '';
+  b.style.top = at ? `${Math.round(at.y)}px` : '';
+}
+/** The large Play button goes once the user changes the view (a drawer, the crane plan, an issue, a view, a drag). */
+function dropHero() {
+  if (!hero) return;
+  hero = false;
+  syncHero();
 }
 if (project) openPlayback(project);
 
 hydrateIcons();
-// the product name in the header: one setting (brand.ts), or ?brand= for a white-label demo
-applyBrand(brandName(params.get('brand')), $('wordmark'), document);
+// the product name in the header: one setting (brand.ts), or ?brand= for a white-label demo; BCF exports carry it as their author
+const brand = brandName(params.get('brand'));
+applyBrand(brand, $('wordmark'), document);
 
 const viewer = new Viewer($('viewport'), project);
 let overlays: Overlays;
@@ -131,17 +171,21 @@ const view = {
   /** The presentation view (P, the Present button or ?mode=client): expert chrome put away, toggles in plain words. */
   client: startsInClientMode(params.get('mode'), saved.view?.client),
 };
+/** The crane as the user set it and the crane plan, as ui/prefs.ts reads them. */
+const craneView = () => ({ crane: view.crane, plan: view.cranePlan });
 let issuesUI: IssuesUI | undefined;
 let report: CheckReport | null = null;
 const defaultSettings = (): CheckSettings => ({ ...DEFAULT_SETTINGS, truck: [...DEFAULT_SETTINGS.truck] });
 let checkSettings: CheckSettings = saved.checks ?? defaultSettings();
 let checkRun = 0;
-/** Camera pose that frames the selected issue; released when playback resumes or the view is dragged. */
+/** Camera pose that frames the selected issue (or the piece at an over-chart stop); released when playback resumes or the view is dragged. */
 let focusPose: CameraPose | null = null;
+/** What focusPose frames, so a resized viewport frames it again. */
+let focusBox: Pick<Issue, 'box'> | null = null;
 /** How focusPose sits in the viewport: its target's spot on screen, whether the caption steps aside, and the size it was worked out for. */
 let focusFrame: { aim: { x: number; y: number }; hideCaption: boolean; w: number; h: number } | null = null;
 /** Cards and controls over the viewport that an issue is framed clear of. */
-const FRAME_CHROME = '.toolbar, #titleBlock, #scrubber, #transport, #drawer, #loading, #liftBanner, #issueSheet';
+const FRAME_CHROME = '.toolbar, #titleBlock, #scrubber, #transport, #drawer, #loading, #liftBanner, #issueSheet, #intro';
 /** Camera pose of the crane plan; released when the view is dragged (the emphasis stays until the plan is turned off). */
 let planPose: CameraPose | null = null;
 /** Where the plan's target sits on screen, whether the caption steps aside for it, and the viewport size it was worked out for. */
@@ -152,11 +196,23 @@ let presetBeforePlan = 0;
 let overWatch = new OverPickWatch(null);
 /** The pick the banner is about, while it shows. */
 let bannerPick: OverPick | null = null;
+/** Whether the banner is a passing note (a kiosk loop keeps playing through the pick) rather than a stop. */
+let bannerNote = false;
 viewer.setResolution(view.resolution);
-viewer.setAutoRotate(view.autoRotate);
+syncRotate();
 applyViewLook();
 $('gpuCard').hidden = !view.perf;
 applyMode();
+
+/**
+ * Auto-rotate turns the model while the build plays: the setting (A, the
+ * Rotate button) is "turn while it plays", so a paused model (the opening
+ * frame, a framed issue) stands still and the page stops drawing.
+ */
+function syncRotate() {
+  const on = view.autoRotate && playback.playing;
+  if (viewer.controls.autoRotate !== on) viewer.setAutoRotate(on);
+}
 
 /** Push the view toggles that live in the viewer's shaders and layers. */
 function applyViewLook() {
@@ -170,7 +226,7 @@ function applyViewLook() {
 let rotatePref = saved.view?.autoRotate ?? true;
 // likewise a link that opens in one view or the other: only P or the Present button change the saved choice
 let clientPref = saved.view?.client ?? false;
-/** The view toggles worth keeping between visits. */
+/** The view toggles worth keeping between visits (the crane as the user set it: the crane plan shows it without changing that). */
 const viewPrefs = (): ViewPrefs => ({ style: view.style, colour: view.colour, ghost: view.ghost, crane: view.crane, autoRotate: rotatePref, flags: view.flags, resolution: view.resolution, client: clientPref });
 /** Save what the user chose: called from the controls, never from code that only shows state. */
 function savePreferences() {
@@ -190,15 +246,24 @@ function setClient(on: boolean, save = true) {
   }
   if (on === view.client) return;
   view.client = on;
+  if (on) {
+    // the presentation view has no rail to close a drawer from, and no crane plan button
+    if (view.rail !== 'model') selectRail('model');
+    if (view.cranePlan) setCranePlan(false);
+    if (bannerPick) hideOverBanner();
+  }
   applyMode();
-  if (on && save) toast('Presentation view. Press P or Exit presentation for the full view.');
+  if (on && save) toast(presentNote(isTouch()));
 }
 function applyMode() {
   $('app').classList.toggle('client', view.client);
   const b = presentButton(view.client);
   $('presentLabel').textContent = b.label;
   $('btnPresent').title = b.title;
-  viewer.invalidate();
+  // the shortcut sheet lists the keys this view answers
+  $('helpBody').innerHTML = shortcutSheetHtml(shortcutGroupsFor(view.client));
+  if (mounted) renderCarbon(project);
+  chromeMoved();
 }
 
 // ── Opening: first-run cards and the shortcut sheet ────────────────────────
@@ -208,7 +273,7 @@ function renderIntro() {
   const el = $('intro');
   el.hidden = !introOpen || !project;
   if (el.hidden) return;
-  const [what, play, own] = introCards(project.name);
+  const [what, play, own] = introCards(project.name, isTouch());
   const card = (c: { title: string; body: string }, action = '') => `<article class="intro-card"><h3>${esc(c.title)}</h3>${action}<p>${esc(c.body)}</p></article>`;
   // the large Play button is the second card's action, so the cards only add the way to bring a model in
   $('introCards').innerHTML = card(what) + card(play) + card(own, '<button class="intro-act" id="introOpen">Open IFC file…</button>');
@@ -221,8 +286,12 @@ function renderIntro() {
 function dismissIntro() {
   if (!introOpen) return;
   introOpen = false;
-  $('intro').hidden = true;
+  const el = $('intro');
+  // the keyboard carries on from the transport's Play button, not from the top of the page
+  const hadFocus = el.contains(document.activeElement);
+  el.hidden = true;
   markIntroSeen(store);
+  if (hadFocus) $('btnPlay').focus();
 }
 /** The large Play button and the first card's: the build from the first step. */
 function playFromStart() {
@@ -233,7 +302,6 @@ function playFromStart() {
   playback.toggle(true);
 }
 const help = $<HTMLDialogElement>('helpSheet');
-$('helpBody').innerHTML = shortcutSheetHtml();
 function openHelp() {
   if (help.open) return;
   if (typeof help.showModal === 'function') help.showModal();
@@ -279,6 +347,8 @@ function mount(p: Project) {
   report = null;
   focusPose = null;
   importFailure = null;
+  // a failure or warning about the model before is over once another is on show
+  if (toastKind !== 'info') hideToast();
   hideOverBanner();
   overWatch = new OverPickWatch(null); // syncLiftWarn below finds this project's first over-chart pick
   if (!p.crane && view.cranePlan) setCranePlan(false);
@@ -302,12 +372,7 @@ function mount(p: Project) {
   // carbon and its caveat beside them, so it never sits below the fold
   defaulted = defaultedSummary(p);
   showingDefaulted = false;
-  const carbon = carbonFacts(p, defaulted?.count ?? 0);
-  $('carbonHead').textContent = carbon.head;
-  $('carbonTotal').textContent = carbon.main;
-  $('carbonUnit').textContent = carbon.unit;
-  $('carbonSub').textContent = carbon.sub;
-  $('statusCarbon').title = carbon.label;
+  renderCarbon(p);
   document.querySelector('.watermark')!.textContent = p.meta.watermark;
   view.section = { on: false, plane: 'A', d: +p.presentation.cut.at.toFixed(1) };
   press('btnSection', false);
@@ -320,11 +385,25 @@ function mount(p: Project) {
   syncButtons();
   syncHero();
   renderIntro();
+  syncRestBox();
+}
+
+/** The carbon facts in the status card; the caveat points to Import, or to the full view where Import is put away. */
+function renderCarbon(p: Project) {
+  const cut = !!(p.report as { truncated?: unknown } | undefined)?.truncated;
+  const carbon = carbonFacts(p, defaulted?.count ?? 0, view.client, cut);
+  $('carbonHead').textContent = carbon.head;
+  $('carbonTotal').textContent = carbon.main;
+  $('carbonUnit').textContent = carbon.unit;
+  // a file that ends early: the caveat stays in view, on two short lines under the total
+  $('carbonSub').textContent = cut ? carbon.sub.replace(': ', ':\n') : carbon.sub;
+  $('carbonSub').classList.toggle('cut', cut);
+  $('statusCarbon').title = carbon.label;
 }
 
 function newIssuesUI(p: Project) {
   const ui = new IssuesUI(p, viewer, timeForStep, { select: selectIssue, exportBcf: () => void exportBcf(), exportCsv: () => void exportCsv(), compact: isNarrow });
-  if (bcfBusy) $('btnBcf').toggleAttribute('disabled', true);
+  if (bcf.running) $('btnBcf').toggleAttribute('disabled', true);
   return ui;
 }
 
@@ -354,9 +433,10 @@ function syncButtons() {
   press('btnMaterials', view.colour);
   press('btnGhost', view.ghost);
   const noCrane = !!project && !project.crane;
-  press('btnCrane', view.crane && !noCrane);
+  press('btnCrane', craneShown(craneView()) && !noCrane);
   for (const id of ['btnCrane', 'btnCranePlan']) {
-    $<HTMLButtonElement>(id).disabled = noCrane;
+    // nothing to show the crane of until the first model is up (a page opened on a sample)
+    $<HTMLButtonElement>(id).disabled = noCrane || !mounted;
     $(id).title = noCrane ? 'No tower crane: this building is lifted by mobile crane and by hand' : id === 'btnCrane' ? 'Show the crane (K)' : 'Crane plan: the reach from above (L)';
   }
   press('btnCranePlan', view.cranePlan);
@@ -397,15 +477,22 @@ function syncButtons() {
     $(t.pane).hidden = !on;
   }
 }
+let wasPlaying = playback.playing;
 playback.onChange(() => {
-  // pressing play hands the camera back to the sequence, and the over-chart banner has had its moment
+  // pressing play hands the camera back to the sequence
   if (playback.playing && focusPose) focusPose = null;
-  if (playback.playing) hideOverBanner();
+  // the over-chart banner has had its moment once play resumes (a passing note runs its course),
+  // or once the playhead is seeked or stepped off its pick
+  if (bannerPick && ((playback.playing && !bannerNote) || !overBannerStays(bannerPick.t, playback.t, bannerNote))) hideOverBanner();
+  // pressing Play (Space, the transport) puts the first-run cards away as the large Play button does
+  if (playback.playing && !wasPlaying && !opening) dismissIntro();
+  wasPlaying = playback.playing;
   // the opening frame's Play button has done its job once the sequence plays or moves
   if (hero && (playback.playing || playback.t < project.duration)) {
     hero = false;
     syncHero();
   }
+  syncRotate();
   syncButtons();
 });
 
@@ -451,10 +538,23 @@ function selectRail(id: string, focusDrawer = false) {
   if (!RAIL.some((r) => r.id === id)) return;
   view.rail = view.rail === id && id !== 'model' ? 'model' : id;
   if (view.rail === 'parts') view.tab = 'members';
+  if (view.rail !== 'model') dropHero();
   renderDrawer();
   syncButtons();
+  // one column: the drawer opens over the model, which may sit under the pinned play bar; bring the
+  // toolbar and the drawer up the screen as an issue does. Parts shows the Members list: bring its search up.
+  if (isNarrow() && view.rail !== 'model') {
+    if (view.rail === 'parts') {
+      // the panel's tabs at the top of the screen, the Members search under them
+      const dy = revealScroll($('tabMembers').getBoundingClientRect().top);
+      if (dy) window.scrollBy({ top: dy, behavior: 'instant' });
+    } else if (!drawer.hidden) {
+      const dy = revealScroll($('viewport').getBoundingClientRect().top);
+      if (dy) window.scrollBy({ top: dy, behavior: 'instant' });
+    }
+  }
   // the drawer comes late in the page's tab order: take a keyboard user straight to its first control
-  if (focusDrawer && !drawer.hidden) drawer.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select')?.focus();
+  if (focusDrawer && !drawer.hidden) drawer.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select')?.focus({ preventScroll: isNarrow() });
 }
 const railButton = (id: string) => railWrap.querySelector<HTMLElement>(`.rail-item[data-id="${id}"]`);
 
@@ -472,17 +572,40 @@ function overlaps(a: HTMLElement, b: HTMLElement) {
 function syncCaption() {
   const framed = focusPose ? focusFrame?.hideCaption : planPose ? planFrame?.hideCaption : false;
   const banner = $('liftBanner');
-  const v = drawer.hidden && !framed && (banner.hidden || !overlaps(banner, $('caption'))) ? 'visible' : 'hidden';
-  if ($('caption').style.visibility !== v) $('caption').style.visibility = v;
+  // on a phone the large Play button's opening frame needs every pixel of model, and the status card says the same
+  const heroUp = hero && isNarrow();
+  const v = drawer.hidden && !framed && !heroUp && (banner.hidden || !overlaps(banner, $('caption'))) ? 'visible' : 'hidden';
+  if ($('caption').style.visibility !== v) {
+    $('caption').style.visibility = v;
+    chromeMoved();
+    placeHero();
+  }
 }
 
+/**
+ * A card or control over the model came, went or changed size (a drawer, the
+ * banner, the caption, the view's mode, a resize): the overlay labels are
+ * placed against it on the next frame, which may be the last one drawn
+ * before the page goes idle.
+ */
+function chromeMoved() {
+  overlays?.chromeChanged();
+  viewer.invalidate();
+}
+
+/** The open drawer, redrawn; a control in it that had the focus keeps it (a second Enter acts again, Space does not start playback). */
 function renderDrawer() {
+  keepFocus(drawer, drawDrawer);
+}
+
+function drawDrawer() {
   const id = view.rail;
   viewer.invalidate();
   drawer.hidden = !project || !['layers', 'render', 'settings', 'import', 'section'].includes(id);
   drawer.classList.toggle('wide', id === 'import');
+  chromeMoved();
   syncCaption();
-  if (drawer.hidden) return;
+  if (drawer.hidden) return syncRestBox();
   drawer.setAttribute('aria-label', DRAWERS[id] ?? 'Settings');
   if (id === 'layers') {
     drawer.innerHTML =
@@ -603,7 +726,7 @@ function renderImportDrawer() {
         ${r.lifting ? `<dt>Lifting</dt><dd>${esc(sentenceStart(String(r.lifting)))}</dd>` : ''}
       </dl>
       <p class="cats mono">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>
-      ${skipped.length ? `<p class="warn">Not drawn: ${skipped.map(([k, v]) => `${esc(k.replace(/^IFC/, 'Ifc'))} × ${v}`).join(', ')}</p>` : ''}
+      ${skipped.length ? `<p class="warn">Not drawn: ${skipped.map(([k, v]) => `${esc(ifcName(k))} × ${v}`).join(', ')}</p>` : ''}
       ${warnings.filter((w) => w !== cutOff).map((w) => `<p class="warn">${esc(w)}</p>`).join('')}`,
     );
   }
@@ -614,7 +737,7 @@ function renderImportDrawer() {
       <button id="btnSampleIfc">Real sample: Duplex (Revit)</button>
       <button id="btnArbor">Arbor House</button>
     </div>
-    <p class="muted">Or drop an .ifc file onto the model.</p>
+    <p class="muted">${importHint(isTouch())}</p>
     ${importFailure ? `<div class="report-alert bad import-error" role="note"><b>Not loaded</b><p>${esc(/[.!?]$/.test(importFailure.message) ? importFailure.message : `${importFailure.message}.`)} The model on show has not changed.</p>${importFailure.detail ? `<details><summary>Technical detail</summary><p class="mono">${esc(importFailure.detail)}</p></details>` : ''}</div>` : ''}
     ${importFailure && rows.length ? `<h6 class="report-of">On show: ${esc(project.meta.fileName ?? project.name)}</h6>` : ''}
     ${rows.join('')}
@@ -624,7 +747,7 @@ function renderImportDrawer() {
   document.getElementById('btnShowDefaulted')?.addEventListener('click', () => setShowDefaulted(!showingDefaulted));
   $('btnArbor').addEventListener('click', () => {
     // supersedes any import still running; that import will no longer hide the card
-    beginLoad();
+    loads.begin();
     loading.hidden = true;
     mount(buildProject());
     playback.seek(0);
@@ -647,6 +770,8 @@ function importFailed(message: string, detail = '') {
 function loadFailed(fileName: string, err: unknown, stage: LoadStage, text?: string) {
   console.error(err);
   const e = importError(fileName, err, stage, text !== undefined && endsEarly(text));
+  // nothing on show yet (a page opened on a sample, then another file chosen that failed): the demo tower, so the page is not left empty
+  if (!mounted) showFallback();
   importFailed(e.message, e.detail);
 }
 
@@ -692,44 +817,43 @@ function showLoading(label: string, share: number) {
 const PHASE_LABEL = { parse: 'Reading the IFC file', geometry: 'Meshing elements', finish: 'Measuring elements' } as const;
 
 /**
- * Loads replace one another: each takes a generation, and work from an older
- * one is dropped when it resumes (its progress, its result, its errors and
- * hiding the loading card), so the model shown is always the last one asked for.
+ * Loads replace one another (ui/loads.ts): each takes a generation, and work
+ * from an older one is dropped when it resumes (its progress, its result, its
+ * errors and hiding the loading card), so the model shown is always the last
+ * one asked for.
  */
-let loadGen = 0;
-const beginLoad = () => ++loadGen;
-class Superseded extends Error {}
+const loads = new LoadGate();
 
 /** Read IFC text and show it. Resolves true when this load is the one now shown. */
-async function importIfcText(text: string, fileName: string, gen = beginLoad()): Promise<boolean> {
+async function importIfcText(text: string, fileName: string, gen = loads.begin()): Promise<boolean> {
   const t0 = performance.now();
   try {
     const model = await readIfc(
       text,
       (phase, share) => {
         // a newer load took over: stop meshing this one
-        if (gen !== loadGen) throw new Superseded();
+        loads.check(gen);
         showLoading(PHASE_LABEL[phase], share);
       },
       fileName,
     );
-    if (gen !== loadGen) return false;
+    if (!loads.isCurrent(gen)) return false;
     showLoading('Working out the build order', 1);
     await new Promise((r) => setTimeout(r, 0));
-    if (gen !== loadGen) return false;
+    if (!loads.isCurrent(gen)) return false;
     const { project: p } = projectFromIfc(model, fileName);
     mount(p);
     playback.seek(0);
     playback.toggle(true);
-    const done = loadedMessage(fileName, model.elements.length, (performance.now() - t0) / 1000, p.report as { truncated?: boolean; defaultedMaterials?: number } | undefined);
+    const done = loadedMessage(fileName, model.elements.length, (performance.now() - t0) / 1000, p.report as { truncated?: boolean; defaultedMaterials?: number } | undefined, view.client);
     toast(done.text, done.kind);
     return true;
   } catch (err) {
-    if (err instanceof Superseded || gen !== loadGen) return false;
+    if (!loads.reports(gen, err)) return false;
     loadFailed(fileName, err, 'read', text);
     return false;
   } finally {
-    if (gen === loadGen) loading.hidden = true;
+    if (loads.isCurrent(gen)) loading.hidden = true;
   }
 }
 
@@ -738,34 +862,33 @@ async function importFile(file: File) {
     importFailed(`${file.name} is not an .ifc file. Export IFC from your BIM tool and try again.`);
     return;
   }
-  const gen = beginLoad();
+  const gen = loads.begin();
   showLoading(`Opening ${file.name}`, 0);
   let text: string;
   try {
     text = await file.text();
   } catch (err) {
-    if (gen !== loadGen) return;
+    if (!loads.isCurrent(gen)) return;
     loading.hidden = true;
     loadFailed(file.name, err, 'open');
     return;
   }
-  if (gen !== loadGen) return;
+  if (!loads.isCurrent(gen)) return;
   await importIfcText(text, file.name, gen);
 }
 
 /** Fetch and show the Duplex sample. Resolves true when it is the model now shown. */
-async function loadSample(): Promise<boolean> {
-  const gen = beginLoad();
+async function loadSample(gen = loads.begin()): Promise<boolean> {
   showLoading('Fetching the Duplex sample', 0);
   try {
     const res = await fetch(SAMPLE_URL);
-    if (gen !== loadGen) return false;
+    if (!loads.isCurrent(gen)) return false;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
-    if (gen !== loadGen) return false;
+    if (!loads.isCurrent(gen)) return false;
     return await importIfcText(text, SAMPLE_NAME, gen);
   } catch (err) {
-    if (gen !== loadGen) return false;
+    if (!loads.reports(gen, err)) return false;
     loading.hidden = true;
     loadFailed(SAMPLE_NAME, err, 'sample');
     return false;
@@ -849,11 +972,9 @@ function jumpStage(dir: 1 | -1) {
   const target = dir > 0 ? Math.min(cur + 1, stageStarts.length - 1) : t - stageStarts[cur] > 0.6 ? cur : Math.max(cur - 1, 0);
   playback.seek(stageStarts[target] + 0.001);
 }
-/** A time at which `index` is the current step, as settled as it can be before the next one starts. */
+/** A time at which `index` is the current step, as settled as it can be inside its own stage (ui/steps.ts). */
 function timeForStep(index: number) {
-  const s = project.steps[index];
-  const after = project.steps[index + 1];
-  return after ? Math.max(s.t0 + 1e-3, Math.min(s.t1 + ACTIVE_HOLD, after.t0 - 1e-3)) : s.t1 + ACTIVE_HOLD;
+  return settledStepTime(project.steps, project.stages, index);
 }
 function jumpStep(dir: 1 | -1) {
   const i = timeline.stepIndexAt(playback.t);
@@ -870,7 +991,7 @@ const actions: Record<string, () => void> = {
   },
   rotate: () => {
     view.autoRotate = rotatePref = !view.autoRotate;
-    viewer.setAutoRotate(view.autoRotate);
+    syncRotate();
     syncButtons();
     savePreferences();
   },
@@ -884,6 +1005,7 @@ const actions: Record<string, () => void> = {
   },
   speed: () => playback.cycleSpeed(),
   view: () => {
+    dropHero();
     if (view.cranePlan) setCranePlan(false);
     view.presetIndex = (view.presetIndex + 1) % VIEW_PRESETS.length;
     const v = VIEW_PRESETS[view.presetIndex];
@@ -898,12 +1020,14 @@ const actions: Record<string, () => void> = {
   },
   crane: () => {
     if (!project.crane) return;
-    view.crane = !view.crane;
-    if (!view.crane && view.cranePlan) setCranePlan(false);
+    // from the crane plan, the crane goes and the plan with it; the plan never changes the saved choice (ui/prefs.ts)
+    const next = toggleCrane(craneView());
+    view.crane = next.crane;
+    if (next.plan !== view.cranePlan) setCranePlan(next.plan);
     syncButtons();
     savePreferences();
   },
-  cranePlan: () => setCranePlan(!view.cranePlan),
+  cranePlan: () => setCranePlan(toggleCranePlan(craneView()).plan),
   orbit: () => {
     view.orbit = !view.orbit;
     viewer.controls.enabled = view.orbit;
@@ -912,6 +1036,8 @@ const actions: Record<string, () => void> = {
     syncButtons();
   },
 };
+// every action reads the model on show: until the first one is up (a page opened on a sample), they do nothing
+for (const [name, fn] of Object.entries(actions)) actions[name] = () => void (mounted && fn());
 const bind = (id: string, fn: () => void) => $(id).addEventListener('click', fn);
 bind('btnPlay', actions.play);
 bind('btnPlay2', actions.play);
@@ -945,8 +1071,8 @@ bind('liftBannerIssue', () => {
 });
 bind('btnSection', actions.section);
 $('btnMenu').addEventListener('click', (e) => selectRail(view.rail === 'render' ? 'model' : 'render', e.detail === 0));
-bind('stagePrev', () => jumpStage(-1));
-bind('stageNext', () => jumpStage(1));
+bind('stagePrev', actions.prev);
+bind('stageNext', actions.next);
 bind('tabSeq', () => ((view.tab = 'seq'), syncButtons()));
 bind('tabMembers', () => {
   view.tab = 'members';
@@ -969,6 +1095,8 @@ $<HTMLInputElement>('memberSearch').addEventListener('input', (e) => {
   viewer.invalidate();
 });
 viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncButtons), { passive: true });
+// a drag on the model is the user taking the view: the opening frame's Play button gives way
+viewer.controls.addEventListener('start', dropHero);
 {
   // scrubber: bound once, reads the current project's duration
   const track = $('scrubTrack');
@@ -1004,13 +1132,22 @@ viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncBu
     // the open issue sheet covers the foot of the page too: the page grows by it so its end can still be read
     const sh = sheet.getBoundingClientRect().height;
     document.documentElement.style.setProperty('--sheet-h', `${sh > 0 ? Math.ceil(sh) + 6 : 0}px`);
+    chromeMoved();
   };
-  // the transport scrolls sideways on a phone, where the scrollbar is hidden: a fade marks the side with more
+  // the transport and the rail scroll sideways on a phone, where the scrollbar is hidden: a fade marks the side with more
+  const railItems = $('railItems');
+  const fadeOne = (el: HTMLElement) => {
+    const m = moreSides(el.scrollLeft, el.clientWidth, el.scrollWidth);
+    el.classList.toggle('more-start', m.start);
+    el.classList.toggle('more-end', m.end);
+  };
   const fade = () => {
-    const m = moreSides(transport.scrollLeft, transport.clientWidth, transport.scrollWidth);
-    transport.classList.toggle('more-start', m.start);
-    transport.classList.toggle('more-end', m.end);
+    fadeOne(transport);
+    // the rail is a column on a wide screen: its fades are for the row it becomes on a narrow one
+    if (isNarrow()) fadeOne(railItems);
+    else railItems.classList.remove('more-start', 'more-end');
   };
+  arrange();
   measure();
   fade();
   if (typeof ResizeObserver !== 'undefined') {
@@ -1018,13 +1155,74 @@ viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncBu
       measure();
       fade();
     });
-    for (const el of [toolbar, bar, transport, sheet]) ro.observe(el);
+    for (const el of [toolbar, bar, transport, sheet, railItems]) ro.observe(el);
+    // the default framing keeps clear of the cards: a resize, a drawer opening or closing, a caption
+    // or a title block changing size all change the room the model has
+    const rest = new ResizeObserver(() => syncRestBox());
+    for (const id of ['viewport', 'caption', 'titleBlock', 'drawer', 'scrubber', 'transport', 'loading', 'liftBanner', 'issueSheet', 'heroPlay', 'intro']) rest.observe($(id));
+    rest.observe(toolbar);
   }
   narrow?.addEventListener('change', () => {
+    arrange();
     measure();
     fade();
+    listInView();
   });
   transport.addEventListener('scroll', fade, { passive: true });
+  railItems.addEventListener('scroll', fade, { passive: true });
+  // one column: while the Issues list is on screen the selected issue reads in its row, not in a sheet over the list
+  let listQueued = false;
+  const queueList = () => {
+    if (listQueued) return;
+    listQueued = true;
+    requestAnimationFrame(() => {
+      listQueued = false;
+      listInView();
+    });
+  };
+  window.addEventListener('scroll', queueList, { passive: true });
+  window.addEventListener('resize', queueList, { passive: true });
+  $('tabIssues').addEventListener('click', queueList);
+}
+
+/**
+ * One column on a phone (R55): the model straight under the brand row, then
+ * the rail, then the status card, so the opening frame shows the model and
+ * not the facts the caption repeats. The status card moves out of the
+ * <header> (which keeps the brand and stays a landmark) and back on a wide
+ * screen, where it sits in the header beside the brand.
+ */
+function arrange() {
+  const status = document.querySelector<HTMLElement>('.status')!;
+  const header = document.querySelector<HTMLElement>('.header')!;
+  const vp = $('viewport'), rail = $('rail');
+  if (isNarrow()) {
+    if (vp.nextElementSibling !== rail) vp.after(rail);
+    if (rail.nextElementSibling !== status) rail.after(status);
+  } else {
+    if (status.parentElement !== header) header.append(status);
+    if (vp.previousElementSibling !== rail) vp.before(rail);
+  }
+}
+
+/**
+ * Whether the Issues list fills a fair part of the screen above the pinned
+ * play bar (one column only): the sheet then gives way to the selected row's
+ * own detail, so it never covers the list the issue was picked from (R52).
+ */
+function listInView() {
+  const pane = $('paneIssues');
+  let on = false;
+  if (isNarrow() && !pane.hidden) {
+    const r = pane.getBoundingClientRect();
+    const bottom = window.innerHeight - ($('playbar').getBoundingClientRect().height || 0);
+    const shown = Math.min(r.bottom, bottom) - Math.max(r.top, 0);
+    on = shown >= Math.min(220, bottom * 0.4);
+  }
+  if ($('app').classList.contains('list-in-view') !== on) {
+    $('app').classList.toggle('list-in-view', on);
+    chromeMoved();
+  }
 }
 
 // ── Save sequence ──────────────────────────────────────────────────────────
@@ -1052,9 +1250,17 @@ async function canSave(): Promise<boolean> {
 }
 
 let toastTimer = 0;
-/** A message at the foot of the panel (above the play bar on a narrow screen). A failure stays until it is dismissed or replaced. */
+/** What the toast showing is (meaningless while it is hidden). */
+let toastKind: ToastKind = 'info';
+/**
+ * A message at the foot of the panel (above the play bar on a narrow screen).
+ * A failure or a warning stays until it is dismissed or replaced by another
+ * failure or warning: a passing note never covers it (ui/layout.ts).
+ */
 function toast(msg: string, kind: ToastKind = 'info') {
   const el = $('toast');
+  if (!toastReplaces(el.hidden ? null : toastKind, kind)) return;
+  toastKind = kind;
   const text = $('toastText');
   text.textContent = msg;
   // a failure interrupts; anything else waits its turn
@@ -1066,10 +1272,11 @@ function toast(msg: string, kind: ToastKind = 'info') {
   const life = toastLife(kind);
   if (life !== null) toastTimer = window.setTimeout(() => (el.hidden = true), life);
 }
-bind('toastClose', () => {
+function hideToast() {
   clearTimeout(toastTimer);
   $('toast').hidden = true;
-});
+}
+bind('toastClose', hideToast);
 
 /** Save a generated file: through the viewer's save prompt when hosted, a normal download otherwise. */
 async function saveFile(filename: string, data: string | Uint8Array, mime: string, note = '') {
@@ -1158,7 +1365,8 @@ window.addEventListener('keydown', (e) => {
     else selectRail('model');
     return;
   }
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // Ctrl and Meta combinations are the browser's; AltGr and Option typing [ ] ? on many layouts are not (ui/keys.ts)
+  if (modifierOwnsKey(e)) return;
   if (route === 'tabs') {
     // the panel tabs: arrows, Home and End move along them and show the tab reached
     e.preventDefault();
@@ -1184,16 +1392,19 @@ window.addEventListener('keydown', (e) => {
     slider[k]?.();
     return;
   }
+  // the presentation view answers only the keys of what it shows (ui/shortcuts.ts): no drawers, no overlay
   if (k === 'd' && e.shiftKey) {
+    if (view.client) return;
     e.preventDefault();
     setPerf(!view.perf);
     return;
   }
   const id = keyAction(k);
   if (id) {
+    if (!actionInView(id, view.client)) return;
     e.preventDefault();
     keyActions[id]();
-  } else if (/^[1-7]$/.test(k)) selectRail(RAIL[Number(k) - 1].id);
+  } else if (/^[1-7]$/.test(k) && !view.client) selectRail(RAIL[Number(k) - 1].id);
 });
 
 // ── Render loop ────────────────────────────────────────────────────────────
@@ -1203,6 +1414,8 @@ const frameTimes: number[] = [];
 let fpsEma = 60;
 let last = performance.now();
 let hudAcc = 0;
+/** The performance overlay reads IDLE while the loop draws nothing. */
+let hudIdle = false;
 
 const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
@@ -1235,16 +1448,36 @@ let drawnT = NaN;
  */
 function loop(now: number) {
   requestAnimationFrame(loop);
-  const dt = Math.min(0.1, (now - last) / 1000);
+  // the sequence clock steps at most 0.1 s a frame, so a slow frame never skips a step; the camera's
+  // easing is time-based and takes the real interval (up to 0.5 s, for a tab coming back), so it
+  // settles in the same wall time on a slow GPU as on a fast one
+  const wall = Math.max(0, (now - last) / 1000);
+  const dt = Math.min(0.1, wall);
+  const camDt = Math.min(0.5, wall);
   last = now;
   if (!mounted) return;
   const before = playback.t;
   playback.tick(dt);
-  // the first pick over the chart stops playback, once per playthrough
+  // the first pick over the chart, once per playthrough: stops playback in the full view (ui/present.ts)
   const over = overWatch.advance(before, playback.t, playback.playing);
-  if (over) stopOnOverPick(over);
+  if (over) meetOverPick(over);
+  // a passing note goes once the playhead has moved on
+  else if (bannerPick && bannerNote && !overBannerStays(bannerPick.t, playback.t, true)) hideOverBanner();
   syncReachMode();
-  if (playback.t === drawnT && viewer.idle && !firstFrame) return;
+  if (playback.t === drawnT && viewer.idle && !firstFrame) {
+    // nothing drawn: the overlay says so rather than freezing on the last frame rate
+    if (view.perf && !hudIdle) {
+      hudIdle = true;
+      $('gpuFps').textContent = 'IDLE';
+      $('gpuFps').nextElementSibling!.textContent = '';
+    }
+    return;
+  }
+  if (hudIdle) {
+    hudIdle = false;
+    $('gpuFps').nextElementSibling!.textContent = 'FPS';
+    hudAcc = 1; // the next line of figures at once
+  }
   drawnT = playback.t;
   const state = timeline.stateAt(playback.t);
   viewer.setWash(state.presentation.wash.front);
@@ -1252,15 +1485,19 @@ function loop(now: number) {
   // an issue is a deliberate jump: a quick move (instant with reduced motion); the fly-through eases slowly
   // a resized viewport has its cards in new places: frame the issue again
   const vs = viewer.viewportSize;
-  if (focusPose && issuesUI?.selected && focusFrame && (focusFrame.w !== vs.w || focusFrame.h !== vs.h)) frameIssue(issuesUI.selected);
+  if (focusPose && focusBox && focusFrame && (focusFrame.w !== vs.w || focusFrame.h !== vs.h)) frameIssue(focusBox);
   if (planPose && planFrame && (planFrame.w !== vs.w || planFrame.h !== vs.h)) framePlan();
   viewer.aimAt(focusPose && focusFrame ? focusFrame.aim : planPose && planFrame ? planFrame.aim : null);
   const pose = focusPose ?? planPose ?? state.presentation.pose;
-  viewer.frame(state.t, state.builtTop, state.builtHalf, view.crane ? state.crane : { ...state.crane, visible: false }, dt, firstFrame || ((!!focusPose || !!planPose) && reduceMotion), pose, focusPose ? 9 : 3.2);
+  // the reach ring, its label and the operation panel name the piece the crane check names
+  const crane = riggedCrane(state.crane);
+  viewer.frame(state.t, state.builtTop, state.builtHalf, craneShown(craneView()) ? crane : { ...crane, visible: false }, camDt, firstFrame || ((!!focusPose || !!planPose) && reduceMotion), pose, focusPose ? 9 : 3.2);
   if (focusPose && !viewer.autoFrame) focusPose = null; // the view was dragged away
   if (planPose && !viewer.autoFrame) planPose = null;
   syncCaption();
-  overlays.update(state, view.crane);
+  // the member callouts step aside while an issue is explained, and datums across it fade
+  overlays.issueBox = issuesUI?.selected?.box ?? null;
+  overlays.update(crane === state.crane ? state : { ...state, crane }, craneShown(craneView()));
   ui.update(state, view.tab === 'members');
   issuesUI?.update(state);
 
@@ -1358,7 +1595,7 @@ async function startChecks() {
   report = r;
   syncLiftWarn();
   issuesUI!.setReport(r);
-  if (bcfBusy) $('btnBcf').toggleAttribute('disabled', true);
+  if (bcf.running) $('btnBcf').toggleAttribute('disabled', true);
   viewer.setFlags([...new Set(r.issues.filter((i) => FLAG_RULES.has(i.rule) && (i.severity === 'critical' || i.severity === 'major')).flatMap((i) => i.primary))]);
   renderRulesPanel();
   if (bannerPick) syncOverBanner();
@@ -1400,6 +1637,7 @@ function selectIssue(i: Issue | null) {
     showingDefaulted = false;
     if (view.rail === 'import') renderDrawer();
   }
+  dropHero();
   playback.toggle(false);
   playback.seek(timeForStep(i.step));
   hideOverBanner();
@@ -1408,6 +1646,8 @@ function selectIssue(i: Issue | null) {
   if (isNarrow()) {
     const dy = revealScroll($('viewport').getBoundingClientRect().top);
     if (dy) window.scrollBy({ top: dy, behavior: 'instant' });
+    // the list has gone off the screen: the sheet comes back before the framing measures it
+    listInView();
   }
   frameIssue(i);
   viewer.autoFrame = true;
@@ -1422,20 +1662,27 @@ function selectIssue(i: Issue | null) {
  * clear, so its pin is never under the caption or the title block: the
  * camera fits the issue to that box and the view offset centres it there.
  */
-function frameIssue(i: Issue) {
+function frameIssue(i: Pick<Issue, 'box'>) {
+  focusBox = i;
   const { w, h } = viewer.viewportSize;
   const host = $('viewport');
   const fr = issueFrame({ x0: 0, y0: 0, x1: w, y1: h }, chromeBoxes(host, FRAME_CHROME, 8, document), captionBox());
   const bw = fr.box.x1 - fr.box.x0, bh = fr.box.y1 - fr.box.y0;
-  const v = issueView(i, w / Math.max(1, h), bounds(), { w: bw / Math.max(1, w), h: bh / Math.max(1, h) });
+  // issueView reads only the box, so an over-chart piece is framed as an issue is
+  const v = issueView(i as Issue, w / Math.max(1, h), bounds(), { w: bw / Math.max(1, w), h: bh / Math.max(1, h) });
   focusPose = { target: v.target, az: v.az, el: v.el, dist: v.dist, fov: v.fov };
   focusFrame = { aim: { x: (fr.box.x0 + fr.box.x1) / 2 / Math.max(1, w), y: (fr.box.y0 + fr.box.y1) / 2 / Math.max(1, h) }, hideCaption: fr.hideCaption, w, h };
 }
 
-/** The operation panel, the reach ring and its label read lifts as the checks do: same review threshold, same rigging allowance. */
+/** Each step's critical pick chosen with the rigging allowance, as REACH-CRANE chooses it (null where the step is no crane lift). */
+let rigged: (RiggedLift | null)[] = [];
+
+/** The operation panel, the reach ring and its label read lifts as the checks do: same review threshold, same rigging allowance, same critical piece. */
 function syncLiftWarn() {
   ui.liftWarn = overlays.liftWarn = viewer.reachWarnAt = checkSettings.craneWarn;
   ui.liftRigKg = overlays.liftRigKg = viewer.reachRigKg = checkSettings.riggingKg;
+  rigged = project.steps.map((s) => riggedLift(project, s.index, checkSettings.riggingKg));
+  ui.liftFor = (i) => rigged[i] ?? null;
   // the rigging allowance decides which pick is the first over the chart
   const pick = firstOverPick(project, checkSettings.riggingKg);
   const was = overWatch.pick;
@@ -1461,6 +1708,7 @@ function syncReachMode() {
 
 /** The crane plan on or off: from above with the reach emphasised, then back to the view it came from. */
 function setCranePlan(on: boolean) {
+  if (!mounted) return; // the first model is still loading
   if (on && !project.crane) {
     toast('No tower crane on this project: it is lifted by mobile crane and by hand.');
     return;
@@ -1469,7 +1717,8 @@ function setCranePlan(on: boolean) {
   view.cranePlan = on;
   if (on) {
     presetBeforePlan = view.presetIndex;
-    if (!view.crane) view.crane = true; // the plan is about the crane: show it (not saved as a preference)
+    // the plan shows the crane (craneShown) without changing the user's choice, which is what is saved
+    dropHero();
     issuesUI?.select(null);
     viewer.autoFrame = true;
     framePlan();
@@ -1490,6 +1739,27 @@ function captionBox() {
   if (!drawer.hidden) return null;
   const r = $('caption').getBoundingClientRect(), o = $('viewport').getBoundingClientRect();
   return r.width >= 1 && r.height >= 1 ? { x0: r.left - o.left - 8, y0: r.top - o.top - 8, x1: r.right - o.left + 8, y1: r.bottom - o.top + 8 } : null;
+}
+
+/**
+ * The default framing's place for the model: the part of the viewport the
+ * cards and controls leave clear (the caption, the title block, the toolbar,
+ * the play bar, an open drawer), chosen for the model's shape (ui/place.ts
+ * restFrame: a tower takes a tall column, a low building a wide band), so the
+ * building is not drawn under them. When no clear part shows it at a fair
+ * size, the usual framing stands. Kept as shares of the viewport, rounded, so
+ * a caption that grows by a line does not set the camera moving.
+ */
+function syncRestBox() {
+  if (!mounted) return;
+  const { w, h } = viewer.viewportSize;
+  if (w < 1 || h < 1) return;
+  const b = planBounds(project);
+  const model = { w: Math.max(b.x1 - b.x0, b.z1 - b.z0), h: project.height };
+  const box = restFrame({ x0: 0, y0: 0, x1: w, y1: h }, chromeBoxes($('viewport'), FRAME_CHROME, 8, document), captionBox(), model);
+  const q = (v: number) => Math.round(v * 50) / 50;
+  viewer.setRestBox(box && { x0: q(box.x0 / w), y0: q(box.y0 / h), x1: q(box.x1 / w), y1: q(box.y1 / h) });
+  placeHero();
 }
 
 /** Fit the slew circle, seen from above, into the part of the viewport the cards and controls leave clear. */
@@ -1513,23 +1783,75 @@ function bannerIssue(): Issue | undefined {
   return op ? report?.issues.find((i) => i.rule === 'REACH-CRANE' && i.step === op.stepIndex) : undefined;
 }
 
-/** Stop on the first pick over the chart and say what it is, with a way to the issue. */
-function stopOnOverPick(op: OverPick) {
-  playback.toggle(false);
-  playback.seek(op.t);
+/**
+ * Playback ran into the first pick over the chart. The full view stops there,
+ * frames the piece and says what it is, with a way to the issue; a kiosk loop
+ * (?play=1) keeps playing with the banner as a passing note; the
+ * presentation view keeps playing and says nothing (ui/present.ts).
+ */
+function meetOverPick(op: OverPick) {
+  const response = overPickResponse({ autoplay: kiosk, client: view.client });
+  if (response === 'none') return;
+  bannerNote = response === 'note';
+  if (!bannerNote) {
+    playback.toggle(false);
+    playback.seek(op.t);
+  }
   const p = project, c = p.crane!;
   const s = p.steps[op.stepIndex];
   const piece = sentenceStart(op.part >= 0 ? partLabel(p, op.part) : s.member);
   const rig = op.kg > op.pieceKg + 0.5 ? ` (incl. ${fmtLoad(op.kg - op.pieceKg)} rigging)` : '';
   $('liftBannerHead').textContent = op.capKg > 0 ? `Pick over the crane's chart · ${Math.round(op.util * 100)} %` : 'Pick beyond the crane\'s jib';
+  const paused = bannerNote ? '' : ' Playback is paused here.';
   $('liftBannerBody').textContent =
     op.capKg > 0
-      ? `${piece}, step ${s.id}: ${fmtLoad(op.kg)} reviewed${rig} at ${op.radius.toFixed(1)} m radius, where ${c.id} lifts ${fmtLoad(op.capKg)}. Playback is paused here.`
-      : `${piece}, step ${s.id}: ${fmtLoad(op.kg)} at ${op.radius.toFixed(1)} m, past ${c.id}'s ${c.jib} m jib. Playback is paused here.`;
+      ? `${piece}, step ${s.id}: ${fmtLoad(op.kg)} reviewed${rig} at ${op.radius.toFixed(1)} m radius, where ${c.id} lifts ${fmtLoad(op.capKg)}.${paused}`
+      : `${piece}, step ${s.id}: ${fmtLoad(op.kg)} at ${op.radius.toFixed(1)} m, past ${c.id}'s ${c.jib} m jib.${paused}`;
   bannerPick = op;
+  const banner = $('liftBanner');
+  // a passing note is a status, not an alert that interrupts
+  banner.setAttribute('role', bannerNote ? 'status' : 'alert');
+  banner.classList.toggle('note', bannerNote);
   syncOverBanner();
-  $('liftBanner').hidden = false;
+  banner.hidden = false;
+  // at a stop, frame the piece in the part of the view the cards (the banner among them) leave clear, as an issue is framed
+  if (!bannerNote) {
+    // one column: the page comes up to the model, as it does for an issue, before the framing measures it
+    if (isNarrow()) {
+      const dy = revealScroll($('viewport').getBoundingClientRect().top);
+      if (dy) window.scrollBy({ top: dy, behavior: 'instant' });
+    }
+    frameIssue((pickFocus = { box: pickBox(p, op) }));
+    viewer.autoFrame = true;
+  }
+  chromeMoved();
   syncCaption();
+}
+
+/** The crane with its pick read as the checks read it: the rigged critical piece, its radius, load and capacity. */
+function riggedCrane(c: CraneState): CraneState {
+  const pk = c.pick;
+  const l = pk ? rigged[pk.stepIndex] : null;
+  if (!pk || !l) return c;
+  return { ...c, pick: { ...pk, at: l.at, radius: l.radius, kg: l.pieceKg, capKg: l.capacityKg, util: l.util } };
+}
+
+/** What the camera framed for the over-chart stop: released with the banner. */
+let pickFocus: Pick<Issue, 'box'> | null = null;
+
+/** The box the camera frames for an over-chart pick: the step's pieces and where the critical one lands. */
+function pickBox(p: Project, op: OverPick): Issue['box'] {
+  const s = p.steps[op.stepIndex];
+  const lo: Vec3 = [op.at[0] - 1.5, op.at[1] - 1.5, op.at[2] - 1.5];
+  const hi: Vec3 = [op.at[0] + 1.5, op.at[1] + 1.5, op.at[2] + 1.5];
+  for (let k = s.partStart; k < s.partStart + s.partCount; k++) {
+    const part = p.parts[k];
+    for (let a = 0; a < 3; a++) {
+      lo[a] = Math.min(lo[a], part.pos[a] - part.size[a] / 2);
+      hi[a] = Math.max(hi[a], part.pos[a] + part.size[a] / 2);
+    }
+  }
+  return [lo, hi];
 }
 
 /** The banner's issue button, once the checks have found the matching issue. */
@@ -1542,13 +1864,22 @@ function syncOverBanner() {
 
 function hideOverBanner() {
   bannerPick = null;
+  bannerNote = false;
+  // the camera framed the piece for the banner: it goes back to the sequence with it (an issue framed since keeps its own)
+  if (pickFocus && focusBox === pickFocus) focusPose = null;
+  pickFocus = null;
   $('liftBanner').hidden = true;
+  chromeMoved();
   syncCaption();
 }
 
 /** Rules, their verification status and the thresholds, inside the Issues pane. */
 function renderRulesPanel() {
   const body = $('issRulesBody');
+  keepFocus(body, () => drawRulesPanel(body));
+}
+
+function drawRulesPanel(body: HTMLElement) {
   const s = checkSettings;
   const field = (f: (typeof THRESHOLD_FIELDS)[number]) =>
     `<label for="${f.id}">${f.label}</label><input id="${f.id}" type="number" step="${f.step}" min="${f.min}" value="${thresholdValue(f, s)}" />`;
@@ -1600,7 +1931,7 @@ function resetPreferences() {
   Object.assign(view, VIEW_DEFAULTS);
   applyViewLook();
   applyMode();
-  viewer.setAutoRotate(view.autoRotate);
+  syncRotate();
   viewer.setResolution(view.resolution);
   updateRail();
   syncButtons();
@@ -1620,8 +1951,8 @@ async function exportCsv() {
   await saveFile(`${p.id}-issues.csv`, csv, 'text/csv');
 }
 
-/** Set while a BCF export renders its snapshots: a second click must not start another. */
-let bcfBusy = false;
+/** One BCF export at a time; it stops when the model or the checks it started on are replaced (ui/loads.ts). */
+const bcf = new ExportGuard<Project, CheckReport>();
 
 /**
  * The issues as BCF, each with a snapshot. The snapshots take a while, and the
@@ -1629,14 +1960,17 @@ let bcfBusy = false;
  * started with, stops if either is replaced, and borrows the highlight for
  * each still without touching the issue selected on screen.
  */
+const BCF_TITLE = $('btnBcf').title;
 async function exportBcf() {
-  if (bcfBusy || !report || !report.issues.length) return;
-  bcfBusy = true;
+  if (!report || !report.issues.length) return;
+  const p = project, r = report;
+  const run = bcf.start(p, r, () => ({ p: project, r: report! }));
+  if (!run) return;
+  const { stale } = run;
   const btn = $<HTMLButtonElement>('btnBcf');
+  const label = btn.textContent;
   btn.disabled = true;
   btn.setAttribute('aria-busy', 'true');
-  const p = project, r = report;
-  const stale = () => p !== project || r !== report;
   const stop = () => toast('BCF export stopped: the model or the checks changed.');
   try {
     if (!(await canSave())) return;
@@ -1644,19 +1978,23 @@ async function exportBcf() {
     for (let k = 0; k < r.issues.length; k++) {
       if (stale()) return stop();
       const i = r.issues[k];
-      toast(`Rendering BCF snapshots · ${k + 1} / ${r.issues.length}`);
+      // progress on the button itself: a toast would push out an import error still showing
+      btn.textContent = `BCF ${k + 1}/${r.issues.length}`;
+      btn.title = `Rendering BCF snapshots · ${k + 1} of ${r.issues.length}`;
       shots.set(i.id, await viewer.issuePng(issueView(i, 1.6, bounds()), timeForStep(i.step), issueDrawing(i, p)));
       await new Promise((res) => setTimeout(res, 0));
     }
     if (stale()) return stop();
-    const bytes = bcfZip(p, r, shots);
+    const bytes = bcfZip(p, r, shots, new Date(), { author: brand });
     // the claude.ai save prompt accepts .zip, not .bcfzip; BCF tools read either once renamed
     await saveFile(downloadsReady ? `${p.id}-issues.bcf.zip` : `${p.id}-issues.bcfzip`, bytes, 'application/zip', downloadsReady ? 'Rename it to .bcfzip if your BCF tool asks.' : '');
   } catch (err) {
     console.error(err);
     toast(`BCF export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
   } finally {
-    bcfBusy = false;
+    run.done();
+    btn.textContent = label;
+    btn.title = BCF_TITLE;
     btn.removeAttribute('aria-busy');
     btn.disabled = !report?.issues.length;
   }
@@ -1677,7 +2015,7 @@ async function exportBcf() {
     return report;
   },
   selectIssue: (id: string) => issuesUI?.selectById(id),
-  bcfBytes: () => (report ? bcfZip(project, report) : null),
+  bcfBytes: () => (report ? bcfZip(project, report, new Map(), new Date(), { author: brand }) : null),
 };
 
 /** The camera a link asks for (?az=, ?el=), when it gives numbers. */
@@ -1687,20 +2025,30 @@ function linkView() {
   if (Number.isFinite(az)) viewer.setView(az, Number.isFinite(el) ? el : 16);
 }
 
+/** The demo tower, when the model a page opened on could not be shown. */
+function showFallback() {
+  mount(buildProject());
+  openPlayback(project);
+  linkView();
+}
+
 if (sampleFirst) {
   syncButtons();
+  // nothing of the demo tower's placeholders may describe the sample while it loads
   $('tagline').textContent = 'LOADING THE DUPLEX SAMPLE';
   $('capTitle').textContent = 'Duplex sample';
   $('capSub').textContent = 'Reading the IFC file in your browser…';
-  void loadSample().then((shown) => {
+  for (const id of ['tbName', 'tbDwg', 'tbPhase', 'tbSheet', 'statusPhase', 'statusStageTotal', 'crumb', 'stagesMeta']) $(id).textContent = '—';
+  ($('opLift').previousElementSibling as HTMLElement).textContent = 'LIFT';
+  document.querySelector('.watermark')!.textContent = '';
+  const gen = loads.begin();
+  void loadSample(gen).then((shown) => {
     if (shown) {
       openPlayback(project);
       linkView();
-    } else if (!mounted) {
+    } else if (sampleFallback({ shown, mounted, gate: loads, gen })) {
       // the sample could not be read and nothing else was opened meanwhile: show the demo tower
-      mount(buildProject());
-      openPlayback(project);
-      linkView();
+      showFallback();
     }
   });
 } else {

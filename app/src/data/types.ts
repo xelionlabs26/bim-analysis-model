@@ -288,10 +288,18 @@ export interface PlanBox {
   z1: number;
 }
 
-/** Plan bounds of a set of parts (their axis-aligned boxes). */
+/** A part of the building itself: not terrain, site or landscape, and not a bulk material. */
+export const isBuildingPart = (p: Part) => p.ref?.category !== 'landscape' && p.ref?.category !== 'site' && p.ref?.phase !== 'landscape' && !MATERIAL_INFO[p.mat].bulk;
+
+/**
+ * Plan bounds of the building parts in a set (their axis-aligned boxes). Terrain,
+ * landscape and bulk items are left out, so an 80 m site surface does not make a
+ * house look 80 m wide; when nothing else is there, every part counts.
+ */
 export function planBox(parts: readonly Part[]): PlanBox {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  for (const p of parts) {
+  const building = parts.filter(isBuildingPart);
+  for (const p of building.length ? building : parts) {
     x0 = Math.min(x0, p.pos[0] - p.size[0] / 2); x1 = Math.max(x1, p.pos[0] + p.size[0] / 2);
     z0 = Math.min(z0, p.pos[2] - p.size[2] / 2); z1 = Math.max(z1, p.pos[2] + p.size[2] / 2);
   }

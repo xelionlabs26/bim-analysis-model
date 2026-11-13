@@ -2,7 +2,8 @@
  * Regression tests for the buildability rules: wall tops as landings (TEMP-EDGE),
  * narrow crane picks (REACH-PATH), models set out at a site datum, rules that
  * throw, load envelopes given either way round (ACCESS-TRANSPORT), an assumed
- * crane position (CLASH-TEMP) and clash advice by where an element sits.
+ * crane position (CLASH-TEMP), clash advice by where an element sits, models
+ * with a basement, rules that could not check, and files that end early.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -153,9 +154,14 @@ describe('REACH-PATH: picks narrower than 300 mm', () => {
     expect(result(r, 'REACH-PATH').checked).toBe(1);
   });
 
-  it('reads as unverified when no pick can be tested', async () => {
+  it('reads as unverified when no pick can be tested, and says it could not check', async () => {
     const r = await run(mk([cols(), step('L0 · GLAZING', 'crane', [box([0, 1.8, 1.5], [2, 3.4, 0.05], 'glass')])]));
     expect(ruleStatus(result(r, 'REACH-PATH'))).toBe('unverified');
+    expect(result(r, 'REACH-PATH').notChecked).toBe(true);
+    // no crane picks at all: nothing to check, which is not the same
+    const none = await run(mk([cols()]));
+    expect(ruleStatus(result(none, 'REACH-PATH'))).toBe('unverified');
+    expect(result(none, 'REACH-PATH').notChecked).toBeFalsy();
   });
 });
 
@@ -227,7 +233,7 @@ describe('robustness', () => {
     });
     broken = true;
     const r = await run(p);
-    expect(result(r, 'REACH-CRANE')).toMatchObject({ checked: 0, applicable: false, note: 'check failed: no load chart' });
+    expect(result(r, 'REACH-CRANE')).toMatchObject({ checked: 0, applicable: false, notChecked: true, note: 'check failed: no load chart' });
     expect(ruleStatus(result(r, 'REACH-CRANE'))).toBe('unverified');
     expect(r.rules).toHaveLength(11);
     expect(result(r, 'ORDER-SUPPORT').checked).toBe(1);
@@ -275,6 +281,7 @@ describe('CLASH-TEMP: a crane the importer placed', () => {
     expect(of(r, 'CLASH-TEMP')).toEqual([]);
     expect(ruleStatus(result(r, 'CLASH-TEMP'))).toBe('unverified');
     expect(result(r, 'CLASH-TEMP').note).toMatch(/assumed by the importer/);
+    expect(result(r, 'CLASH-TEMP').notChecked).toBe(true);
   });
 });
 
@@ -295,10 +302,23 @@ describe('CLASH-HARD: what to do about walls in a floor', () => {
   };
 
   it('splits a wall that runs through the floor rather than lowering its head', async () => {
-    const [issue] = await clash([[[-1, 2.61, -0.05], [1, 6.0, 0.05]]]);
+    // a storey-height wall below the floor and another above it, modelled as one
+    const [issue] = await clash([[[-1, 0, -0.05], [1, 6.0, 0.05]]]);
     expect(issue.action).not.toMatch(/lower/);
     expect(issue.action).toMatch(/^Split the wall at the slab/);
     // still major: 100 mm of wall through a structural floor
+    expect(issue.severity).toBe('major');
+  });
+
+  it('starts a wall with only a stub below the soffit on top of the slab', async () => {
+    // 2.61 to 6.00 m through a 2.80 to 3.10 m floor: 190 mm below it, 2.9 m above (the Duplex partitions)
+    const [issue] = await clash([[[-1, 2.61, -0.05], [1, 6.0, 0.05]]]);
+    expect(issue.action).toBe('Start the wall on top of the slab instead of inside it.');
+  });
+
+  it('stops a wall with only a short head above the floor under it', async () => {
+    const [issue] = await clash([[[-1, 0, -0.05], [1, 3.3, 0.05]]]);
+    expect(issue.action).toBe('Stop the wall under the slab with a deflection gap (a deflection head), or lower its head.');
     expect(issue.severity).toBe('major');
   });
 
@@ -313,8 +333,72 @@ describe('CLASH-HARD: what to do about walls in a floor', () => {
     expect(under.severity).toBe('major');
     const [mixed] = await clash([
       [[-1, 0, -0.05], [1, 2.84, 0.05]],
-      [[1.5, 2.61, -0.05], [2.5, 6.0, 0.05]],
+      [[1.5, 0, -0.05], [2.5, 6.0, 0.05]],
     ]);
     expect(mixed.action).toMatch(/^Stop W0 under the slab .* Split W1 at the slab/);
+  });
+});
+
+// ── a basement: the ground stays at the importer's datum ─────────────────────
+
+describe('a model at datum with a basement', () => {
+  /** B1 slab at −3.0 m, basement walls, and a ground-floor slab at +gf: an import the importer left at its datum. */
+  const basement = (gf: number, levels = [{ code: 'B1', y: -3 }, { code: 'GF', y: gf }, { code: 'L1', y: gf + 3.1 }]) => {
+    const meshes = [boxMesh([-6, -3.3, -6], [6, -3.0, 6]), boxMesh([-5, -3.0, -5], [-4.8, gf - 0.25, 5]), boxMesh([4.8, -3.0, -5], [5, gf - 0.25, 5]), boxMesh([-5, gf - 0.25, -5], [5, gf, 5])];
+    const p = mk(
+      [
+        step('B1 · SLAB', 'cast', [meshPart(meshes[0], 0, 'concrete', { category: 'slab', guid: 'B1S' })]),
+        step('B1 · WALLS', 'cast', [meshPart(meshes[1], 1, 'concrete', { category: 'wall', guid: 'W1' }), meshPart(meshes[2], 2, 'concrete', { category: 'wall', guid: 'W2' })]),
+        step('GF · SLAB', 'cast', [meshPart(meshes[3], 3, 'concrete', { category: 'slab', guid: 'GFS' })]),
+      ],
+      { source: 'ifc', meshes },
+    );
+    return { ...p, levels };
+  };
+
+  for (const gf of [0.6, 0.9]) {
+    it(`keeps the ground at 0, not at the basement floor, with the ground slab at +${gf.toFixed(1)} m`, async () => {
+      const p = basement(gf);
+      const S = new CheckScene(p);
+      expect(groundDatum(p, S)).toEqual({ ground: 0, shift: 0 });
+      expect(S.ground).toBe(0);
+      // the ground-floor slab is under a fall height above the ground: no open edge to protect
+      const r = await run(p);
+      expect(of(r, 'TEMP-EDGE')).toEqual([]);
+      expect(ruleStatus(result(r, 'TEMP-EDGE'))).toBe('unverified');
+    });
+  }
+
+  it('with the model set out at +30 m and the storeys left at datum, takes the ground storey, not the basement', () => {
+    for (const gf of [0.6, 0.9]) {
+      const p = lifted(basement(gf), 30);
+      const d = groundDatum(p, new CheckScene(p));
+      expect(d.shift).toBeCloseTo(30, 1);
+      expect(d.ground, `GF at +${gf}`).toBeCloseTo(30 + gf, 1);
+    }
+  });
+});
+
+// ── a file that ends early ───────────────────────────────────────────────────
+
+describe('a truncated IFC file', () => {
+  it('raises a model-data issue that the results cover only part of the model', async () => {
+    const text = readFileSync(join(here, '../public/samples/duplex-apartment.ifc.txt'), 'latin1');
+    const cut = text.slice(0, Math.floor(text.length * 0.6));
+    const model = await readIfc(cut, () => {}, 'Duplex_A_20110907.ifc');
+    const p = projectFromIfc(model, 'Duplex_A_20110907.ifc').project;
+    expect(p.report?.truncated).toBe(true);
+    const r = await run(p);
+    const [first] = of(r, 'MODEL-DATA');
+    expect(first).toMatchObject({ id: 'MDL-01', key: 'truncated', severity: 'critical', title: 'The file ends early: results cover only part of the model' });
+    expect(first.detail).toMatch(/covers? only the \d+ elements that were read/);
+    // it heads the register, so it reaches the CSV and the BCF with every other issue
+    expect(r.issues[0].id).toBe('MDL-01');
+  });
+
+  it('says nothing of the kind for the whole file', async () => {
+    const model = await readIfc(readFileSync(join(here, '../public/samples/duplex-apartment.ifc.txt'), 'latin1'), () => {}, 'Duplex_A_20110907.ifc');
+    const r = await run(projectFromIfc(model, 'Duplex_A_20110907.ifc').project);
+    expect(of(r, 'MODEL-DATA').some((i) => i.key === 'truncated')).toBe(false);
   });
 });

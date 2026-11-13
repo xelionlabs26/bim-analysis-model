@@ -10,6 +10,8 @@ import { heroLine, INTRO_KEY, introCards, markIntroSeen, modeFromLink, openingPl
 import { KEY_ACTIONS, keyAction, RAIL_KEY_NAMES, rowKeys, sheetActions, SHORTCUT_GROUPS, shortcutSheetHtml, type ActionId } from '../src/ui/shortcuts';
 import { loadPrefs, PREFS_KEY, sanitiseView, savePrefs, type PrefsStore } from '../src/ui/prefs';
 import { routeKey, type KeyTarget } from '../src/ui/keys';
+import { carbonFacts } from '../src/ui/header';
+import { loadedMessage } from '../src/ui/report';
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 const CSS = read('../src/styles.css');
@@ -106,6 +108,17 @@ describe('presentation view', () => {
   });
 });
 
+describe('presentation view: pointers to what it puts away (O6)', () => {
+  it('points the assumed-material caveat and the import message to the full view', () => {
+    const p = { totalCarbonKg: 6400, totalBiogenicKg: 0, gifa: 100 };
+    expect(carbonFacts(p, 3).label).toMatch(/\(see Import\)\.$/);
+    expect(carbonFacts(p, 3, true).label).toMatch(/\(see Import in the full view\)\.$/);
+    expect(loadedMessage('a.ifc', 12, 2, { defaultedMaterials: 3 }, true).text).toMatch(/\(see Import in the full view\)$/);
+    expect(loadedMessage('a.ifc', 12, 2, { truncated: true }, true).text).toMatch(/Open Import in the full view \(P\) for details/);
+    expect(MAIN).toMatch(/carbonFacts\(p, defaulted\?\.count \?\? 0, view\.client, cut\)/);
+  });
+});
+
 // ── opening frame ───────────────────────────────────────────────────────────
 
 describe('opening frame', () => {
@@ -141,6 +154,44 @@ describe('opening frame', () => {
     expect(play).toMatch(/playback\.seek\(0\);\s*playback\.toggle\(true\);/);
     expect(MAIN).toMatch(/if \(hero && \(playback\.playing \|\| playback\.t < project\.duration\)\)/);
     expect(MAIN).toMatch(/bind\('heroPlay', playFromStart\)/);
+  });
+
+  it('gives way once the user changes the view: a drawer, the crane plan, an issue, a view, a drag (O7)', () => {
+    const fn = (name: string) => MAIN.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`))?.[0] ?? '';
+    expect(fn('selectRail')).toMatch(/if \(view\.rail !== 'model'\) dropHero\(\);/);
+    expect(fn('setCranePlan')).toMatch(/dropHero\(\);/);
+    expect(fn('selectIssue')).toMatch(/dropHero\(\);/);
+    expect(MAIN).toMatch(/view: \(\) => \{\s*dropHero\(\);/);
+    expect(MAIN).toMatch(/viewer\.controls\.addEventListener\('start', dropHero\)/);
+  });
+
+  it('stands still while paused: auto-rotate turns the model only while the build plays (R67)', () => {
+    expect(MAIN).toMatch(/const on = view\.autoRotate && playback\.playing;/);
+    expect(MAIN).not.toMatch(/viewer\.setAutoRotate\(view\.autoRotate\)/);
+    // the camera eases on the real interval, the sequence clock keeps its own cap (O11)
+    expect(MAIN).toMatch(/const dt = Math\.min\(0\.1, wall\);\s*const camDt = Math\.min\(0\.5, wall\);/);
+    expect(MAIN).toMatch(/\$\('gpuFps'\)\.textContent = 'IDLE';/);
+  });
+
+  it('leaves the keyboard on the Play button when it goes while focused, and comes early in the tab order (R63)', () => {
+    expect(MAIN).toMatch(/if \(hide && !b\.hidden && document\.activeElement === b\) \$\('btnPlay'\)\.focus\(\);/);
+    // first in the model, before the toolbar and the transport
+    const main = HTML.slice(HTML.indexOf('<main'));
+    expect(main.indexOf('id="heroPlay"')).toBeLessThan(main.indexOf('class="toolbar'));
+  });
+});
+
+describe('a page opened on a sample, while it loads (R17)', () => {
+  it('runs no action and no crane control before the first model is up', () => {
+    expect(MAIN).toMatch(/for \(const \[name, fn\] of Object\.entries\(actions\)\) actions\[name\] = \(\) => void \(mounted && fn\(\)\);/);
+    expect(MAIN).toMatch(/function setCranePlan\(on: boolean\) \{\s*if \(!mounted\) return;/);
+    expect(MAIN).toMatch(/\.disabled = noCrane \|\| !mounted;/);
+  });
+
+  it("blanks the demo tower's placeholders so the sample is not described as Arbor", () => {
+    const block = MAIN.slice(MAIN.indexOf('if (sampleFirst) {'));
+    expect(block).toMatch(/for \(const id of \['tbName', 'tbDwg', 'tbPhase', 'tbSheet', 'statusPhase', 'statusStageTotal', 'crumb', 'stagesMeta'\]\) \$\(id\)\.textContent = '—';/);
+    expect(block).toMatch(/textContent = 'LIFT';/);
   });
 });
 
@@ -181,6 +232,18 @@ describe('first-run cards', () => {
     expect(HTML).toMatch(/<section class="intro card" id="intro" aria-labelledby="introTitle" hidden>/);
     expect(HTML).toMatch(/id="introClose"[^>]*>Got it</);
     expect(MAIN).toMatch(/else if \(introOpen\) dismissIntro\(\);/);
+  });
+
+  it('go when the build starts playing from Space or the transport, not only from the large button (R18)', () => {
+    expect(MAIN).toMatch(/if \(playback\.playing && !wasPlaying && !opening\) dismissIntro\(\);/);
+  });
+
+  it('come straight after the header in the tab order, and hand the focus to Play when dismissed (R63)', () => {
+    expect(HTML.indexOf('id="intro"')).toBeGreaterThan(HTML.indexOf('</header>'));
+    expect(HTML.indexOf('id="intro"')).toBeLessThan(HTML.indexOf('id="rail"'));
+    const fn = MAIN.match(/function dismissIntro\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).toMatch(/const hadFocus = el\.contains\(document\.activeElement\);/);
+    expect(fn).toMatch(/if \(hadFocus\) \$\('btnPlay'\)\.focus\(\);/);
   });
 });
 

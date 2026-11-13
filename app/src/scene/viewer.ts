@@ -76,6 +76,60 @@ export function wheelZooms(c: { enabled: boolean; enableZoom: boolean; state?: n
   return c.enabled && c.enableZoom && (c.state ?? -1) === -1;
 }
 
+/** What the last drawn frame showed: camera, orbit target, field of view, viewport size and aim. */
+export interface DrawnView {
+  pos: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+  fov: number;
+  w: number;
+  h: number;
+  ax: number;
+  ay: number;
+}
+
+/**
+ * The idle-render gate: whether this frame must be drawn. `last` is what the
+ * last drawn frame showed (not the last frame looked at), so a drift too small
+ * to draw builds up until it is worth a frame. The camera counts as moved past
+ * a tolerance that grows with its distance; a resize or a change of aim always
+ * draws. `dirty` is how many frames are still owed although nothing moved (a
+ * setting or the scene changed); each drawn frame pays one off.
+ */
+export function drawGate(last: DrawnView, now: DrawnView, dirty: number, distance: number): { draw: boolean; moved: boolean; dirty: number } {
+  const tol = Math.max(1e-4, distance * 1e-5);
+  const d = (a: DrawnView['pos'], b: DrawnView['pos']) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  const moved = !(d(last.pos, now.pos) <= tol) || !(d(last.target, now.target) <= tol) || Math.abs(last.fov - now.fov) > 1e-4 || last.w !== now.w || last.h !== now.h || last.ax !== now.ax || last.ay !== now.ay;
+  if (!moved && dirty <= 0) return { draw: false, moved, dirty: 0 };
+  return { draw: true, moved, dirty: Math.max(0, dirty - 1) };
+}
+
+/**
+ * The default framing's camera distance for a model of height h and half-width
+ * w (see Viewer.fitDistance). Exported for tests.
+ */
+export function restFitDistance(h: number, w: number, aspect: number, box: ViewBox | null = null): number {
+  const t = Math.tan(((FOV * Math.PI) / 180) / 2);
+  const floor = Math.max(Math.hypot(h / 2, w) * 1.2, Math.min(30, 6 + h * 1.2));
+  if (!box) {
+    const byH = ((h / 2) * 1.32 + 4) / t; // headroom for the toolbar above and the transport below
+    const byW = (w * 1.2) / (t * aspect);
+    return Math.max(byH, byW, floor);
+  }
+  const sw = Math.min(1, Math.max(0.1, box.x1 - box.x0));
+  const sh = Math.min(1, Math.max(0.1, box.y1 - box.y0));
+  const byH = ((h / 2) * 1.12 + 1.5) / (t * sh);
+  const byW = (w * 1.12) / (t * aspect * sw);
+  return Math.max(byH, byW, floor);
+}
+
+/** A part of the canvas, as shares of its width and height (0–1). */
+export interface ViewBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
 const css = (name: string) => new Color(getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#000');
 
 export class Viewer {
@@ -122,6 +176,8 @@ export class Viewer {
   private aim = { x: 0.5, y: 0.5 };
   /** Where a framed pose wants it (clear of the cards over the viewport); null for the usual spot. */
   private aimWanted: { x: number; y: number } | null = null;
+  /** The part of the canvas the default framing fits the model into; null for the whole of it. */
+  private restBox: ViewBox | null = null;
 
   /** `project` may come later through setProject (a page opened on a sample loads it first). */
   constructor(private host: HTMLElement, project?: Project) {
@@ -169,7 +225,7 @@ export class Viewer {
       depthWrite: false,
       side: DoubleSide,
     });
-    this.highlight = new IssueHighlight({ primary: css('--bad'), secondary: css('--issue-b'), line: css('--bad') });
+    this.highlight = new IssueHighlight({ primary: css('--bad'), secondary: css('--issue-b'), line: css('--bad') }, { uMask: uniforms.uMask, uCut: uniforms.uCut, uCutOn: uniforms.uCutOn });
     this.flags = new FlagLayer({ uTime: uniforms.uTime, uDpr: uniforms.uDpr, uMask: uniforms.uMask, uCut: uniforms.uCut, uCutOn: uniforms.uCutOn }, css('--bad'));
     const ground = new Mesh(new PlaneGeometry(400, 400).rotateX(-Math.PI / 2), this.groundMat);
     ground.position.y = -0.005;
@@ -396,9 +452,40 @@ export class Viewer {
     this.invalidate();
   }
 
-  /** The usual spot for the model: a little right of centre on a wide viewport, clear of the caption card. */
+  /**
+   * The usual spot for the model: the centre of the rest box when one is set,
+   * else a little right of centre on a wide viewport, clear of the caption card.
+   */
   private restAim() {
+    const b = this.restBox;
+    if (b) return { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
     return { x: this.size.w > 700 ? 0.57 : 0.5, y: 0.5 };
+  }
+
+  /**
+   * The part of the canvas left clear for the model while no pose frames
+   * anything (shares of width and height, 0–1): the default framing aims at
+   * its centre and fits the model to its size, so the caption and the title
+   * block do not cover it. Null goes back to the usual framing.
+   */
+  setRestBox(box: ViewBox | null) {
+    const ok = (v: number) => Number.isFinite(v);
+    let next: ViewBox | null = null;
+    if (box && ok(box.x0) && ok(box.y0) && ok(box.x1) && ok(box.y1)) {
+      const c = (v: number) => Math.min(1, Math.max(0, v));
+      const b = { x0: c(Math.min(box.x0, box.x1)), y0: c(Math.min(box.y0, box.y1)), x1: c(Math.max(box.x0, box.x1)), y1: c(Math.max(box.y0, box.y1)) };
+      // a sliver is no place to fit a model: keep the usual framing
+      if (b.x1 - b.x0 >= 0.1 && b.y1 - b.y0 >= 0.1) next = b;
+    }
+    const was = this.restBox;
+    if (was === next || (was && next && was.x0 === next.x0 && was.y0 === next.y0 && was.x1 === next.x1 && was.y1 === next.y1)) return;
+    this.restBox = next;
+    this.invalidate();
+  }
+
+  /** The rest box in use, if any. */
+  get currentRestBox(): ViewBox | null {
+    return this.restBox ? { ...this.restBox } : null;
   }
 
   /**
@@ -492,12 +579,14 @@ export class Viewer {
     this.invalidate();
   }
 
-  /** Distance that fits a box of height h and half-width w centred at h/2. */
+  /**
+   * Distance that fits a box of height h and half-width w centred at h/2: into
+   * the whole viewport, with headroom for the toolbar above and the transport
+   * below, or into the rest box (which already keeps clear of them) scaled by
+   * its share of the viewport, as an issue is framed.
+   */
   private fitDistance(h: number, w: number) {
-    const t = Math.tan(((FOV * Math.PI) / 180) / 2);
-    const byH = ((h / 2) * 1.32 + 4) / t; // headroom for the toolbar above and the transport below
-    const byW = (w * 1.2) / (t * this.camera.aspect);
-    return Math.max(byH, byW, Math.hypot(h / 2, w) * 1.2, Math.min(30, 6 + h * 1.2));
+    return restFitDistance(h, w, this.camera.aspect, this.restBox);
   }
 
   /** Per-frame: update sequence time, crane, auto-frame, orbit, render. */
@@ -552,18 +641,11 @@ export class Viewer {
   /** Render the frame when the camera moved or something changed; otherwise the canvas already shows it. */
   private draw() {
     const c = this.lastCam;
-    const tol = Math.max(1e-4, this.distance * 1e-5);
-    const moved =
-      c.pos.distanceTo(this.camera.position) > tol ||
-      c.target.distanceTo(this.controls.target) > tol ||
-      Math.abs(c.fov - this.camera.fov) > 1e-4 ||
-      c.w !== this.size.w ||
-      c.h !== this.size.h ||
-      c.ax !== this.aim.x ||
-      c.ay !== this.aim.y;
-    this.moving = moved;
-    if (!moved && this.dirty === 0) return;
-    if (this.dirty > 0) this.dirty--;
+    const now: DrawnView = { pos: this.camera.position, target: this.controls.target, fov: this.camera.fov, w: this.size.w, h: this.size.h, ax: this.aim.x, ay: this.aim.y };
+    const gate = drawGate({ pos: c.pos, target: c.target, fov: c.fov, w: c.w, h: c.h, ax: c.ax, ay: c.ay }, now, this.dirty, this.distance);
+    this.moving = gate.moved;
+    this.dirty = gate.dirty;
+    if (!gate.draw) return;
     c.pos.copy(this.camera.position);
     c.target.copy(this.controls.target);
     c.fov = this.camera.fov;

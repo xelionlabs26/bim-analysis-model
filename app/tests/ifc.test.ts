@@ -289,7 +289,7 @@ describe('material keywords', () => {
   });
 
   it('settles names that mention two materials', () => {
-    const cases: [string, string | null][] = [
+    const cases: [string, string | null | undefined][] = [
       ['Glass wool insulation', 'insulation'],
       ['Insulation - Glass Wool', 'insulation'],
       ['Fibreglass batt', 'insulation'],
@@ -311,6 +311,25 @@ describe('material keywords', () => {
       ['Wood - Dimensional Lumber', 'timber'],
       ['Floor joist', 'timber'],
       ['Wood - Sheathing - plywood', 'timber'],
+      // Dutch compounds of hout (wood), and English words that only end in it
+      ['Naaldhout', 'timber'],
+      ['Hardhout', 'timber'],
+      ['Vurenhout', 'timber'],
+      ['Eikenhout', 'timber'],
+      ['Hout - Naaldhout', 'timber'],
+      ['Without finish', undefined],
+      ['Concrete throughout', 'concrete'],
+      // glass-fibre-reinforced concrete is concrete; reinforced plastics and gypsum are not
+      ['Glass fibre reinforced cement', 'concrete'],
+      ['GRC cladding panel', 'concrete'],
+      ['Glass fibre reinforced plastic', undefined],
+      ['Glass fibre reinforced polymer', undefined],
+      ['Glass fibre reinforced gypsum', 'gypsum'],
+      // a foil or aluminium facing makes insulation only when the name is not a board or panel
+      ['Foil-faced plasterboard', 'gypsum'],
+      ['Aluminium-faced composite panel', 'aluminium'],
+      ['Foil-faced PIR board', 'insulation'],
+      ['Foil-faced insulation', 'insulation'],
     ];
     for (const [name, mat] of cases) expect(classifyMaterial(name), name).toBe(mat);
   });

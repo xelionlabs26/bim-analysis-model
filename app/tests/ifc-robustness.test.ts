@@ -2,7 +2,9 @@
  * Regression tests for IFC import fixes: storey heights and site datums, Revit
  * parts, short models with no storeys, very large models, GIFA, full-height
  * openings, older IFC4 face sets, swept-disk directrices, placement cycles,
- * grid placements, type property sets, MEP non-elements and truncated files.
+ * grid placements, type property sets, MEP non-elements and truncated files;
+ * basements and datums below 0, the layers of Revit Parts, and terrain around a
+ * low-rise building.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +12,10 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { StepFile } from '../src/ifc/step';
 import { categoryOf, readIfc, type IfcModel, type ImportedElement } from '../src/ifc/model';
-import { projectFromIfc } from '../src/ifc/sequence';
-import type { Project } from '../src/data/types';
+import { liftPlanFor, projectFromIfc } from '../src/ifc/sequence';
+import { planBox, type Project } from '../src/data/types';
+import { runChecks } from '../src/checks/run';
+import { DEFAULT_SETTINGS } from '../src/checks/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (p: string) => readFileSync(join(here, p), 'latin1');
@@ -194,6 +198,47 @@ describe('heights from a site datum', () => {
   });
 });
 
+describe('basements at a site datum', () => {
+  const storeysOf = (m: IfcModel) => m.storeys.map((s) => [s.name, +s.elevation.toFixed(3)]);
+
+  it('takes the storey whose Elevation is 0 as ground when the placements carry the datum', async () => {
+    const m = await load(slabTower(0, [{ name: 'Level -1', local: 31, elevation: -4 }, { name: 'Level 0', local: 35, elevation: 0 }, { name: 'Level 1', local: 38, elevation: 3 }, { name: 'Level 2', local: 41, elevation: 6 }]));
+    expect(storeysOf(m)).toEqual([['Level -1', -4], ['Level 0', 0], ['Level 1', 3], ['Level 2', 6]]);
+    expect(m.offset[1]).toBeCloseTo(-35, 6);
+    expect(m.report.warnings.join(' ')).toMatch(/site datum: Level 0 is at \+35\.00 m there and is shown at 0/);
+    expect(projectFromIfc(m, 't.ifc').project.height).toBeCloseTo(6.3, 6);
+  });
+
+  // Elevation in the same frame as the placements: only the name tells the basement apart
+  for (const [basement, ground] of [['Level -1', 'Level 0'], ['P-1', 'P0'], ['Untergeschoss', 'Erdgeschoss'], ['UG1', 'EG'], ['Tiefgarage', 'Erdgeschoss'], ['Parking', 'Ground'], ['Sótano', 'Planta baja']]) {
+    it(`passes over a basement named '${basement}' when choosing the ground storey`, async () => {
+      const m = await load(slabTower(0, [{ name: basement, local: 31, elevation: 31 }, { name: ground, local: 35, elevation: 35 }, { name: 'Upper', local: 38, elevation: 38 }]));
+      expect(storeysOf(m)).toEqual([[basement, -4], [ground, 0], ['Upper', 3]]);
+    });
+  }
+});
+
+describe('datums below 0', () => {
+  const nap = (elevations: number[]) => slabTower(0, [{ name: 'Begane grond', local: -4.5, elevation: elevations[0] }, { name: '1e verdieping', local: -1.5, elevation: elevations[1] }, { name: '2e verdieping', local: 1.5, elevation: elevations[2] }]);
+
+  for (const [label, elevations] of [['Elevation on the same datum', [-4.5, -1.5, 1.5]], ['Elevation relative to the ground floor', [0, 3, 6]]] as const) {
+    it(`rebases a building whose ground floor is at NAP −4.5 m (${label})`, async () => {
+      const m = await load(nap([...elevations]));
+      expect(m.storeys.map((s) => [s.name, +s.elevation.toFixed(3)])).toEqual([['Begane grond', 0], ['1e verdieping', 3], ['2e verdieping', 6]]);
+      expect(Math.min(...m.elements.map((e) => e.min[1]))).toBeCloseTo(0, 6);
+      expect(m.offset[1]).toBeCloseTo(4.5, 6);
+      expect(m.report.warnings.join(' ')).toMatch(/site datum: Begane grond is at −4\.50 m there and is shown at 0/);
+      expect(projectFromIfc(m, 't.ifc').project.height).toBeCloseTo(6.3, 6);
+    });
+  }
+
+  it('keeps a model whose unnamed basement sits below a storey at 0', async () => {
+    const m = await load(slabTower(0, [{ name: 'Level 1', local: -3, elevation: -3 }, { name: 'Level 2', local: 0, elevation: 0 }]));
+    expect(m.storeys.map((s) => +s.elevation.toFixed(3))).toEqual([-3, 0]);
+    expect(m.report.warnings.join(' ')).not.toMatch(/site datum/);
+  });
+});
+
 describe('Revit parts', () => {
   /** A concrete wall drawn through two parts (each one leaf), a door opening in the host, and a slab on top. */
   async function partsModel() {
@@ -232,6 +277,133 @@ describe('Revit parts', () => {
     expect(m.report.openingsCut).toBe(1);
     expect(m.report.openingsSkipped).toBe(0);
     for (const e of m.elements.filter((x) => x.type === 'IFCBUILDINGELEMENTPART')) expect(e.volume).toBeCloseTo(0.1 * (5 * 3 - 1 * 2.1), 6);
+  });
+});
+
+describe('Revit parts of a floor and of a cavity wall', () => {
+  /** A ground slab and an upper floor, the floor either one 375 mm slab or three parts (screed, concrete, insulation). */
+  async function floorModel(withParts: boolean) {
+    const f = new Ifc();
+    const sp = f.place(null, 0, 0, 0);
+    const st = f.storey('L0', sp, 0);
+    const sp1 = f.place(null, 0, 0, 3);
+    const st1 = f.storey('L1', sp1, 3);
+    const g = f.el('IFCSLAB', 'Ground slab', f.place(sp, 0, 0, -0.3), f.box(10, 10, 0.3), ',$,.FLOOR.');
+    f.material('Concrete', [g]);
+    let slab: number;
+    if (withParts) {
+      slab = f.el('IFCSLAB', 'Floor:Concrete 200 + screed 75', f.place(sp1, 0, 0, 0), null, ',$,.FLOOR.');
+      const p1 = f.el('IFCBUILDINGELEMENTPART', 'Part screed', f.place(sp1, 0, 0, 0), f.box(10, 10, 0.075, 0, 0, 0.2));
+      const p2 = f.el('IFCBUILDINGELEMENTPART', 'Part concrete', f.place(sp1, 0, 0, 0), f.box(10, 10, 0.2, 0, 0, 0));
+      const p3 = f.el('IFCBUILDINGELEMENTPART', 'Part insulation', f.place(sp1, 0, 0, 0), f.box(10, 10, 0.1, 0, 0, -0.1));
+      f.aggregate(slab, [p1, p2, p3]);
+      f.material('Screed', [p1]);
+      f.material('Concrete', [p2]);
+      f.material('Insulation PIR', [p3]);
+    } else {
+      slab = f.el('IFCSLAB', 'Floor:Concrete 200 + screed 75', f.place(sp1, 0, 0, -0.1), f.box(10, 10, 0.375), ',$,.FLOOR.');
+      f.material('Concrete', [slab]);
+    }
+    f.contain(st, [g]);
+    f.contain(st1, [slab]);
+    return load(f);
+  }
+
+  it('counts a floor drawn through its parts once in the floor area', async () => {
+    const whole = projectFromIfc(await floorModel(false), 't.ifc').project;
+    const parts = projectFromIfc(await floorModel(true), 't.ifc').project;
+    expect(whole.gifa).toBeCloseTo(200, 6);
+    expect(parts.gifa).toBeCloseTo(200, 6);
+  });
+
+  /** A load-bearing external cavity wall drawn through four parts, and a slab bearing on it. */
+  async function cavityWall(leaves: { mat: string; t: number; y: number; role?: string }[], schema = 'IFC2X3') {
+    const f = new Ifc();
+    const sp = f.place(null, 0, 0, 0);
+    const st = f.storey('L0', sp, 0);
+    const wall = f.el('IFCWALLSTANDARDCASE', 'Basic Wall:Cavity wall', f.place(sp, 0, 0, 0), null);
+    const parts = leaves.map(({ mat, t, y, role }, i) => {
+      const p = f.el('IFCBUILDINGELEMENTPART', `Part ${i}`, f.place(sp, 0, 0, 0), f.box(5, t, 3, 2.5, y));
+      if (role === undefined) f.material(mat, [p]);
+      else {
+        const m = f.add(`IFCMATERIAL('${mat}',$,$)`);
+        const layer = f.add(`IFCMATERIALLAYER(#${m},${t},$,$,$,'${role}',$)`);
+        const set = f.add(`IFCMATERIALLAYERSET((#${layer}),$,$)`);
+        f.add(`IFCRELASSOCIATESMATERIAL(${f.guid()},$,$,$,(#${p}),#${set})`);
+      }
+      return p;
+    });
+    f.aggregate(wall, parts);
+    const ps = f.add(`IFCPROPERTYSET(${f.guid()},$,'Pset_WallCommon',$,(#${f.add("IFCPROPERTYSINGLEVALUE('LoadBearing',$,IFCBOOLEAN(.T.),$)")},#${f.add("IFCPROPERTYSINGLEVALUE('IsExternal',$,IFCBOOLEAN(.T.),$)")}))`);
+    f.add(`IFCRELDEFINESBYPROPERTIES(${f.guid()},$,$,$,(#${wall}),#${ps})`);
+    const slab = f.el('IFCSLAB', 'Slab', f.place(sp, 0, 0, 3), f.box(6, 6, 0.2, 2.5, -2.6), ',$,.FLOOR.');
+    f.material('Concrete', [slab]);
+    f.contain(st, [wall, slab]);
+    const m = await load(f, schema);
+    const p = projectFromIfc(m, 't.ifc').project;
+    const slabStep = stepOf(p, m.elements.find((e) => e.name === 'Slab')!.guid);
+    return m.elements.filter((e) => e.type === 'IFCBUILDINGELEMENTPART').map((e) => {
+      const s = stepOf(p, e.guid);
+      return { name: e.name, loadBearing: e.loadBearing, kind: s.kind, beforeSlab: s.index < slabStep.index };
+    });
+  }
+
+  it('carries the host wall load only in the structural leaves: insulation and plasterboard follow as envelope', async () => {
+    const rows = await cavityWall([{ mat: 'Brick, Common', t: 0.1, y: 0.05 }, { mat: 'Rigid insulation PIR', t: 0.1, y: 0.15 }, { mat: 'Concrete block', t: 0.14, y: 0.27 }, { mat: 'Plasterboard', t: 0.0125, y: 0.346 }]);
+    expect(rows).toEqual([
+      { name: 'Part 0', loadBearing: true, kind: 'frame', beforeSlab: true },
+      { name: 'Part 1', loadBearing: false, kind: 'facade', beforeSlab: false },
+      { name: 'Part 2', loadBearing: true, kind: 'frame', beforeSlab: true },
+      { name: 'Part 3', loadBearing: false, kind: 'facade', beforeSlab: false },
+    ]);
+  });
+
+  it("reads a part's layer function where the file gives one", async () => {
+    const rows = await cavityWall([{ mat: 'Unobtainium', t: 0.2, y: 0.1, role: 'LoadBearing' }, { mat: 'Unobtainium', t: 0.1, y: 0.25, role: 'Insulation' }], 'IFC4');
+    expect(rows.map((r) => [r.loadBearing, r.kind])).toEqual([[true, 'frame'], [false, 'facade']]);
+  });
+});
+
+describe('terrain around a low-rise building', () => {
+  async function house(terrain: boolean) {
+    const f = new Ifc();
+    const sp = f.place(null, 0, 0, 0);
+    const st = f.storey('L0', sp, 0);
+    const els: number[] = [];
+    const g = f.el('IFCSLAB', 'Ground slab', f.place(sp, 0, 0, -0.3), f.box(12, 10, 0.3), ',$,.FLOOR.');
+    f.material('Concrete', [g]);
+    els.push(g);
+    for (const [w, d, cx, cy] of [[12, 0.3, 0, 4.85], [12, 0.3, 0, -4.85], [0.3, 10, 5.85, 0], [0.3, 10, -5.85, 0]]) {
+      const wl = f.el('IFCWALL', 'Wall', f.place(sp, 0, 0, 0), f.box(w, d, 3, cx, cy));
+      f.material('Brick', [wl]);
+      els.push(wl);
+    }
+    const beam = f.el('IFCBEAM', 'Steel beam UB', f.place(sp, 0, 0, 2.7), f.box(10, 0.2, 0.3));
+    f.material('Steel S355', [beam]);
+    els.push(beam);
+    if (terrain) els.push(f.el('IFCGEOGRAPHICELEMENT', 'Toposurface', f.place(sp, 0, 0, -1), f.box(80, 80, 0.7)));
+    f.contain(st, els);
+    return projectFromIfc(await load(f), 't.ifc').project;
+  }
+
+  it('sizes the lifting plan from the building, not the 80 m terrain around it', async () => {
+    const bare = await house(false);
+    const sited = await house(true);
+    expect(bare.crane).toBeNull();
+    expect(sited.crane).toBeNull();
+    expect(sited.report!.lifting).toBe(bare.report!.lifting);
+    expect(sited.report!.lifting).toMatch(/^mobile crane \/ by hand: 3\.0 m tall, heaviest pick 4\.7 t, at most 66 %/);
+    // the checks set the mobile crane up beside the same faces
+    expect(planBox(sited.parts)).toEqual(planBox(bare.parts));
+    const issues = async (p: Project) => (await runChecks(p, DEFAULT_SETTINGS, () => {}, false)).issues.filter((i) => i.rule === 'REACH-CRANE').map((i) => i.title);
+    expect(await issues(sited)).toEqual(await issues(bare));
+  });
+
+  it('words a pick past the mobile crane chart without an infinite percentage', () => {
+    const plan = liftPlanFor(6, [{ x: 0, z: 0, kg: 2000 }], { x0: -40, x1: 40, z0: -40, z1: 40 });
+    expect(plan.tower).toBe(true);
+    expect(plan.reason).not.toMatch(/Infinity|NaN/);
+    expect(plan.reason).toMatch(/beyond the indicative chart's 30 m reach/);
   });
 });
 

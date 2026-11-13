@@ -1,7 +1,8 @@
 /**
  * The sequence as JSON: the project, how it is lifted (its tower crane or a
  * mobile crane), the check verdict and issues, the stages and every step with
- * its elements. Positions are written in the
+ * its elements. A file that ends early is marked incomplete, and no check on
+ * it reads as passed (unverified, file ends early). Positions are written in the
  * same frame as the CSV and the BCF: IFC world coordinates (metres, Z up) for
  * an imported model, and the model's own axes turned Z up for a generated one.
  */
@@ -11,9 +12,20 @@ import { toIfc } from '../checks/view';
 
 const round3 = (v: Vec3) => v.map((x) => +x.toFixed(3));
 
+/** Why no check on a file that ends early can be said to have passed. */
+const CUT_SHORT = 'file ends early';
+
 export function sequenceJson(project: Project, report: CheckReport | null): string {
   const off = project.meta.ifcOffset ?? [0, 0, 0];
   const at = (v: Vec3) => round3(toIfc(v, off));
+  // a file cut off part-way: what was read is written, but nothing about the rest can pass
+  const cut = !!(project.report as { truncated?: unknown } | undefined)?.truncated;
+  const verdict = (r: CheckReport['rules'][number]) => {
+    const status = !r.applicable || !r.checked ? 'unverified' : r.flagged ? 'flagged' : 'passed';
+    return cut && status === 'passed'
+      ? { rule: r.id, checked: r.checked, flagged: r.flagged, status: 'unverified', reason: CUT_SHORT, note: r.note }
+      : { rule: r.id, checked: r.checked, flagged: r.flagged, status, note: r.note };
+  };
   return JSON.stringify(
     {
       project: {
@@ -29,6 +41,9 @@ export function sequenceJson(project: Project, report: CheckReport | null): stri
         carbonA1A3Kg: Math.round(project.totalCarbonKg),
         biogenicStoredKg: Math.round(project.totalBiogenicKg),
         carbonNote: 'indicative A1–A3 from generic factors, not project EPDs',
+        ...(cut
+          ? { incomplete: true, incompleteNote: 'The IFC file ends early (its data section is never closed), so elements after the cut are missing: quantities, steps and checks cover only what was read. Export the file again and re-run before relying on it.' }
+          : {}),
       },
       lifting: liftingLabel(project.crane),
       crane: project.crane
@@ -36,7 +51,7 @@ export function sequenceJson(project: Project, report: CheckReport | null): stri
         : { kind: 'mobile', note: `no tower crane: crane picks by an indicative ${MOBILE_CRANE.label} set up beside the nearest face`, maxKg: MOBILE_CRANE.maxKg, reachM: MOBILE_CRANE.reach },
       checks: report
         ? {
-            verdict: report.rules.map((r) => ({ rule: r.id, checked: r.checked, flagged: r.flagged, status: !r.applicable || !r.checked ? 'unverified' : r.flagged ? 'flagged' : 'passed', note: r.note })),
+            verdict: report.rules.map(verdict),
             settings: report.settings,
             issues: report.issues.map((i) => ({
               id: i.id,

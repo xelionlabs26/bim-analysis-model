@@ -85,11 +85,16 @@ function carbonParts(kg: number): { n: string; unit: string } {
  * What the status card says about carbon, always in view with its caveat: the
  * indicative A1–A3 total for the whole build, its intensity per m² of floor
  * area, and in `label` the basis in full. `assumed` is how many elements had
- * their material assumed (an imported model's defaulted materials).
+ * their material assumed (an imported model's defaulted materials); `client`
+ * is the presentation view, where the Import drawer the caveat points to is
+ * put away. `truncated` is a file that ends early: the figures then cover only
+ * the part of the model that was read, and the card says so in view.
  */
 export function carbonFacts(
   p: Pick<Project, 'totalCarbonKg' | 'totalBiogenicKg' | 'gifa'>,
   assumed = 0,
+  client = false,
+  truncated = false,
 ): { head: string; main: string; unit: string; sub: string; label: string } {
   const total = carbonParts(p.totalCarbonKg);
   const area = Number.isFinite(p.gifa) && p.gifa > 0 ? p.gifa : 0;
@@ -100,13 +105,15 @@ export function carbonFacts(
     perM2 !== null ? `, ${fmtInt(perM2)} kgCO₂e per m² over ${fmtInt(area)} m² GIA` : '',
     '. Worked out from generic factors per material, not from product EPDs; transport, construction, use and end of life (A4 onwards) are not included.',
     stored.unit ? ` Carbon stored in timber, about ${stored.n} ${stored.unit}, is reported separately.` : '',
-    assumed > 0 ? ` ${fmtInt(assumed)} ${assumed === 1 ? 'element has' : 'elements have'} an assumed material (see Import).` : '',
+    truncated ? ' The file ends early: partial model, so these figures cover only the elements that were read.' : '',
+    assumed > 0 ? ` ${fmtInt(assumed)} ${assumed === 1 ? 'element has' : 'elements have'} an assumed material (${client ? 'see Import in the full view' : 'see Import'}).` : '',
   ].join('');
   return {
     head: 'INDICATIVE A1–A3',
     main: total.n,
     unit: total.unit,
-    sub: perM2 !== null ? `${fmtInt(perM2)} kg/m² GIA` : 'no floor area',
+    // a partial model's intensity is not one to quote: the card says why instead
+    sub: truncated ? 'file ends early: partial model' : perM2 !== null ? `${fmtInt(perM2)} kg/m² GIA` : 'no floor area',
     label,
   };
 }

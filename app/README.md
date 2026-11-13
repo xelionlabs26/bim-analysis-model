@@ -1,7 +1,7 @@
 # Arbor Build
 
 A browser 4D assembly-sequence viewer. It builds a building step by step in install order, as a
-live construction drawing: either **Arbor House**, an original 32-storey (114.7 m) hybrid
+live construction drawing: either **Arbor House**, an original 32-storey (115.1 m) hybrid
 mass-timber residential tower, or **any IFC model you import** (milestone 6), which it meshes,
 sequences, plans a crane for and quantifies on its own. Every sequence is then **checked for
 buildability** (milestone 7), and the issues export as BCF for the design team. Built with Vite,
@@ -17,7 +17,22 @@ npm run build            # typecheck + production bundle in dist/
 npm run build:artifact   # one-page build for the claude.ai host → dist-artifact/arbor-build.html
 ```
 
-URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`, plus `?sample=duplex` to open the IFC sample (the Arbor House demo is then not built unless the sample fails to load). The page opens paused on the finished, coloured model with a large **Play the build** button; `?t=` opens at that moment instead (playing unless `?paused=1`), and `?play=1` plays from the start at once. `?mode=client` opens the presentation view and `?mode=expert` the full view, without changing the saved choice. `?intro=0` leaves out the first-run cards. The Arbor House sequence runs about 29 s: assembly to 18.1 s, material pass to 22.1 s, then the section.
+The page opens paused on the finished, coloured model with a large **Play the build** button. URL parameters:
+
+| Parameter | What it does |
+|---|---|
+| `?sample=duplex` | Opens the IFC sample. The Arbor House demo is then built only if the sample fails to load. |
+| `?t=12.8` | Opens at that moment, in seconds (`12.8` or `12.8s`; anything that does not start with a number is ignored), playing unless `?paused=1`. Times past the end open at the end. |
+| `?paused=1` | With `?t=`, opens paused there. |
+| `?play=1` | Plays from the start at once, as a kiosk loop: the first pick over the crane's chart shows as a passing note instead of stopping playback. |
+| `?az=28&el=16` | Camera azimuth and elevation in degrees. `el` is read only with `az`, and defaults to 16. |
+| `?rotate=0` | No auto-rotate (reduced motion turns it off too), without changing the saved choice. |
+| `?mode=client` | Opens the presentation view (`present` and `presentation` work too); `?mode=expert` (or `full`) opens the full view. Neither changes the saved choice. |
+| `?intro=0` | Leaves out the first-run cards, for stills and automation; `?intro=1` shows them even after they were dismissed. |
+| `?brand=Name` | A white-label name for the header, the page title and BCF exports (letters, digits, spaces and `&'.-`, up to 24 characters; anything else falls back to Arbor Build). |
+| `?debug` | Shows the performance overlay (`?debug=0` does not). |
+
+For a reproducible still: `?t=12.8&paused=1&rotate=0&az=28&el=16&intro=0`. The Arbor House sequence runs about 29.4 s: assembly to 18.2 s, the material pass to 22.2 s, then the section to 29.0 s.
 
 ## The building
 
@@ -27,7 +42,7 @@ URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`,
 | Podium (L00–L02) | jump-formed concrete core, RC columns and PT slabs, 800 mm transfer deck, lobby glazing, terracotta-finned podium façade |
 | Tower (L03–L31) | per floor: glulam columns + beams → prefab bathroom pods → 5-ply CLT slab above; unitised façade with parametric terracotta fins and staggered planted CLT balconies trailing two floors behind; core jumps keep ≥ 2 floors ahead |
 | Sky gardens | double-height loggias at L12–13 and L22–23 (south-east corner) with trees |
-| Setback | floors L25+ step back one bay on the south side over a planted sky terrace at L24 |
+| Setback | floors L24+ step back one bay on the south side; the L24 storey opens onto the sky terrace |
 | Crown | lift overrun, green roof, roof trees, glulam PV canopy (32 modules), terracotta crown screen, BMU, street trees |
 
 Context massing (light line work) can be toggled in **Layers**.
@@ -39,7 +54,7 @@ Context massing (light line work) can be toggled in **Layers**.
 - **Manual section:** **S** (or **Section** in the rail) cuts the model at any stage. Choose A–A (east bay) or B–B (south bay) and set the offset with the slider.
 
 ## Import a real IFC (milestone 6)
-Open **Import** in the rail (**7** or **I**), drop an `.ifc` file onto the model, or load the bundled
+Open **Import** in the rail (**7** or **I**), drop an `.ifc` file onto the model (on a touch screen, choose the file instead), or load the bundled
 sample: the buildingSMART *Duplex Apartment* (Revit 2011, IFC2x3, CC BY 4.0, see
 `public/samples/README.md`). The file is read in the browser and never uploaded.
 
@@ -52,14 +67,14 @@ sample: the buildingSMART *Duplex Apartment* (Revit 2011, IFC2x3, CC BY 4.0, see
 
    Winding is repaired shell by shell. The T-junctions earcut leaves at collinear profile points are repaired too.
 3. **Sequence.** Elements are banded by storey and ordered by what bears on what: footings first, then the tower crane (if there is one), foundation walls and ground slab. Then, level by level, heavy walls and columns go in before the slabs, beams and roofs they carry. Envelope and fit-out trail two bands behind, and doors and windows follow their host wall. A wall counts as structural when something bears on it, because Revit often exports masonry with LoadBearing = false.
-4. **Plan the lifting.** A building under 12 m whose every crane pick stays within 85 % of an indicative mobile crane chart (12 t to 6 m, 1.5 t at 30 m, set up beside the face nearest the pick) gets no tower crane: it is lifted by mobile crane and by hand, and the import report says why. The Duplex is one. Otherwise a tower crane is placed beside the footprint, with its jib sized to reach every lifted piece. Either way, every pick is checked against the indicative chart at its real radius.
+4. **Plan the lifting.** A low-rise building (under 12 m) whose every crane pick stays within 85 % of an indicative mobile crane chart (12 t to 6 m, 1.5 t at 30 m, set up beside the face nearest the pick) gets no tower crane: it is lifted by mobile crane and by hand, and the import report says why. The Duplex is one, so it has no tower crane, no reach overlay and no crane plan. Otherwise a tower crane is placed 7 m off the west face, with its jib sized to reach every lifted piece; nobody chose that position, so it is marked as assumed (in the sequence JSON too) and the mast-clearance check reads **not checked**. Either way, every pick is checked against the indicative chart at its real radius.
 5. **Quantify.** Mass and indicative A1–A3 carbon come from the material layers. Stud and joist layers use framing fill factors, and air gaps carry no material. Biogenic storage is reported too, and intensity uses the slab area.
 6. **Present.** The same timeline, panels, material pass and Section A–A as Arbor House, generated from the model's own bounds and storeys.
 
 **The Duplex:**
-- 215 elements meshed in about 0.25 s (0.6 s in the page, including the sequence), 165 of them closed solids.
-- 41 steps in 5 assembly stages.
-- About 450 t and 134 tCO₂e A1–A3, about 260 kg/m² GIA (indicative).
+- 215 elements read, meshed and sequenced in about 0.4 s, 165 of them closed solids.
+- 40 steps in 5 assembly stages; the whole sequence runs about 23.4 s.
+- 248.2 m² GIA, 6.6 m high. About 450 t and 134 tCO₂e A1–A3, about 541 kgCO₂e/m² GIA (indicative), with about 62 tCO₂e stored in timber.
 
 ### Checked against IfcOpenShell
 `tests/ifc.test.ts` compares every element with IfcOpenShell 0.9 (`ifcopenshell.geom`, world
@@ -70,7 +85,7 @@ coordinates). The reference data is in `tests/fixtures/`; regenerate it with `sc
   - the 13 gypsum ceilings equal area × thickness (IfcOpenShell gives 4.09 m³ for a 3.25 m³ board);
   - the surface-model party wall is 25.83 m³ (IfcOpenShell: 123 m³);
   - the pavilion mullions are exact 0.027 m³ boxes.
-- 39 openings are cut. The other 9 sit clear of their hosts in the file (Revit placed them a storey down, or mirrored), and the import report says so.
+- 41 openings are cut: 39 into their hosts, plus the 2 rooflight openings that the roof slab already carries. The other 9 sit clear of their hosts in the file (Revit placed them a storey down, or mirrored), and the import report says so.
 - Synthetic files cover Breps with voids (either winding), separate shells and STEP string escapes.
 
 ### IFC limits (each is counted in the import report when it applies)
@@ -81,7 +96,7 @@ coordinates). The reference data is in `tests/fixtures/`; regenerate it with `sc
 - Railings, windows and fixtures exported as open surface models get an estimated volume.
 
 ## Buildability checks and issues (milestone 7)
-Every project is checked as soon as it loads, in about 0.3 s for either sample (the page runs the
+Every project is checked as soon as it loads, in about 0.3–0.4 s for either sample (the page runs the
 checks after its first frame and keeps drawing). Open the **Issues** tab.
 
 | Rule | What it checks |
@@ -98,36 +113,43 @@ checks after its first frame and keeps drawing). Open the **Issues** tab.
 | ACCESS-TRANSPORT | Prefabricated pieces fit a standard 13.6 × 2.55 × 3.0 m road load. |
 | MODEL-DATA | Gaps in the model that limit the checks go back to the design team. |
 
-Each rule reports how much it evaluated. A rule with nothing to act on reads **nothing to check**
-(unverified in the exports), never "passed". The family chips say the same in words, for example
-**Clashes 1 of 2 passed** when one clash rule had nothing to check. You can change every threshold under **Rules and thresholds** in the Issues tab
+Each rule reports how much it evaluated, and never reads "passed" unless it found something to check and
+cleared it. Two other states are kept apart:
+- **nothing to check:** the model has nothing the rule applies to, such as no stairs for headroom or no hand-set pieces.
+- **not checked:** the rule could have applied but did not run on this model, such as hard clashes on the generated massing (its boxes overlap by construction), the mast clearance of a crane the importer placed, model data on a generated model, or a rule whose only candidates are open surfaces it cannot measure.
+
+Both are written as unverified in the exports. The family chips say the same in words, for example
+**Clashes 1 of 2 passed**, and the verdict line counts each state. You can change every threshold under **Rules and thresholds** in the Issues tab
 and run the checks again.
 
-**On the Duplex (24 issues):**
+**On the Duplex (25 issues: 11 major, 12 minor, 2 notes):**
 - **Window heads into the beams:** the heads of eight Level 2 windows sit 13 mm into the W410X60 steel beams above them, so there is no deflection gap. Four issues, one per beam.
 - **Other overlaps:**
-  - Level 2 partitions run 84–124 mm into the timber floor structure.
+  - Level 2 partitions run up to 124 mm into the timber floor structure.
   - Furring walls sit 57 mm into the CMU party wall.
   - Two party-wall junctions are modelled twice (379 L each).
   - One ceiling is duplicated.
-  - Door frames run 25 mm into return walls.
+  - Door frames run 25 mm into partitions (four issues).
   - Glass doors sit 13 mm into the exterior slab.
-- **Edge protection:** the stair voids at Level 2 stay open for 8 steps until the guard rails go in. The two rooflight openings stay open for 28 steps until the skylights.
-- **Handling:** 22 windows, up to about 840 kg, are too heavy to carry.
+- **Edge protection:**
+  - 46 m of edge at Level 2 (+3.10 m) stays open for 18 steps, until the windows, walls and guard rails close it.
+  - 8 m of edge round the rooflight openings (+6.46 m) stays open for 28 steps, until the skylights go in.
+  - 50 m of roof edge is never guarded: nothing 950 mm high closes it.
+- **Handling:** 22 windows (up to 843 kg) and 10 doors (up to 155 kg) are too heavy to carry, and two worktops are just over the 50 kg two-person lift.
 - **Model gaps:**
   - 9 openings are placed clear of their hosts.
   - 114 elements have no material.
   - 50 elements are open surfaces.
 - **What passes:** both stairs, with at least 2.41 m headroom over 421 nosing points; support order, propping, crane reach (against the mobile crane), lift paths and transport. Crane clearance has nothing to check, as there is no tower crane.
 
-**On Arbor House (21 issues):**
+**On Arbor House (21 issues: 3 critical, 18 major):**
 - **Crane capacity:** the BMU gantry is at 116 % of the chart and the entrance canopy at 87 %.
-- **Lift paths:** the sky-garden trees cannot be lowered through the floor above, so they need a loading platform. The public-realm benches under the L03 balconies need ground plant.
+- **Lift paths:** the sky-garden trees (12 picks at each garden) cannot be lowered through the floor above, so they need a loading platform. The public-realm trees and benches under the L03 balconies need ground plant.
 - **Edge protection:**
-  - Perimeter protection on 31 floors while the façade trails (about 108 m per floor).
-  - Balcony, sky-garden-void and roof edges have no modelled guarding. The crown's baguettes, 1.75 m apart, are a screen, not a guard.
-- **Transport:** 612 CLT floor panels are 3.61 m wide loads, plus long glulam, BMU track and podium fins.
-- **What passes:** support order, over 7,100 pieces. Hard clashes are not run on the generated massing, because its boxes overlap by construction, so that rule reads unverified.
+  - Perimeter protection on 30 floors while the façade trails (about 108 m per floor), 146 m on the podium roof at +9.00 m, and 45 m at the roof for 10 steps.
+  - Edges with no modelled guarding: 22 m per floor on 19 floors, 36 m at each sky-garden void (L13 and +79.50 m), 16 m per floor on the 8 floors from L24 up, and 98 m at the roof. The crown's baguettes, 1.75 m apart, are a screen, not a guard.
+- **Transport:** 612 CLT floor panels and 16 deck panels are 3.61 m wide loads, plus the lobby glazing and canopy panel, and long podium fins, L24 glazing, BMU track and PV canopy glulam (17–28 m).
+- **What passes:** support order, over 7,100 pieces; propping; the crane mast's clearance. Headroom and handling have nothing to check (no stairs, nothing set by hand). Hard clashes and model data are not checked on the generated model: its boxes overlap by construction, and it has no authoring data.
 - **Generator fixes:** the checks also caught three defects in the generator, now fixed:
   - Two sky-garden corner columns floated 200 mm above the columns below.
   - The PV canopy's inner posts stood over the lift-shaft void, with beams running through the core overrun. The canopy now bears on the overrun.
@@ -155,8 +177,12 @@ Elements in critical and major issues are hatched **FLAGGED** once they are plac
   - Every camera was checked to aim at its elements, using IfcOpenShell geometry.
 
   Topic GUIDs come from the model, the rule and the elements, never from measured values, so a re-export after a threshold change updates topics instead of duplicating them.
-- **CSV:** the issue register, one row per issue: ID, severity, rule, title, detail, action, step number, measurement, elements with their GlobalIds, and location in IFC world coordinates. The step number is the padded step id as a number (step `016` is 16), since spreadsheets drop the padding anyway. Text that a spreadsheet would read as a formula (a name starting with `=`, `+`, `-` or `@`) is written with a leading apostrophe.
-- **JSON:** the sequence JSON carries the check verdict and the issues. Without them the run is marked unverified. Step centroids, issue locations and the crane base are in the same frame as the CSV and BCF: IFC world coordinates (metres, Z up) for an imported model, as `project.coordinates` states.
+- **CSV:** the issue register, one row per issue, with the columns ID, Severity, Rule, Check, Title, Detail, Action, Step No., Member, Time (s), Measured, Limit, Unit, Elements, IFC GlobalIds, X, Y, Z. The location is in IFC world coordinates (metres, Z up). **Step No.** is the padded step id as a number (step `016` is 16), since spreadsheets drop the padding anyway. Text that a spreadsheet would read as a formula (a name starting with `=`, `+`, `-` or `@`) is written with a leading apostrophe.
+- **JSON:** "Save the sequence as JSON" writes the project (with its quantities and carbon), how it is lifted, the check verdict and issues, the stages and every step with its elements.
+  - Positions (step centroids, issue locations, the crane base) are in the same frame as the CSV and BCF: IFC world coordinates (metres, Z up) for an imported model, and the model's own axes turned Z up for Arbor House. `project.coordinates` says which.
+  - `lifting` names the tower crane, or reads `mobile crane / by hand`. `crane.kind` is `tower` (with its id, base, jib, chart and `assumed`, true when the importer placed it) or `mobile` (the indicative mobile crane's capacity and reach).
+  - A file that ends early sets `project.incomplete` with a note, and no rule on it reads as passed: each is unverified, with the reason `file ends early`.
+  - Saved before the checks finish, the checks read unverified.
 
 **Limits of the checks:**
 - Support uses element bounds in plan. It catches missing and late supports, not structural adequacy.
@@ -173,29 +199,29 @@ The crane's reach is drawn on the ground, as on a site logistics plan, while the
 - **Labels** hang from the circles. The reach label (jib, chart, tail) sits on the side nearest the viewer. The pick label (the piece's own radius, its mass against capacity, utilisation) sits at the piece's bearing. Each slides round its circle to stay clear of the toolbar, caption, title block, scale bar, scrubber, transport and the selected issue's pin, and to cover as little of the other annotation as it can.
 - **Issues come first.** While an issue outside the crane checks is selected, the reach overlay and its labels are hidden.
 - **Crane plan** (`L`, or the reach button in the toolbar) looks down on the whole slew circle with the reach drawn heavier and the pick ring on the ground, so the pick's radius reads against the full-capacity circle. `L` again, or `V`, goes back to the view before.
-- **The first pick over the chart** stops playback, once per playthrough, with a banner naming the piece, its reviewed mass, the capacity at its radius and the utilisation, and a button to open its issue. Seeking back before it arms it again; seeking or scrubbing past it never stops.
+- **The first pick over the chart** stops playback, once per playthrough, frames the step's pieces clear of the cards and shows a banner naming the piece, its reviewed mass, the capacity at its radius and the utilisation, and a button to open its issue. Seeking back before it arms it again; seeking or scrubbing past it never stops, and seeking or stepping off it puts the banner away. A kiosk loop (`?play=1`) does not stop: the banner shows for a few seconds as a passing note. The presentation view neither stops nor shows it. On a phone the banner sits above the play bar.
 
 ## What is computed (not authored)
 - **Install order rules** are checked in tests: core lead, frame → pods → slab, façade trailing, sky gardens after their façades, crane erected before the first lift.
 - **Crane reach check:** every crane-lifted piece is checked against an *indicative* flat-top load chart
   (60 m jib, 12 t to 20 m, 2.4 t at the tip) at its real radius from the mast. Bulk soil is excluded,
   since it goes up in 1 t bags. The check flags two real planning findings:
-  - the one-piece CLT entrance canopy at **87 %** (⚠)
-  - the **BMU gantry at 9.2 t, about 116 % of chart** at 27 m (✗). Split the lift or bring in a mobile crane.
+  - the one-piece CLT entrance canopy, 5.6 t at 30.6 m, at **87 %** (⚠)
+  - the **BMU gantry at 9.2 t, about 116 % of chart** at 26.6 m (✗). Split the lift or bring in a mobile crane.
 - **Carbon:** indicative A1–A3 from generic factors (not project EPDs), plus biogenic carbon stored in the
-  timber, and intensity per m² GIA. About 5,300 tCO₂e, about 4,700 tCO₂e stored, about 250 kg/m².
+  timber, and intensity per m² GIA. About 5,312 tCO₂e, about 4,681 tCO₂e stored, about 254 kgCO₂e/m² on 20,890 m² GIA.
 - **Log `CHK` lines** per zone: step and part counts, mass, peak lift utilisation and core lead.
 
 ## Controls
-`Space` play/pause · `←/→` step · `Home` start · `R` rebuild · `A` auto-rotate · `C` material colours ·
+`Space` play/pause · `←/→` step · `Home` start · `R` rebuild · `A` auto-rotate while playing · `C` material colours ·
 `X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `L` crane plan · `S` section · `1–7` rail · `I` import IFC · `[` / `]` previous / next issue · `Shift+D` performance overlay · `P` presentation view · `?` shortcut sheet · `Esc` dismiss the over-chart banner, then clear the issue, then the first-run cards, then close the drawer.
-The shortcut sheet (`?`, or the **?** button in the header) is written from the same table the key handler reads (`src/ui/shortcuts.ts`), so it lists every key and only those.
-**Present** in the header (or `P`) switches to the presentation view for a client: the rail and its telemetry, the build log, the exports, the thresholds and the drawing controls go, the model takes the rail's column, and the toggles that stay say what they do (**Show unbuilt**, **Material colours**, **Show crane**, **Mark issues**). **Exit presentation**, in the same place, or `P` again brings the full view back; the choice is kept like the other view toggles. On a first visit three short cards say what the page is, how to play it and how to import your own IFC; **Got it** or `Esc` puts them away for good in this browser.
+The shortcut sheet (`?`, or the **?** button in the header) is written from the same table the key handler reads (`src/ui/shortcuts.ts`), so it lists every key and only those. The presentation view answers only the keys for what it shows (playback, `A`, `C`, `G`, `K`, `[` / `]`, `P`, `?`, `Esc`); the drawer, section, crane plan, framing, view, speed and overlay keys do nothing there, and its sheet lists only what it answers. On layouts that type `[`, `]` or `?` with AltGr or Option, those keys work too. Auto-rotate turns the model only while the build plays, so a paused page stops drawing.
+**Present** in the header (or `P`) switches to the presentation view for a client: the rail and its telemetry, the build log, the exports, the thresholds and the drawing controls go, the model takes the rail's column, and the toggles that stay say what they do (**Show unbuilt**, **Material colours**, **Show crane**, **Mark issues**). **Exit presentation**, in the same place, or `P` again brings the full view back; the choice is kept like the other view toggles. Going into the presentation view closes an open drawer and the crane plan. On a first visit three short cards say what the page is, how to play it and how to import your own IFC; **Got it**, `Esc` or starting playback (the large button, `Space` or the transport) puts them away for good in this browser. The large **Play the build** button goes once the build plays or the view changes (a drawer, the crane plan, an issue, a view preset or a drag).
 `Space` plays only from the page, the model or the scrubber. On a focused button, checkbox, tab or disclosure, `Space` and `Enter` press that control, so the Layers checkboxes and the toolbar work from the keyboard. The panel tabs move with the arrow keys. The scrubber is a slider: arrows step, `Page Up` / `Page Down` jump a stage, `Home` / `End` go to either end. A drawer opened from the rail with the keyboard takes the focus, and `Esc` hands it back.
-On a narrow screen (up to 1100 px wide) the play bar stays pinned to the bottom of the screen while the page scrolls, and with Orbit Cam off a swipe over the model scrolls the page. Below about 1420 px wide the title block folds to one line under the toolbar. Messages show at the foot of the panel, or above the play bar on a narrow screen; an import error stays until it is dismissed, and the Import drawer keeps it too.
-The view toggles and the check thresholds are kept in this browser between visits; Settings (`6`) has **Reset to defaults**. Paused with a still camera, the viewer stops drawing until something changes.
+On a narrow screen (up to 1100 px wide) the model comes straight under the brand row, with the rail and the status card below it, so a phone opens on the model; the play bar stays pinned to the bottom of the screen while the page scrolls, and with Orbit Cam off a swipe over the model scrolls the page. The rail and the transport scroll sideways there, with a fade at the end that has more. While the Issues list is on screen, the selected issue opens in its row rather than in the sheet. On a touch screen the words say tap rather than naming keys, and the Import drawer offers to choose a file rather than drop one. Below about 1420 px wide the title block folds to one line under the toolbar. Messages show at the foot of the panel, or above the play bar (and the issue sheet) on a narrow screen; an import error stays until it is dismissed, and the Import drawer keeps it too.
+The view toggles (render style, colour, ghost, crane, auto-rotate, flags, resolution and the presentation view) and the check thresholds are kept in this browser's localStorage between visits; Settings (`6`) has **Reset to defaults**, which puts both back. A browser that blocks storage keeps them until the page closes, and Settings says so. The first-run cards remember separately that they were dismissed. A link's `?mode=` or `?rotate=0` applies to that visit only. Paused with a still camera, the viewer stops drawing until something changes.
 The frame rate, draw calls and triangle count stay hidden unless `?debug` is in the address, the Settings drawer turns on **Performance overlay**, or `Shift+D` is pressed. The status card shows the project's sheet, height and floor area, and the whole build's indicative A1–A3 carbon with its intensity per m² GIA; hover it for the basis and the caveats. The build log starts collapsed. The product name in the header comes from `DEFAULT_BRAND` in `src/ui/brand.ts`, or from `?brand=Name` for a white-label demo.
-"Save the sequence as JSON" exports steps, lifts, mass and carbon (with each element's IFC GlobalId for imported models). In the hosted page this goes through the
+"Save the sequence as JSON" exports steps, lifts, mass, carbon and the checks (with each element's IFC GlobalId for imported models; see Export above). In the hosted page this goes through the
 viewer's save prompt.
 
 ## Limits

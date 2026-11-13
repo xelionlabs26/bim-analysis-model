@@ -211,6 +211,11 @@ describe('seeded bad sequences produce the expected failures', () => {
     expect(ruleStatus(result(r, 'ACCESS-HEADROOM'))).toBe('unverified');
     expect(ruleStatus(result(r, 'CLASH-HARD'))).toBe('unverified'); // generated geometry
     expect(ruleStatus(result(r, 'ACCESS-HANDLING'))).toBe('unverified');
+    // skipped (generated massing) is told apart from having nothing to check (no stairs, nothing set by hand)
+    expect(result(r, 'CLASH-HARD').notChecked).toBe(true);
+    expect(result(r, 'MODEL-DATA').notChecked).toBe(true);
+    expect(result(r, 'ACCESS-HEADROOM').notChecked).toBeFalsy();
+    expect(result(r, 'ACCESS-HANDLING').notChecked).toBeFalsy();
   });
 });
 
@@ -316,7 +321,15 @@ describe('the Duplex (Revit, IFC2x3)', () => {
 
   it('needs edge protection round the first floor and the rooflights, and finds the roof perimeter never guarded', () => {
     const edges = of(r, 'TEMP-EDGE');
-    expect(edges.map((i) => i.title)).toEqual(['Edge protection: 46 m at LEVEL 2 (+3.10 m)', 'Edge protection: 8 m at ROOF (+6.50 m)', '50 m of open edge never guarded at ROOF (+6.50 m)']);
+    // labelled with the storey's own elevation; the roof slab's edge is 457 mm above its storey line, and said so
+    expect(edges.map((i) => i.title)).toEqual(['Edge protection: 46 m at LEVEL 2 (+3.10 m)', 'Edge protection: 8 m at ROOF (+6.00 m)', '50 m of open edge never guarded at ROOF (+6.00 m)']);
+    expect(edges[0].detail).not.toMatch(/edge is at/);
+    for (const i of edges.slice(1)) {
+      expect(i.detail).toMatch(/The edge is at \+6\.46 m\./);
+      // the pin sits on the open edge, where the BCF lines are drawn
+      expect(i.at[1]).toBeCloseTo(6.457, 2);
+      expect(i.lines.every(([a, b]) => Math.abs(a[1] - i.at[1]) < 0.01 && Math.abs(b[1] - i.at[1]) < 0.01)).toBe(true);
+    }
     // the first floor's perimeter is open until the walls and glazing above close it, the stair void until its rails
     expect(edges[0].detail).toMatch(/walls/);
     expect(edges[0].detail).toMatch(/guard rails/);
@@ -378,12 +391,33 @@ describe('Arbor House (generated)', () => {
   });
 
   it('needs perimeter protection on every typical floor while the façade trails', () => {
-    const screens = of(r, 'TEMP-EDGE').filter((i) => /^Edge protection on \d+ floors/.test(i.title));
-    // L02 reads apart from the floors above: its slab meets the core top while the next core lift is still to come
-    expect(screens.map((i) => Number(i.title.match(/on (\d+) floors/)![1])).reduce((a, n) => a + n, 0)).toBe(30);
+    const edges = of(r, 'TEMP-EDGE').filter((i) => i.key === 'temporary');
+    const screens = edges.filter((i) => /^Edge protection on \d+ floors/.test(i.title));
+    // one typical-floor group, from L01 (+4.50 m) to the floor below the roof: the floors with less edge
+    // where the plate steps back (L13, L24 and above) stay in it, within a quarter of its median
+    expect(screens.map((i) => i.title)).toEqual(['Edge protection on 30 floors, +4.50 m to +105.90 m (108 m each)']);
     for (const i of screens) expect(i.detail).toMatch(/façade units/);
     // the sky-garden tree canopies are not somewhere to land, so they close no floor edge
     for (const i of screens) expect(i.detail).not.toMatch(/planters/);
+    // L02 (+9.00 m) is left open round the core while the next core lift is still to come: it is an item
+    // of its own, named for the edge the floors either side do not have, and it does not split the run
+    expect(screens[0].detail).toMatch(/The floor at \+9\.00 m is listed on its own\./);
+    const l02 = edges.find((i) => / at \+9\.00 m$/.test(i.title))!;
+    expect(l02.title).toBe('Edge protection: 146 m at +9.00 m');
+    expect(l02.detail).toMatch(/That is 33 m more than the floors either side: 32\.\d m of edge they do not have, open until step \d+, when the walls close it\./);
+    // and the roof, a different plate, reads apart without being compared
+    expect(edges.map((i) => i.title)).toEqual([screens[0].title, l02.title, 'Edge protection: 45 m at ROOF (+109.20 m)']);
+  });
+
+  it('keeps the never-guarded edges of the typical floors together past a sky-garden floor', () => {
+    const never = of(r, 'TEMP-EDGE').filter((i) => i.key === 'never-guarded').map((i) => i.title);
+    expect(never).toEqual([
+      'Open edges never guarded on 19 floors, +4.47 m to +76.20 m (22 m each)',
+      '36 m of open edge never guarded at L13 (+46.50 m)',
+      '36 m of open edge never guarded at +79.50 m',
+      'Open edges never guarded on 8 floors, L24 (+82.80 m) to +105.90 m (16 m each)',
+      '98 m of open edge never guarded at ROOF (+109.20 m)',
+    ]);
   });
 
   it('builds every piece after what it bears on, and says clashes are not checked on massing', () => {

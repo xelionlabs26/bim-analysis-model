@@ -77,3 +77,31 @@ export function nextTab(i: number, n: number, key: string): number {
   if (key === 'arrowleft') return (i - 1 + n) % n;
   return i;
 }
+
+/** The modifier state of a key press, as KeyboardEvent gives it. */
+export interface ModifierState {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  getModifierState?(name: string): boolean;
+}
+
+/**
+ * Whether a modifier makes a key press someone else's (the browser's or the
+ * system's), so the page's shortcuts leave it alone. On many layouts
+ * (German, French, Nordic, Spanish; Option on a Mac) [ ] and ? are typed with
+ * AltGr or Alt: AltGr counts as no modifier (Windows reports it as Ctrl+Alt),
+ * and Alt is let through when it typed a single symbol rather than a letter or
+ * a digit. Ctrl and Meta combinations stay with the browser.
+ */
+export function modifierOwnsKey(e: ModifierState): boolean {
+  const altGraph = !!e.getModifierState?.('AltGraph');
+  if (altGraph) return e.metaKey;
+  if (e.ctrlKey || e.metaKey) return true;
+  if (e.altKey) return !typedSymbol(e.key);
+  return false;
+}
+
+/** A single printed character that is neither a letter, a digit nor white space: [ ] ? and the like. */
+const typedSymbol = (key: string) => [...key].length === 1 && !/[\p{L}\p{N}\s]/u.test(key);

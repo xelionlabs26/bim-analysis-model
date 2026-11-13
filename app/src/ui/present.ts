@@ -100,11 +100,50 @@ export function markIntroSeen(store: Pick<PrefsStore, 'setItem'> | null): boolea
   }
 }
 
-/** The first-run cards' words for the model on show: short enough for two lines each over the stage strip. */
-export function introCards(projectName: string): { title: string; body: string }[] {
+/** A touch screen with no hover and a coarse pointer (a phone or tablet): no keyboard to name, nothing to drop a file with. */
+export const TOUCH_QUERY = '(hover: none) and (pointer: coarse)';
+
+/** The first-run cards' words for the model on show: short enough for two lines each over the stage strip. A touch screen is told to tap, not given keys. */
+export function introCards(projectName: string, touch = false): { title: string; body: string }[] {
   return [
     { title: 'What this is', body: `${projectName} in the order it goes up: every part, crane lift and buildability check.` },
-    { title: 'Play the build', body: 'Press Play or Space to watch it from the first step. Press ? for every shortcut.' },
+    { title: 'Play the build', body: touch ? 'Tap Play to watch it from the first step.' : 'Press Play or Space to watch it from the first step. Press ? for every shortcut.' },
     { title: 'Import your own IFC', body: 'From Revit, ArchiCAD or Tekla. Read in your browser, never uploaded.' },
   ];
+}
+
+/** The note on entering the presentation view: the way back, in words for the device. */
+export const presentNote = (touch: boolean) =>
+  touch ? 'Presentation view. Tap Exit presentation for the full view.' : 'Presentation view. Press P or Exit presentation for the full view.';
+
+/** The Import drawer's second way in: a file dropped on the model, where there is a mouse to drop it with. */
+export const importHint = (touch: boolean) => (touch ? 'Choose an .ifc file from this device.' : 'Or drop an .ifc file onto the model.');
+
+// ── the first pick over the crane's chart ────────────────────────────────────
+
+/**
+ * What playback running into the first pick over the chart does. In the full
+ * view it stops there with the banner (a buildability review wants to look).
+ * A kiosk loop (?play=1) keeps playing with the banner as a passing note, and
+ * the presentation view keeps playing with no banner at all: neither has
+ * anyone at the keyboard to press Play again.
+ */
+export type OverPickResponse = 'stop' | 'note' | 'none';
+
+export function overPickResponse(o: { autoplay: boolean; client: boolean }): OverPickResponse {
+  if (o.client) return 'none';
+  return o.autoplay ? 'note' : 'stop';
+}
+
+/** Sequence seconds a passing note stays after its pick. */
+export const OVER_NOTE_HOLD = 4;
+
+/**
+ * Whether the banner about a pick at `pickT` still belongs at `t`: a stop
+ * banner only while the playhead stays on the pick (a seek or a step away
+ * ends it); a passing note for a few seconds after the pick.
+ */
+export function overBannerStays(pickT: number, t: number, note: boolean): boolean {
+  if (note) return t >= pickT - 1e-3 && t <= pickT + OVER_NOTE_HOLD;
+  return Math.abs(t - pickT) <= 1e-3;
 }

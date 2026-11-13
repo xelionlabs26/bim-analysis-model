@@ -5,6 +5,7 @@
  * uniform 3D grid for neighbourhood queries. App axes: metres, +Y up.
  */
 import type { MeshData, Project, Vec3 } from '../data/types';
+import { BELOW_GROUND } from '../ifc/model';
 
 /** What a part is for, as far as the checks care. */
 export type Role = 'structure' | 'envelope' | 'fitout' | 'landscape' | 'setout';
@@ -245,19 +246,25 @@ export class CheckScene {
 }
 
 /**
- * Where the ground is, for imports. The importer keeps a file's height datum,
- * so a building set out at +30 m arrives with its slab on grade at y = 30 while
- * its storey elevations still read 0, 3.1, 6.0. The offset that lines up the
- * most storey elevations with the tops of structural slabs is the shift between
- * the two; the ground is the storey at elevation 0 (or, when the storeys carry
- * the site datum too, the lowest storey with a slab), moved by that shift.
- * Generated projects are built on y = 0. Offsets under 0.5 m are read as none,
- * so a model at datum keeps exactly the thresholds it always had.
+ * Where the ground is, for imports. The importer brings a file set out at a
+ * site datum to 0 when its storeys carry that datum too, so storeys and
+ * geometry normally share one datum and the ground is at 0, basements and all.
+ * A file whose placements carry the datum while its storey elevations do not
+ * (a building set out at +30 m with storeys reading 0, 3.1, 6.0) still arrives
+ * with its slab on grade at y = 30: the offset that lines up the most storey
+ * elevations with the tops of structural slabs is the shift between the two,
+ * and the ground is the storey at elevation 0 moved by that shift. Without a
+ * storey at 0, it is the storey with a slab nearest 0, passing over storeys
+ * named as below ground; never simply the lowest, which would put the ground
+ * at the bottom of a basement. Generated projects are built on y = 0. Offsets
+ * under 0.5 m are read as none, so a model at datum keeps exactly the
+ * thresholds it always had.
  */
 export function groundDatum(project: Project, S: Pick<CheckScene, 'n' | 'role' | 'cat' | 'max'>): { ground: number; shift: number } {
   const none = { ground: 0, shift: 0 };
   if (project.meta.source !== 'ifc') return none;
-  const levels = project.levels.filter((l) => l.code !== 'TOP').map((l) => l.y);
+  const storeys = project.levels.filter((l) => l.code !== 'TOP');
+  const levels = storeys.map((l) => l.y);
   const tops: number[] = [];
   for (let i = 0; i < S.n; i++) {
     if (S.role[i] !== 'structure' || S.cat[i] !== 'slab') continue;
@@ -274,9 +281,12 @@ export function groundDatum(project: Project, S: Pick<CheckScene, 'n' | 'role' |
       const n = levels.filter((y) => hasSlab(y + d)).length;
       if (n > score || (n === score && Math.abs(d) < Math.abs(shift))) [shift, score] = [d, n];
     }
-  if (Math.abs(shift) < 0.5) shift = 0;
-  const atZero = levels.filter((y) => Math.abs(y) <= 0.5).sort((a, b) => Math.abs(a) - Math.abs(b))[0];
-  const floor = atZero ?? levels.filter((y) => hasSlab(y + shift)).sort((a, b) => a - b)[0] ?? 0;
+  // no shift: storeys and geometry already share the importer's datum, whose 0 is the ground
+  if (Math.abs(shift) < 0.5) return none;
+  const nearest = (list: typeof storeys) => list.slice().sort((a, b) => Math.abs(a.y) - Math.abs(b.y))[0]?.y;
+  const atZero = nearest(storeys.filter((l) => Math.abs(l.y) <= 0.5));
+  const withSlab = storeys.filter((l) => hasSlab(l.y + shift));
+  const floor = atZero ?? nearest(withSlab.filter((l) => !BELOW_GROUND.test(l.code))) ?? nearest(withSlab) ?? 0;
   const ground = shift + floor;
   return { ground: Math.abs(ground) < 0.5 ? 0 : ground, shift };
 }

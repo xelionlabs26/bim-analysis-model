@@ -15,7 +15,7 @@
  * rest). Only crane picks are checked against the crane's load chart.
  */
 import { assembleProject, partMassKg, type StageConfig } from '../data/assemble';
-import { MATERIAL_INFO, MOBILE_CRANE, REAL_DENSITY, mobilePick, planBox, type Crane, type PlanBox, type MaterialId, type MeshData, type Method, type Motion, type Part, type PresentationSpec, type Project, type StepDef, type ZoneDef } from '../data/types';
+import { MATERIAL_INFO, MOBILE_CRANE, REAL_DENSITY, isBuildingPart, mobilePick, planBox, type Crane, type PlanBox, type MaterialId, type MeshData, type Method, type Motion, type Part, type PresentationSpec, type Project, type StepDef, type ZoneDef } from '../data/types';
 import type { Category, IfcModel, ImportedElement, Layer } from './model';
 
 type Phase = 'structure' | 'envelope' | 'fitout' | 'landscape';
@@ -61,8 +61,13 @@ const CATEGORY_DEFAULT: Record<Category, MaterialId> = {
 export function classifyMaterial(name: string): MaterialId | null | undefined {
   const n = name.toLowerCase();
   // the first match wins, so names that mention two materials are settled first
-  if (/glass.?fib(re|er).?reinforced|\bgrc\b|\bgfrc\b/.test(n)) return 'concrete';
-  if (/glass ?wool|fib(re|er) ?glass|mineral ?(wool|fib)|stone ?wool|rock ?wool|\bbatts?\b|(alumin\w*|foil)[- ]faced/.test(n) && !/glaz|\bigu\b|insulat(ed|ing) glass/.test(n)) return 'insulation';
+  if (/glass.?fib(re|er).?reinforced (concrete|cement)|\bgrc\b|\bgfrc\b/.test(n)) return 'concrete';
+  // glass-fibre-reinforced gypsum is a gypsum board; reinforced plastics have no material of their own here
+  if (/glass.?fib(re|er).?reinforced gypsum|\bgrg\b/.test(n)) return 'gypsum';
+  if (/glass.?fib(re|er).?reinforced (plastic|polymer)|\bg?frp\b|\bgrp\b/.test(n)) return undefined;
+  if (/glass ?wool|fib(re|er) ?glass|mineral ?(wool|fib)|stone ?wool|rock ?wool|\bbatts?\b/.test(n) && !/glaz|\bigu\b|insulat(ed|ing) glass/.test(n)) return 'insulation';
+  // a foil or aluminium facing marks insulation board, unless the name is a faced plasterboard or panel
+  if (/(alumin\w*|foil)[- ]faced/.test(n) && (!/plaster|gypsum|board|panel/.test(n) || /insul|wool|foam|phenolic|\beps\b|\bxps\b|\bpir\b|\bpur\b/.test(n))) return 'insulation';
   // an air layer or empty cavity, but not a cavity fill, an air barrier or a board
   if (/\bair\b|air ?space|air gap|cavity/.test(n) && !/insul|wool|fib|foam|\beps\b|\bxps\b|\bpir\b|\bpur\b|fill|membrane|barrier|board|block|brick|concrete|masonry|timber|steel/.test(n)) return null;
   if (/glass|glaz|\bglas\b|vitr/.test(n)) return 'glass';
@@ -70,7 +75,7 @@ export function classifyMaterial(name: string): MaterialId | null | undefined {
   if (/cross.?lam|\bclt\b|x-?lam|brettsperr/.test(n)) return 'clt';
   if (/glulam|\bglt\b|glued.?lam|\blvl\b|brettschicht|laminated veneer/.test(n)) return 'glulam';
   if (/insul|wool|\beps\b|\bxps\b|\bpir\b|\bpur\b|foam|thermal|rigid insul|semi-?rigid/.test(n)) return 'insulation';
-  if (/timber|wood|lumber|plywood|\bosb\b|holz|spruce|pine|\bfir\b|\boak\b|larch|\bhout\b/.test(n)) return 'timber';
+  if (/timber|wood|lumber|plywood|\bosb\b|holz|spruce|pine|\bfir\b|\boak\b|larch|(?<!wit|oug)hout\b/.test(n)) return 'timber';
   // joists and sheathing are timber unless the name says steel or gypsum
   if (/joist|sheathing/.test(n) && !/steel|stahl|metal|\biron\b|gypsum|gips|plaster/.test(n)) return 'timber';
   if (/steel|stahl|metal|s235|s275|s355|\biron\b|\d{3} ?mpa/.test(n)) return 'steel';
@@ -147,6 +152,19 @@ const GROUP: Record<Category, { label: string; code: string; priority: number }>
 };
 
 const isPrecast = (el: ImportedElement) => /precast|pre-cast|prefab|hollow ?core|\bpc\b|module|\bpod\b/i.test(`${el.name} ${el.objectType} ${el.layers.map((l) => l.name).join(' ')}`);
+
+/**
+ * Terrain and ground surfaces (a toposurface, a landform, a paved area): landscape
+ * items that are graded or laid in place, not lifted like a tree. Named as such,
+ * typed as terrain, or wide and flat.
+ */
+function isGroundwork(el: ImportedElement): boolean {
+  if (el.category !== 'landscape' && el.category !== 'site') return false;
+  if (el.category === 'site' || el.predefined === 'TERRAIN') return true;
+  if (/topo|terrain|landform|ground ?surface|grading|\bsite\b|paving|hardstanding|lawn|turf/i.test(`${el.name} ${el.objectType}`)) return true;
+  const w = el.max[0] - el.min[0], d = el.max[2] - el.min[2], h = el.max[1] - el.min[1];
+  return w * d > 20 && h < 0.25 * Math.max(w, d) && h < 1.5;
+}
 
 function wallThickness(el: ImportedElement): number {
   const real = el.layers.filter((l) => l.thickness > 0 && l.thickness < 3);
@@ -242,10 +260,14 @@ function classify(el: ImportedElement, byId: Map<number, ImportedElement>, suppo
     ((cat === 'slab' || cat === 'roof' || cat === 'wall') && mat === 'clt') ||
     isPrecast(el) ||
     (inCurtain && (cat === 'plate' || cat === 'member' || cat === 'curtainwall')) ||
-    cat === 'landscape'
+    (cat === 'landscape' && !isGroundwork(el))
   ) {
     method = 'crane';
     drop = 2.2;
+  } else if (isGroundwork(el)) {
+    // terrain and hard landscape are formed where they lie, not lifted
+    motion = 'pour';
+    drop = 0;
   } else if (cat === 'furniture' || cat === 'services' || cat === 'covering') {
     drop = 0.35;
   }
@@ -318,11 +340,13 @@ export function liftPlanFor(height: number, picks: readonly { x: number; z: numb
   }
   const kg = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v / 10) * 10} kg`);
   const h = `${height.toFixed(1)} m`;
+  const share = (u: number) => (Number.isFinite(u) ? `${Math.round(u * 100)} %` : `beyond the indicative chart's ${MOBILE_CRANE.reach} m reach`);
   if (height >= LOW_RISE_M) return { tower: true, reason: `tower crane assumed: the building is ${h} tall (${LOW_RISE_M} m or more)`, heaviestKg, mobileUtil };
   if (mobileUtil > MOBILE_MARGIN) {
-    return { tower: true, reason: `tower crane assumed: a pick of ${kg(worstKg)} needs ${Math.round(mobileUtil * 100)} % of a mobile crane's chart`, heaviestKg, mobileUtil };
+    const need = Number.isFinite(mobileUtil) ? `needs ${share(mobileUtil)} of a mobile crane's chart` : `is ${share(mobileUtil)} for a mobile crane`;
+    return { tower: true, reason: `tower crane assumed: a pick of ${kg(worstKg)} ${need}`, heaviestKg, mobileUtil };
   }
-  const heaviest = picks.length ? `heaviest pick ${kg(heaviestKg)}, at most ${Math.round(mobileUtil * 100)} % of ${MOBILE_CRANE.chart}` : 'no crane picks';
+  const heaviest = picks.length ? `heaviest pick ${kg(heaviestKg)}, at most ${share(mobileUtil)} of ${MOBILE_CRANE.chart}` : 'no crane picks';
   return { tower: false, reason: `mobile crane / by hand: ${h} tall, ${heaviest}`, heaviestKg, mobileUtil };
 }
 
@@ -445,7 +469,11 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
 
   // ── a tower crane, or a mobile crane and the site team for a low-rise building ──
   const picks = items.filter((c) => c.method === 'crane' && !MATERIAL_INFO[c.part.mat].bulk).map((c) => ({ x: c.part.pos[0], z: c.part.pos[2], kg: partMassKg(c.part, REAL_DENSITY) }));
+  // the plan box and the tower crane's reach come from the building itself: terrain and
+  // landscape around it are not what the crane stands beside or has to reach
   const plan = liftPlanFor(hi - Math.max(0, lo), picks, planBox(items.map((c) => c.part)));
+  const building = items.filter((c) => isBuildingPart(c.part)).map((c) => c.el);
+  const bx = extents(building.length ? building : els);
 
   // ── interleave: structure of band b, then envelope + fit-out of band b − 2 ──
   const ordered: { band: number; defs: StepDef[] }[] = [];
@@ -499,9 +527,9 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
   // ── crane on the west side, sized to reach every element ──
   let crane: Crane | null = null;
   if (plan.tower) {
-    const base: [number, number, number] = [minX - 7, 0, cz];
+    const base: [number, number, number] = [bx.min[0] - 7, 0, (bx.min[2] + bx.max[2]) / 2];
     let reach = 0;
-    for (const e of els) for (const x of [e.min[0], e.max[0]]) for (const z of [e.min[2], e.max[2]]) reach = Math.max(reach, Math.hypot(x - base[0], z - base[2]));
+    for (const e of building.length ? building : els) for (const x of [e.min[0], e.max[0]]) for (const z of [e.min[2], e.max[2]]) reach = Math.max(reach, Math.hypot(x - base[0], z - base[2]));
     const jib = Math.min(80, Math.max(30, Math.ceil((reach + 3) / 5) * 5));
     const r0 = jib / 3;
     crane = {
@@ -512,15 +540,24 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
       maxKg: 12000,
       tipKg: Math.round(12000 * Math.pow(r0 / jib, 1.45)),
       capacityAt: (r: number) => Math.min(12000, 12000 * Math.pow(r0 / Math.max(r, 1), 1.45)),
-      tieX: minX,
+      tieX: bx.min[0],
       mastStart: hi < 18 ? Math.max(12, hi + 9) : Math.max(20, Math.min(44, hi + 14)),
       assumed: true,
     };
   }
 
   // ── floor area for carbon intensity: plan areas of the floor slabs ──
+  // a slab drawn through its parts (Revit Parts: screed, structure, insulation) is one floor:
+  // its plan area counts once, from its largest part
   let gifa = 0;
-  for (const c of items) if (isFloorSlab(c)) gifa += c.el.volume / Math.max(0.05, c.el.max[1] - c.el.min[1]);
+  const partArea = new Map<number, number>();
+  for (const c of items) {
+    if (!isFloorSlab(c)) continue;
+    const area = c.el.volume / Math.max(0.05, c.el.max[1] - c.el.min[1]);
+    if (c.el.type === 'IFCBUILDINGELEMENTPART' && c.el.parent !== null) partArea.set(c.el.parent, Math.max(partArea.get(c.el.parent) ?? 0, area));
+    else gifa += area;
+  }
+  for (const a of partArea.values()) gifa += a;
   if (gifa < 10) gifa = (maxX - minX) * (maxZ - minZ) * Math.max(1, levels.length - 1);
 
   const datums = pickDatums(levels.map((l) => ({ code: shortLabel(l.name.toUpperCase(), 8), y: l.elevation })));

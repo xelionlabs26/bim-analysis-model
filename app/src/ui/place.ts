@@ -104,25 +104,48 @@ export const boxSide = (b: Box) => Math.max(0, Math.min(width(b), height(b)));
  * only those lines are tried.
  */
 export function clearBox(bounds: Box, obstacles: Box[]): Box {
+  return bestClearBox(bounds, obstacles, (box) => boxSide(box) + (width(box) * height(box)) / 1e9) ?? { x0: bounds.x0, y0: bounds.y0, x1: bounds.x0, y1: bounds.y0 };
+}
+
+/**
+ * The clear box (inside `bounds`, overlapping none of the obstacles) that
+ * scores highest, or null when none does better than -Infinity. Every maximal
+ * clear box has its sides on obstacle or bounds edges, so only those lines are
+ * tried.
+ */
+export function bestClearBox(bounds: Box, obstacles: Box[], score: (b: Box) => number): Box | null {
   const inside = obstacles.filter((o) => o.x1 > bounds.x0 && o.x0 < bounds.x1 && o.y1 > bounds.y0 && o.y0 < bounds.y1);
   const lines = (lo: number, hi: number, vals: number[]) => [...new Set([lo, hi, ...vals.map((v) => Math.min(hi, Math.max(lo, v)))])].sort((a, b) => a - b);
   const xs = lines(bounds.x0, bounds.x1, inside.flatMap((o) => [o.x0, o.x1]));
   const ys = lines(bounds.y0, bounds.y1, inside.flatMap((o) => [o.y0, o.y1]));
-  let best: Box = { x0: bounds.x0, y0: bounds.y0, x1: bounds.x0, y1: bounds.y0 };
-  let bestSide = -1, bestArea = -1;
+  let best: Box | null = null;
+  let bestScore = -Infinity;
   for (let a = 0; a < xs.length; a++)
     for (let b = a + 1; b < xs.length; b++)
       for (let c = 0; c < ys.length; c++)
         for (let d = c + 1; d < ys.length; d++) {
           const box = { x0: xs[a], x1: xs[b], y0: ys[c], y1: ys[d] };
-          const side = boxSide(box), area = width(box) * height(box);
-          if (side < bestSide || (side === bestSide && area <= bestArea)) continue;
+          const s = score(box);
+          if (!(s > bestScore)) continue;
           if (inside.some((o) => overlap(box, o) > 0)) continue;
           best = box;
-          bestSide = side;
-          bestArea = area;
+          bestScore = s;
         }
   return best;
+}
+
+/**
+ * Where the default framing fits a model `h` tall and `w` wide (any units, as
+ * long as they match): the clear box, beside the caption as well as the other
+ * cards, that shows the model largest; a tall tower takes a tall column, a
+ * low, wide building a wide band. Null when no clear box gives the model at
+ * least `least` of the scale the whole of `bounds` would.
+ */
+export function restFrame(bounds: Box, chrome: Box[], caption: Box | null, model: { w: number; h: number }, least = 0.5): Box | null {
+  const mw = Math.max(1e-6, model.w), mh = Math.max(1e-6, model.h);
+  const scale = (b: Box) => Math.min(width(b) / mw, height(b) / mh);
+  const best = bestClearBox(bounds, caption ? [...chrome, caption] : chrome, scale);
+  return best && scale(best) >= least * scale(bounds) ? best : null;
 }
 
 /** Where a selected issue is framed: the box to centre it in, and whether the caption card steps aside for it. */
@@ -181,4 +204,26 @@ export function pinLabel(dot: { x: number; y: number }, size: { w: number; h: nu
     }
   }
   return best;
+}
+
+/**
+ * Where the centre of a button `size` goes: in a clear box (inside `bounds`,
+ * overlapping none of the obstacles) that holds it whole, at the point
+ * nearest the middle of `bounds`; null when no clear box holds it, and the
+ * button keeps its usual place. The opening frame's large Play button uses it
+ * to stay off the caption, the toolbar and the title block.
+ */
+export function centreSpot(bounds: Box, obstacles: Box[], size: { w: number; h: number }): { x: number; y: number } | null {
+  const mx = (bounds.x0 + bounds.x1) / 2, my = (bounds.y0 + bounds.y1) / 2;
+  const spot = (b: Box) => ({
+    x: Math.min(b.x1 - size.w / 2, Math.max(b.x0 + size.w / 2, mx)),
+    y: Math.min(b.y1 - size.h / 2, Math.max(b.y0 + size.h / 2, my)),
+  });
+  const box = bestClearBox(bounds, obstacles, (b) => {
+    if (width(b) < size.w || height(b) < size.h) return -Infinity;
+    const s = spot(b);
+    // nearest the middle; of two equally near, the roomier box
+    return -Math.hypot(s.x - mx, s.y - my) + Math.min(width(b) - size.w, height(b) - size.h) * 1e-3;
+  });
+  return box ? spot(box) : null;
 }

@@ -5,7 +5,7 @@
  * which seeks the timeline, frames the camera and highlights the elements.
  */
 import type { Project } from '../data/types';
-import { RULES, RULE_BY_ID, type CheckReport, type Issue, type RuleInfo, type RuleResult, type Severity } from '../checks/types';
+import { RULES, RULE_BY_ID, SEVERITY_ORDER, type CheckReport, type Issue, type RuleInfo, type RuleResult, type Severity } from '../checks/types';
 import { ruleStatus } from '../checks/run';
 import { memberWords, partLabel } from '../checks/rules';
 import type { SequenceState } from '../engine/timeline';
@@ -17,36 +17,106 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const SEVERITIES: Severity[] = ['critical', 'major', 'minor', 'note'];
 const SEV_LABEL: Record<Severity, string> = { critical: 'Critical', major: 'Major', minor: 'Minor', note: 'Note' };
 const FAMILIES: RuleInfo['family'][] = ['ORDER', 'TEMP', 'REACH', 'CLASH', 'ACCESS', 'MODEL'];
-/** What each family of rules is about, in words. */
+/** What each family of rules is about, in words: the chip's visible label, which also starts its accessible name (WCAG 2.5.3). */
 export const FAMILY_LABEL: Record<RuleInfo['family'], string> = { ORDER: 'Order', TEMP: 'Temporary works', REACH: 'Crane', CLASH: 'Clashes', ACCESS: 'Access', MODEL: 'Model data' };
-/** The same families as the subject of a sentence: "Clash checks: 1 of 2 passed". */
-const FAMILY_NOUN: Record<RuleInfo['family'], string> = { ORDER: 'Order checks', TEMP: 'Temporary works checks', REACH: 'Crane checks', CLASH: 'Clash checks', ACCESS: 'Access checks', MODEL: 'Model data checks' };
 /** Chrome over the viewport the pin's label keeps clear of (the issue sheet and play bar lie over it on a narrow screen). */
-const PIN_CHROME = '.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner, #issueSheet';
+const PIN_CHROME = '.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner, #issueSheet, #intro';
 
 export type FilterState = { sev: Set<Severity>; family: RuleInfo['family'] | null };
 
-/** Status words for a rule: what "unverified" means to someone reading the register. */
-export const STATUS_WORDS = { passed: 'passed', flagged: 'flagged', unverified: 'nothing to check' } as const;
+/**
+ * Where a rule stands, as someone reading the register needs it: it passed,
+ * it flagged something, it ran but had nothing to act on (no stairs, no tower
+ * crane), or it could not verify what is there (skipped on generated massing,
+ * an assumed crane position, a failed rule, every candidate untested).
+ */
+export type RuleState = 'passed' | 'flagged' | 'nothing' | 'notChecked';
+
+export function ruleState(r: RuleResult): RuleState {
+  if (r.flagged > 0) return 'flagged';
+  if (r.notChecked) return 'notChecked';
+  const st = ruleStatus(r);
+  return st === 'unverified' ? 'nothing' : st;
+}
+
+/** Status words for a rule. "Nothing to check" is kept for a rule with no subject; one that could not verify reads "not checked". */
+export const STATUS_WORDS: Record<RuleState, string> = { passed: 'passed', flagged: 'flagged', nothing: 'nothing to check', notChecked: 'not checked' };
 
 /**
  * A family chip in words: the short text on the chip and the sentence for its
- * tooltip and screen readers. A family has passed only when every rule in it
- * was checked; one that had nothing to act on is said to have had nothing to check.
+ * tooltip and screen readers, which starts with the chip's visible label. A
+ * family has passed only when every rule in it was checked; one that had
+ * nothing to act on is said to have had nothing to check, and one with a rule
+ * that could not verify is never green.
  */
 export function familySummary(family: RuleInfo['family'], rules: RuleResult[]): { tone: 'bad' | 'unv' | 'ok'; mark: string; sentence: string } {
   const flagged = rules.reduce((a, x) => a + x.flagged, 0);
-  const checked = rules.filter((x) => ruleStatus(x) !== 'unverified').length;
-  const idle = rules.length - checked;
-  const nothing = idle ? `${idle} had nothing to check` : '';
-  const noun = FAMILY_NOUN[family];
+  const st = rules.map(ruleState);
+  const count = (k: RuleState) => st.filter((x) => x === k).length;
+  const passed = count('passed'), checked = passed + count('flagged'), skipped = count('notChecked'), idle = count('nothing');
+  const tail = [skipped ? `${skipped} not checked` : '', idle ? `${idle} had nothing to check` : ''].filter(Boolean).join('; ');
+  const label = FAMILY_LABEL[family];
+  const say = (head: string) => `${label}: ${head}${tail ? `; ${tail}` : ''}`;
   if (flagged) {
     const issues = `${flagged} issue${flagged === 1 ? '' : 's'}`;
-    return { tone: 'bad', mark: issues, sentence: `${noun}: ${issues}${nothing ? `; ${nothing}` : ''}` };
+    return { tone: 'bad', mark: issues, sentence: say(issues) };
   }
-  if (!checked) return { tone: 'unv', mark: 'nothing to check', sentence: `${noun}: nothing to check` };
-  if (idle) return { tone: 'ok', mark: `${checked} of ${rules.length} passed`, sentence: `${noun}: ${checked} of ${rules.length} passed; ${nothing}` };
-  return { tone: 'ok', mark: rules.length === 1 ? 'passed' : `all ${rules.length} passed`, sentence: `${noun}: ${rules.length === 1 ? 'passed' : `all ${rules.length} passed`}` };
+  if (skipped) {
+    // the family could not be verified, in part or whole: the neutral tone, never green
+    if (!checked) return { tone: 'unv', mark: 'not checked', sentence: `${label}: not checked${idle ? `; ${idle} had nothing to check` : ''}` };
+    return { tone: 'unv', mark: `${passed} of ${rules.length} passed`, sentence: say(`${passed} of ${rules.length} passed`) };
+  }
+  if (!checked) return { tone: 'unv', mark: 'nothing to check', sentence: `${label}: nothing to check` };
+  if (idle) return { tone: 'ok', mark: `${checked} of ${rules.length} passed`, sentence: say(`${checked} of ${rules.length} passed`) };
+  return { tone: 'ok', mark: rules.length === 1 ? 'passed' : `all ${rules.length} passed`, sentence: `${label}: ${rules.length === 1 ? 'passed' : `all ${rules.length} passed`}` };
+}
+
+/** How many rules stand each way, for the verdict and the empty list. */
+export function ruleCounts(rules: RuleResult[]): Record<RuleState, number> {
+  const out: Record<RuleState, number> = { passed: 0, flagged: 0, nothing: 0, notChecked: 0 };
+  for (const r of rules) out[ruleState(r)]++;
+  return out;
+}
+
+/** The verdict line's rule tally: "11 rules: 5 passed, 2 flagged, 2 nothing to check, 2 not checked". */
+export function rulesTally(rules: RuleResult[]): string {
+  const n = ruleCounts(rules);
+  const parts = [`${n.passed} ${STATUS_WORDS.passed}`, `${n.flagged} ${STATUS_WORDS.flagged}`];
+  if (n.nothing) parts.push(`${n.nothing} ${STATUS_WORDS.nothing}`);
+  if (n.notChecked) parts.push(`${n.notChecked} ${STATUS_WORDS.notChecked}`);
+  return `${rules.length} rule${rules.length === 1 ? '' : 's'}: ${parts.join(', ')}`;
+}
+
+/** The empty list when no rule raised anything: it may say "passed" only of rules that ran. */
+export function noIssuesText(rules: RuleResult[]): string {
+  const n = ruleCounts(rules);
+  const bits = ['No issues: every rule that ran passed.'];
+  if (n.notChecked) bits.push(`${n.notChecked} ${n.notChecked === 1 ? 'rule was' : 'rules were'} not checked (see Rules and thresholds).`);
+  if (n.nothing) bits.push(`${n.nothing} had nothing to check.`);
+  return bits.join(' ');
+}
+
+/**
+ * The scrubber's marks: critical and major issues grouped by step, each group
+ * most severe first (report order within a severity), and the groups led by a
+ * major issue before those led by a critical one, so the critical marks are
+ * drawn on top.
+ */
+export function markerGroups(issues: Issue[]): Issue[][] {
+  const by = new Map<number, Issue[]>();
+  for (const i of issues) {
+    if (i.severity !== 'critical' && i.severity !== 'major') continue;
+    const g = by.get(i.step);
+    if (g) g.push(i);
+    else by.set(i.step, [i]);
+  }
+  const groups = [...by.values()].map((g) => g.slice().sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]));
+  return groups.sort((a, b) => SEVERITY_ORDER[b[0].severity] - SEVERITY_ORDER[a[0].severity]);
+}
+
+/** A press that let go on the spot (within 6 px and a moment) is a tap; anything else was a drag. */
+export function isTap(down: { x: number; y: number; t: number }, up: { x: number; y: number; t: number }, pointerType = 'mouse'): boolean {
+  return Math.hypot(up.x - down.x, up.y - down.y) <= 6 && up.t - down.t <= (pointerType === 'mouse' ? 600 : 300);
 }
 
 /**
@@ -118,6 +188,10 @@ export class IssuesUI {
   private chromeAt = -Infinity;
   /** The issue sheet folded down to its title line (narrow screens). */
   private folded = false;
+  /** The list's row buttons by issue id, and the chips, from the last render. */
+  private rows = new Map<string, HTMLButtonElement>();
+  private famChips = new Map<RuleInfo['family'], HTMLButtonElement>();
+  private sevChips = new Map<Severity, HTMLButtonElement>();
 
   constructor(
     private p: Project,
@@ -144,7 +218,13 @@ export class IssuesUI {
     $('issNext').onclick = () => this.step(1);
     $('sheetPrev').onclick = () => this.step(-1);
     $('sheetNext').onclick = () => this.step(1);
-    $('sheetClose').onclick = () => this.select(null);
+    $('sheetClose').onclick = () => {
+      // the close button goes with the sheet: the focus moves to the issue's row, or to › when it is filtered out
+      const was = this.selected;
+      this.select(null);
+      const to = (was && this.rows.get(was.id)) || $('issNext');
+      to.focus({ preventScroll: !!this.hooks.compact?.() });
+    };
     $('sheetToggle').onclick = () => {
       this.folded = !this.folded;
       this.renderSheet();
@@ -187,9 +267,9 @@ export class IssuesUI {
     const worst = SEVERITIES.find((s) => n(s) > 0);
     $('issBadge').textContent = String(r.issues.length);
     $('issBadge').className = `tab-badge${worst ? ` sev-${worst}` : ' ok'}`;
-    const st = r.rules.map(ruleStatus);
-    const passed = st.filter((x) => x === 'passed').length, flagged = st.filter((x) => x === 'flagged').length, unverified = st.filter((x) => x === 'unverified').length;
-    $('issVerdict').innerHTML = `<b>${r.issues.length}</b> issue${r.issues.length === 1 ? '' : 's'} · ${r.rules.length} rules: ${passed} ${STATUS_WORDS.passed}, ${flagged} ${STATUS_WORDS.flagged}${unverified ? `, ${unverified} with ${STATUS_WORDS.unverified}` : ''} <span class="muted">· ${(r.ms / 1000).toFixed(2)} s</span>`;
+    // a file cut off part-way qualifies every verdict here: said first, with the issue that explains it
+    const cut = r.issues.find((i) => i.rule === 'MODEL-DATA' && i.key === 'truncated');
+    $('issVerdict').innerHTML = `${cut ? `<span class="iss-cut">${esc(cut.id)} · ${esc(cut.title)}.</span> ` : ''}<b>${r.issues.length}</b> issue${r.issues.length === 1 ? '' : 's'} · ${rulesTally(r.rules)} <span class="muted">· ${(r.ms / 1000).toFixed(2)} s</span>`;
     $('btnBcf').toggleAttribute('disabled', !r.issues.length);
     $('btnCsv').toggleAttribute('disabled', !r.issues.length);
     const kept = carryFilters({ sev: this.sev, family: this.family }, r.issues);
@@ -213,49 +293,71 @@ export class IssuesUI {
     return this.sev.has(i.severity) && (!this.family || RULE_BY_ID[i.rule].family === this.family);
   }
 
+  /** The family chips, built once per report; a toggle updates them in place, so the focus stays on the chip pressed. */
   private renderFamilies() {
     const r = this.report!;
     const wrap = $('issFamilies');
     wrap.innerHTML = '';
+    this.famChips.clear();
     for (const fam of FAMILIES) {
       const rules = r.rules.filter((x) => RULE_BY_ID[x.id].family === fam);
       if (!rules.length) continue;
       const sum = familySummary(fam, rules);
       const b = document.createElement('button');
-      b.className = `fam ${sum.tone}${this.family === fam ? ' on' : ''}`;
-      b.setAttribute('aria-pressed', String(this.family === fam));
+      b.dataset.family = fam;
+      b.dataset.tone = sum.tone;
+      // the accessible name starts with the visible label (WCAG 2.5.3, label in name)
       b.setAttribute('aria-label', `${sum.sentence}. Show only these issues.`);
       b.innerHTML = `<span></span><b></b>`;
       b.querySelector('span')!.textContent = FAMILY_LABEL[fam];
       b.querySelector('b')!.textContent = sum.mark;
-      b.title = `${sum.sentence}\n${rules.map((x) => `${RULE_BY_ID[x.id].title}: ${STATUS_WORDS[ruleStatus(x)]} · ${x.note}`).join('\n')}`;
+      b.title = `${sum.sentence}\n${rules.map((x) => `${RULE_BY_ID[x.id].title}: ${STATUS_WORDS[ruleState(x)]} · ${x.note}`).join('\n')}`;
       b.addEventListener('click', () => {
         this.family = this.family === fam ? null : fam;
-        this.renderFamilies();
+        this.syncChips();
         this.refilter();
       });
+      this.famChips.set(fam, b);
       wrap.append(b);
     }
+    this.syncChips();
   }
 
+  /** The severity chips, built once per report (their counts change only with it). */
   private renderSeverities() {
     const r = this.report!;
     const wrap = $('issSev');
     wrap.innerHTML = '';
+    this.sevChips.clear();
     for (const s of SEVERITIES) {
       const n = r.issues.filter((i) => i.severity === s).length;
       const b = document.createElement('button');
-      b.className = `sev sev-${s}${this.sev.has(s) ? ' on' : ''}`;
+      b.dataset.sev = s;
       b.innerHTML = `<i></i>${SEV_LABEL[s]} <b>${n}</b>`;
       b.disabled = !n;
-      b.setAttribute('aria-pressed', String(this.sev.has(s)));
       b.addEventListener('click', () => {
         if (this.sev.has(s)) this.sev.delete(s);
         else this.sev.add(s);
-        this.renderSeverities();
+        this.syncChips();
         this.refilter();
       });
+      this.sevChips.set(s, b);
       wrap.append(b);
+    }
+    this.syncChips();
+  }
+
+  /** The chips' on state and aria-pressed, set in place. */
+  private syncChips() {
+    for (const [fam, b] of this.famChips) {
+      const on = this.family === fam;
+      b.className = `fam ${b.dataset.tone}${on ? ' on' : ''}`;
+      b.setAttribute('aria-pressed', String(on));
+    }
+    for (const [s, b] of this.sevChips) {
+      const on = this.sev.has(s);
+      b.className = `sev sev-${s}${on ? ' on' : ''}`;
+      b.setAttribute('aria-pressed', String(on));
     }
   }
 
@@ -277,13 +379,20 @@ export class IssuesUI {
 
   private renderList() {
     const list = $('issList');
+    // the list is rebuilt: a row that had the focus hands it to its successor, so a second Enter acts on it again
+    const active = document.activeElement as HTMLElement | null;
+    const refocus = active && active.dataset?.row && list.contains(active) ? active.dataset.row : null;
     list.innerHTML = '';
+    this.rows.clear();
     this.renderNav();
     const r = this.report;
     if (!r) return;
     const shown = r.issues.filter((i) => this.visible(i));
     if (!r.issues.length) {
-      list.innerHTML = `<li class="iss-empty">No issues: every applicable rule passed. Unverified rules had nothing to check.</li>`;
+      const li = document.createElement('li');
+      li.className = 'iss-empty';
+      li.textContent = noIssuesText(r.rules);
+      list.append(li);
       return;
     }
     if (!shown.length) list.innerHTML = `<li class="iss-empty">No issues match these filters.</li>`;
@@ -292,14 +401,21 @@ export class IssuesUI {
       li.className = `iss sev-${i.severity}${this.selected === i ? ' sel' : ''}`;
       li.dataset.id = i.id;
       const step = this.p.steps[i.step];
-      li.innerHTML = `<button class="iss-row" aria-expanded="${this.selected === i}"><i class="dot"></i><b class="id mono"></b><span class="t"></span><span class="s mono"></span></button>`;
-      li.querySelector('.id')!.textContent = i.id;
-      li.querySelector('.t')!.textContent = i.title;
-      li.querySelector('.s')!.textContent = step ? `#${step.id}` : '';
-      li.querySelector('.iss-row')!.addEventListener('click', () => this.select(this.selected === i ? null : i));
+      const row = document.createElement('button');
+      row.className = 'iss-row';
+      row.dataset.row = i.id;
+      row.setAttribute('aria-expanded', String(this.selected === i));
+      row.innerHTML = `<i class="dot"></i><b class="id mono"></b><span class="t"></span><span class="s mono"></span>`;
+      row.querySelector('.id')!.textContent = i.id;
+      row.querySelector('.t')!.textContent = i.title;
+      row.querySelector('.s')!.textContent = step ? `#${step.id}` : '';
+      row.addEventListener('click', () => this.select(this.selected === i ? null : i));
+      li.append(row);
       if (this.selected === i) li.append(this.detail(i));
+      this.rows.set(i.id, row);
       list.append(li);
     }
+    if (refocus) this.rows.get(refocus)?.focus({ preventScroll: true });
   }
 
   private detail(i: Issue): HTMLElement {
@@ -339,7 +455,22 @@ export class IssuesUI {
     // the sheet first: main frames the issue clear of it
     this.renderSheet();
     this.hooks.select(i);
-    if (i && !this.hooks.compact?.()) $('issList').querySelector(`[data-id="${i.id}"]`)?.scrollIntoView({ block: 'nearest' });
+    if (i && !this.hooks.compact?.()) this.scrollToRow(i);
+  }
+
+  /**
+   * Bring the selected row into the pane, clear of the sticky ‹ › bar over
+   * its top: the pane's scroll padding is the bar's height, and a row taller
+   * than the pane shows its heading rather than its middle.
+   */
+  private scrollToRow(i: Issue) {
+    const li = $('issList').querySelector<HTMLElement>(`[data-id="${i.id}"]`);
+    if (!li) return;
+    const pane = $('paneIssues');
+    const navH = $('issNav').offsetHeight || 0;
+    if (navH) pane.style.scrollPaddingTop = `${navH + 4}px`;
+    const tall = li.offsetHeight > pane.clientHeight - navH - 4;
+    (tall ? (this.rows.get(i.id) ?? li) : li).scrollIntoView({ block: tall ? 'start' : 'nearest' });
   }
 
   /** The selected issue in the sheet over the bottom of a narrow screen (CSS keeps it hidden on a wide one). */
@@ -365,8 +496,7 @@ export class IssuesUI {
     if (i) {
       this.sev.add(i.severity);
       if (this.family && RULE_BY_ID[i.rule].family !== this.family) this.family = null;
-      this.renderFamilies();
-      this.renderSeverities();
+      this.syncChips();
     }
     this.select(i);
   }
@@ -382,19 +512,34 @@ export class IssuesUI {
     this.select(shown[stepIndex(k, dir, shown.length)]);
   }
 
+  /**
+   * One mark on the scrubber per step with a critical or major issue, for the
+   * most severe of them (its tooltip lists them all); the critical ones go on
+   * last, so a major mark close by never covers one. A tap on a mark selects
+   * its issue; a drag that starts on one scrubs, as anywhere on the track.
+   */
   private renderMarkers() {
     const track = $('scrubTrack');
     track.querySelectorAll('.iss-mark').forEach((m) => m.remove());
     const D = this.p.duration;
-    for (const i of this.report!.issues) {
-      if (i.severity !== 'critical' && i.severity !== 'major') continue;
+    for (const group of markerGroups(this.report!.issues)) {
+      const i = group[0];
       const m = document.createElement('b');
       m.className = `iss-mark sev-${i.severity}`;
       m.style.left = `${(this.timeOf(i.step) / D) * 100}%`;
-      m.title = `${i.id} · ${i.title}`;
+      m.title = group.map((x) => `${x.id} · ${x.title}`).join('\n');
+      m.dataset.id = i.id;
+      // no stopPropagation: the track starts its scrub as usual, and a release on the spot without moving is a tap
       m.addEventListener('pointerdown', (e) => {
-        e.stopPropagation();
-        this.selectById(i.id);
+        const down = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+        const up = (u: PointerEvent) => {
+          if (u.pointerId !== e.pointerId) return;
+          removeEventListener('pointerup', up, true);
+          removeEventListener('pointercancel', up, true);
+          if (u.type === 'pointerup' && isTap(down, { x: u.clientX, y: u.clientY, t: u.timeStamp }, e.pointerType)) this.selectById(i.id);
+        };
+        addEventListener('pointerup', up, true);
+        addEventListener('pointercancel', up, true);
       });
       track.append(m);
     }
@@ -438,13 +583,15 @@ export class IssuesUI {
 
   /** Per frame: the CHECKS row for the current step and the selected issue's pin. */
   update(s: SequenceState) {
-    if (s.stepIndex !== this.lastStep) {
-      this.lastStep = s.stepIndex;
+    // a view pass (material, section) shows the whole build, not a step: the row reads '—' as STEP does
+    const at = s.presentation?.kind ? -3 : s.stepIndex;
+    if (at !== this.lastStep) {
+      this.lastStep = at;
       const el = $('opChecks');
       // only a verdict has a colour: '—' and 'checking…' must not keep the last step's green
       delete el.dataset.level;
       if (!this.report) el.textContent = 'checking…';
-      else if (s.stepIndex < 0) el.textContent = '—';
+      else if (at < 0) el.textContent = '—';
       else {
         const mine = this.atStep(s.stepIndex);
         el.innerHTML = '';
@@ -504,7 +651,9 @@ export function rulesTable(r: CheckReport | null): string {
   return `<table class="rules mono"><thead><tr><th>Rule</th><th>Checked</th><th>Status</th></tr></thead><tbody>${RULES.map((info) => {
     const x = r.rules.find((y) => y.id === info.id);
     if (!x) return '';
-    const st = ruleStatus(x);
-    return `<tr class="${st}" title="${esc(`${info.rule(r.settings)} — ${x.note}`)}"><td><b>${esc(info.title)}</b><span>${esc(x.note)}</span></td><td>${x.checked}</td><td>${st === 'flagged' ? `✗ ${x.flagged} ${STATUS_WORDS.flagged}` : st === 'passed' ? `✓ ${STATUS_WORDS.passed}` : STATUS_WORDS.unverified}</td></tr>`;
+    const st = ruleState(x);
+    // a rule that could not verify keeps the muted 'unverified' look, and says so in words
+    const cls = st === 'notChecked' ? 'unverified not-checked' : st === 'nothing' ? 'unverified' : st;
+    return `<tr class="${cls}" title="${esc(`${info.rule(r.settings)} — ${x.note}`)}"><td><b>${esc(info.title)}</b><span>${esc(x.note)}</span></td><td>${x.checked}</td><td>${st === 'flagged' ? `✗ ${x.flagged} ${STATUS_WORDS.flagged}` : st === 'passed' ? `✓ ${STATUS_WORDS.passed}` : STATUS_WORDS[st]}</td></tr>`;
   }).join('')}</tbody></table>`;
 }

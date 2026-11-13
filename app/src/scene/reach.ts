@@ -133,14 +133,14 @@ export class CraneReach {
       m.color.copy(c);
       m.opacity = opacity;
     }
-    const r = Math.max(0.5, pick.radius);
     // in the crane plan the ring lies on the ground, concentric with the slew and full-capacity circles and to their scale
     const y = this.mode === 'emph' ? 0 : Math.max(0, pick.at[1] - LIFT_Y);
-    this.ring.scale.set(r, 1, r);
-    this.ring.position.y = this.radial.position.y = this.marker.position.y = y;
-    // the line and marker point at the critical piece itself
+    // ring, line and marker all stand at the critical piece itself, at the radius its label reads
+    // (only the jib, trolley and hook ease between picks)
     const dx = pick.at[0] - this.crane.base[0], dz = pick.at[2] - this.crane.base[2];
     const d = Math.max(0.5, Math.hypot(dx, dz));
+    this.ring.scale.set(d, 1, d);
+    this.ring.position.y = this.radial.position.y = this.marker.position.y = y;
     this.radial.scale.set(d, 1, 1);
     this.radial.rotation.y = Math.atan2(-dz, dx);
     this.marker.position.set(dx, y, dz);

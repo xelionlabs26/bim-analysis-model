@@ -8,6 +8,8 @@
  */
 import { Ref, StepFile, bool, enumOf, num, refs, str, type Entity, type StepValue } from './step';
 import { IfcGeometry, Mesh, type V3 } from './geometry';
+import { classifyMaterial } from './sequence';
+import type { MaterialId } from '../data/types';
 
 export type Category =
   | 'foundation'
@@ -92,6 +94,8 @@ export function categoryOf(type: string): Category | null {
 export interface Layer {
   name: string;
   thickness: number; // metres (1 for plain materials, fraction for constituents)
+  /** The layer's function where the file gives one (IFC4 IfcMaterialLayer.Category: LoadBearing, Insulation, Finish…). */
+  role?: string;
 }
 
 export interface Storey {
@@ -169,7 +173,7 @@ const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0));
 const PLACEMENT_NAME: Record<string, string> = { IFCGRIDPLACEMENT: 'IfcGridPlacement', IFCLINEARPLACEMENT: 'IfcLinearPlacement', IFCAXIS2PLACEMENTLINEAR: 'IfcAxis2PlacementLinear' };
 
 /** Storey names below ground level: not taken as the ground storey when rebasing heights. */
-const BELOW_GROUND = /basement|cellar|keller|kelder|sous[- ]?sol|souterrain|foundation|\bfdn\b|footing|substructure|lower ground|\b(ug|lg|b\d+)\b/i;
+export const BELOW_GROUND = /basement|cellar|keller|kelder|sous[- ]?sol|souterrain|untergeschoss|tiefgarage|parking|garage|s[oó]tano|foundation|\bfdn\b|footing|substructure|lower ground|\b(ug\d*|lg|b\d+)\b|(^|\s)[-−]\d|\bp[-−]\d/i;
 
 export async function readIfc(text: string, onProgress: Progress = () => {}, fileName = 'model.ifc'): Promise<IfcModel> {
   const f = StepFile.parse(text, (s) => onProgress('parse', s));
@@ -276,13 +280,16 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   // ── storeys ──
   const storeyIds = f.idsOfType('IFCBUILDINGSTOREY');
   const building = f.idsOfType('IFCBUILDING').map((id) => f.get(id)!)[0];
-  const heights = storeyHeights(f, g, storeyIds.map((id) => f.get(id)!), building);
+  const { heights, elevations, elevationFrame } = storeyHeights(f, g, storeyIds.map((id) => f.get(id)!), building);
   const storeys: Storey[] = storeyIds
     .map((id, i) => {
       const s = f.get(id)!;
       return { id, name: str(s.args[2]) || str(s.args[7]) || `Storey ${id}`, elevation: heights[i] * L };
     })
     .sort((a, b) => a.elevation - b.elevation);
+  // the storeys' own Elevation attributes, metres, where they are measured in a frame of their
+  // own (the placements carry a site datum): the one at about 0 there is the ground storey
+  const elevationOf = new Map(storeyIds.map((id, i) => [id, elevationFrame && elevations[i] !== null ? elevations[i]! * L : null]));
   const storeyIndex = new Map(storeys.map((s, i) => [s.id, i]));
   const storeyFor = (id: number): number => {
     for (let cur: number | undefined = id, guard = 0; cur !== undefined && guard < 64; guard++) {
@@ -384,13 +391,15 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
       ...propsOf(id),
     };
     // a part of a wall or slab (Revit Parts) is built as that wall or slab: it takes the
-    // host's category and, where it has none of its own, the host's properties and layers
+    // host's category and, where it has none of its own, the host's properties and layers.
+    // Only a structural layer carries the host's load: its insulation, boards, membranes and
+    // cladding are not load-bearing, whatever the host's flag says
     if (host && type === 'IFCBUILDINGELEMENTPART' && host.category !== 'proxy') {
       const hp = propsOf(host.id);
       el.category = host.category;
       el.predefined ||= enumOf(f.get(host.id)!.args[8]);
       el.isExternal ??= hp.isExternal;
-      el.loadBearing ??= hp.loadBearing;
+      el.loadBearing ??= partIsStructural(el.layers) === false ? false : hp.loadBearing;
       if (!el.layers.length) el.layers = layersOf(host.id);
     }
     raw.push({ el, mesh });
@@ -445,11 +454,18 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   // 0 included). A model wholly above it, or far from it, has heights from a site datum (shared
   // or survey coordinates): bring its ground storey to 0, i.e. the lowest storey at or just above
   // the lowest geometry, passing over basement and foundation levels when a higher one is there.
+  // A datum below 0 (a Dutch NAP level, say) is rebased too when the lowest storey not named
+  // as below ground is clearly below 0 and no storey is near 0.
   const loZ = lo[2] * L;
   let groundZ = 0;
-  if (loZ > 1 || Math.abs(loZ) > 500) {
+  const lowestNamed = storeys.find((s) => !BELOW_GROUND.test(s.name));
+  const belowDatum = !!lowestNamed && lowestNamed.elevation < -1 && !storeys.some((s) => Math.abs(s.elevation) < 1);
+  if (loZ > 1 || Math.abs(loZ) > 500 || belowDatum) {
     const above = storeys.filter((s) => s.elevation >= loZ - 0.05);
-    const ground = above.find((s) => !BELOW_GROUND.test(s.name)) ?? above[0];
+    const zeroed = storeys
+      .filter((s) => elevationOf.get(s.id) != null && Math.abs(elevationOf.get(s.id)!) < 0.5)
+      .sort((a, b) => Math.abs(elevationOf.get(a.id)!) - Math.abs(elevationOf.get(b.id)!))[0];
+    const ground = zeroed ?? above.find((s) => !BELOW_GROUND.test(s.name)) ?? above[0];
     groundZ = ground?.elevation ?? loZ;
     const at = `${groundZ < 0 ? '−' : '+'}${Math.abs(groundZ).toFixed(2)} m`;
     warnings.push(`Heights in the file are measured from a site datum: ${ground ? ground.name : 'the lowest element'} is at ${at} there and is shown at 0.`);
@@ -524,6 +540,29 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   };
 }
 
+const STRUCTURAL_MATERIALS = new Set<MaterialId>(['concrete', 'masonry', 'clt', 'glulam', 'steel', 'timber']);
+
+/**
+ * Whether a part's own layers make it structure: true for a structural material or a
+ * load-bearing layer function, false when every layer is insulation, a board, a membrane,
+ * cladding, glass or air, and null when that is not known (no material, or one not
+ * recognised).
+ */
+export function partIsStructural(layers: readonly Layer[]): boolean | null {
+  if (!layers.length) return null;
+  let structural = false, unknown = false;
+  for (const l of layers) {
+    const role = (l.role ?? '').toLowerCase();
+    if (/non.?load|non.?structur|insulat|finish|membrane|clad|\bair\b|ventilat|vapou?r|lining|barrier/.test(role)) continue;
+    if (/load.?bearing|structur|\bcore\b/.test(role)) return true;
+    if (/cladding|siding|weatherboard|shiplap|\brender\b|lining|finish/i.test(l.name)) continue;
+    const m = classifyMaterial(l.name);
+    if (m && STRUCTURAL_MATERIALS.has(m)) structural = true;
+    else if (m === undefined) unknown = true;
+  }
+  return structural ? true : unknown ? null : false;
+}
+
 interface CommonProps {
   isExternal: boolean | null;
   loadBearing: boolean | null;
@@ -552,7 +591,7 @@ function readCommonPset(f: StepFile, v: StepValue): CommonProps | null {
  * the level is only in Elevation, which is measured from the building, so it is
  * lifted by the height of that parent.
  */
-function storeyHeights(f: StepFile, g: IfcGeometry, list: Entity[], building: Entity | undefined): number[] {
+function storeyHeights(f: StepFile, g: IfcGeometry, list: Entity[], building: Entity | undefined): { heights: number[]; elevations: (number | null)[]; elevationFrame: boolean } {
   const bz = building ? g.placement(building.args[5])[14] : 0;
   const rows = list.map((s) => {
     const ez = typeof s.args[9] === 'number' ? s.args[9] : null;
@@ -562,7 +601,13 @@ function storeyHeights(f: StepFile, g: IfcGeometry, list: Entity[], building: En
     return { ez, pz: g.placement(s.args[5])[14], parentZ };
   });
   const placed = rows.some((r) => r.pz !== null && Math.abs(r.pz - r.parentZ) > 1e-6 * (1 + Math.abs(r.ez ?? 0)));
-  return rows.map(({ ez, pz, parentZ }) => (pz !== null && (placed || ez === null) ? pz : parentZ + (ez ?? 0)));
+  const heights = rows.map(({ ez, pz, parentZ }) => (pz !== null && (placed || ez === null) ? pz : parentZ + (ez ?? 0)));
+  // Elevation is in a frame of its own when the placements carry the levels and every storey
+  // that has both sits a clear distance (over 0.5 m) from its Elevation
+  const both = rows.map((r, i) => ({ ez: r.ez, h: heights[i] })).filter((r) => r.ez !== null);
+  const L = g.lengthUnit;
+  const elevationFrame = placed && both.length > 0 && both.every((r) => Math.abs(r.h - r.ez!) * L > 0.5);
+  return { heights, elevations: rows.map((r) => r.ez), elevationFrame };
 }
 
 function appOf(f: StepFile): string {
@@ -632,7 +677,10 @@ function layersFor(f: StepFile, v: number | undefined, L: number): Layer[] {
       return refs(e.args[0])
         .map((id) => f.get(id))
         .filter((l): l is Entity => !!l)
-        .map((l) => ({ name: name(l.args[0]), thickness: num(l.args[1]) * L }))
+        .map((l): Layer => {
+          const role = str(l.args[5]);
+          return role ? { name: name(l.args[0]), thickness: num(l.args[1]) * L, role } : { name: name(l.args[0]), thickness: num(l.args[1]) * L };
+        })
         .filter((l) => l.thickness > 0);
     case 'IFCMATERIALLIST':
       return refs(e.args[0]).map((id) => ({ name: name(new Ref(id)), thickness: 1 }));

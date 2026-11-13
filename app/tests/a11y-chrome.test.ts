@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { nextTab, pressedBySpace, routeKey, takesTyping, type KeyTarget } from '../src/ui/keys';
 import { applyBrand, brandName, DEFAULT_BRAND, wordmark } from '../src/ui/brand';
 import { projectFacts } from '../src/ui/header';
-import { scrubberText, visibleLog } from '../src/ui/panels';
+import { placedAt, scrubberText, timecode, visibleLog } from '../src/ui/panels';
+import { focusKey, keepFocus } from '../src/ui/focus';
+import { toIfc } from '../src/checks/view';
 import { buildProject } from '../src/data/project';
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -216,6 +218,10 @@ describe('colour tokens', () => {
     expect(contrast(T.bad, T['brand-wash'])).toBeGreaterThanOrEqual(4.5);
   });
 
+  it('keep warning and pass text legible on the hover wash too (the import alert button, a hovered chip)', () => {
+    for (const fg of ['warn', 'green', 'ink', 'ink-2', 'muted']) expect(contrast(T[fg], T['brand-wash']), `--${fg} on --brand-wash`).toBeGreaterThanOrEqual(4.5);
+  });
+
   it('do not fade text with opacity in the off states that used to fall under 4.5:1', () => {
     expect(CSS).not.toMatch(/\.sev:not\(\.on\)\s*\{[^}]*opacity/);
     expect(CSS).not.toMatch(/\.g-row\.na\s*\{[^}]*opacity/);
@@ -276,5 +282,109 @@ describe('chrome markup', () => {
     for (const id of ['btnMenu', 'btnPrev', 'btnPlay', 'btnNext', 'btnDownload', 'btnPlay2', 'btnLog', 'stagePrev', 'stageNext', 'memberSearch']) {
       expect(HTML, id).toMatch(new RegExp(`id="${id}"[^>]*aria-label="[^"]+"`));
     }
+  });
+});
+
+// ── the operation panel's readouts (R43, R45) ───────────────────────────────
+
+describe('timecode', () => {
+  it('writes the total with the same tenths as the time, and never 60 seconds', () => {
+    expect(timecode(29.4)).toBe('00:29.4');
+    expect(timecode(59.6)).toBe('00:59.6');
+    expect(timecode(59.96)).toBe('01:00.0');
+    expect(timecode(119.97)).toBe('02:00.0');
+    expect(timecode(0)).toBe('00:00.0');
+    expect(timecode(-0.01)).toBe('00:00.0');
+  });
+
+  it('is what the panel prints for both sides', () => {
+    const src = read('../src/ui/panels.ts');
+    expect(src).toMatch(/\$\('timecode'\)\.innerHTML = `\$\{timecode\(s\.t\)\} \/<br>\$\{timecode\(D\)\}`/);
+  });
+});
+
+describe('placedAt', () => {
+  it('reads in the IFC world frame the exports use: Z up, the file origin', () => {
+    // app axes: x east, y up, z south; recentred by the offset
+    const off: [number, number, number] = [10, -2, 5];
+    const c: [number, number, number] = [12.04, 7.5, -3.26];
+    expect(placedAt(c, off)).toBe(toIfc(c, off).map((v) => v.toFixed(1)).join(' · '));
+    expect(placedAt(c, off)).toBe('2.0 · 8.3 · 9.5');
+    // a generated model has no offset: Y and Z swap, Z up
+    expect(placedAt([1, 30, 4])).toBe('1.0 · -4.0 · 30.0');
+  });
+
+  it('prints 0.0, never -0.0', () => {
+    expect(placedAt([-0.01, 0, 0.02])).toBe('0.0 · 0.0 · 0.0');
+  });
+});
+
+// ── the focus through a rebuild of a drawer (R22, R59) ──────────────────────
+
+describe('keepFocus', () => {
+  /** A small tree of elements with attributes, enough for querySelector('[k="v"]'). */
+  class Node {
+    kids: Node[] = [];
+    constructor(public attrs: Record<string, string> = {}) {}
+    getAttribute(k: string) {
+      return this.attrs[k] ?? null;
+    }
+    contains(x: unknown): boolean {
+      return x === this || this.kids.some((k) => k.contains(x));
+    }
+    querySelector(sel: string): Node | null {
+      const m = /^\[([\w-]+)="(.*)"\]$/.exec(sel)!;
+      for (const k of this.kids) {
+        if (k.attrs[m[1]] === m[2].replace(/\\(.)/g, '$1')) return k;
+        const deep = k.querySelector(sel);
+        if (deep) return deep;
+      }
+      return null;
+    }
+    focus() {
+      page.activeElement = this;
+    }
+  }
+  const page = { activeElement: null as Node | null };
+
+  it('names a control by its id or its data attribute, and only inside the drawer', () => {
+    const drawer = new Node();
+    const btn = new Node({ 'data-r': '1.5' });
+    drawer.kids.push(new Node({ id: 'btnResetPrefs' }), btn);
+    expect(focusKey(btn as unknown as Element, drawer as unknown as Element)).toBe('[data-r="1.5"]');
+    expect(focusKey(drawer.kids[0] as unknown as Element, drawer as unknown as Element)).toBe('[id="btnResetPrefs"]');
+    expect(focusKey(new Node({ id: 'x' }) as unknown as Element, drawer as unknown as Element)).toBeNull();
+    expect(focusKey(null, drawer as unknown as Element)).toBeNull();
+    expect(focusKey(new Node() as unknown as Element, drawer as unknown as Element)).toBeNull();
+  });
+
+  it('gives the focus back to the same control after the drawer is rebuilt', () => {
+    const g = globalThis as unknown as { document?: unknown };
+    const was = g.document;
+    g.document = page;
+    try {
+      const drawer = new Node();
+      const build = (pressed: string) => {
+        drawer.kids = ['ink', 'ink+paint', 'paint'].map((v) => new Node({ 'data-v': v, 'aria-pressed': String(v === pressed) }));
+      };
+      build('ink');
+      drawer.kids[2].focus();
+      keepFocus(drawer as unknown as HTMLElement, () => build('paint'));
+      expect(page.activeElement).toBe(drawer.kids[2]);
+      expect(page.activeElement!.attrs['aria-pressed']).toBe('true');
+      // the focus outside the drawer is left alone
+      const outside = new Node({ id: 'tabIssues' });
+      outside.focus();
+      keepFocus(drawer as unknown as HTMLElement, () => build('ink'));
+      expect(page.activeElement).toBe(outside);
+    } finally {
+      g.document = was;
+    }
+  });
+
+  it('is how the drawers and the rules panel redraw', () => {
+    const main = read('../src/main.ts');
+    expect(main).toMatch(/function renderDrawer\(\) \{\s*keepFocus\(drawer, drawDrawer\);/);
+    expect(main).toMatch(/keepFocus\(body, \(\) => drawRulesPanel\(body\)\)/);
   });
 });

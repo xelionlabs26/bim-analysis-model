@@ -388,7 +388,8 @@ export function checkLiftPath(S: CheckScene, st: CheckSettings): RuleOutput {
     const blockers = [...new Set(list.map((x) => x.by))];
     const first = list[0];
     const ci = S.centre(first.i);
-    const atGround = list.every((x) => bottomOf(S, x.i) <= S.ground + 0.5);
+    // set from the ground: at ground level, not down in a basement under the floor already built
+    const atGround = list.every((x) => Math.abs(bottomOf(S, x.i) - S.ground) <= 0.5);
     issues.push({
       rule: 'REACH-PATH',
       severity: atGround ? 'major' : 'critical',
@@ -410,7 +411,8 @@ export function checkLiftPath(S: CheckScene, st: CheckSettings): RuleOutput {
   }
   const untested = [edgeFitted ? `${edgeFitted} thin façade and wall ${edgeFitted === 1 ? 'piece' : 'pieces'} fitted from the slab edge, not tested` : '', tooSmall ? `${tooSmall} too small to test` : ''].filter(Boolean).join(' · ');
   const note = picks ? `${picks} crane picks checked for a clear drop${untested ? ` · ${untested}` : ''}` : untested ? `no crane picks that can be tested · ${untested}` : 'no crane picks';
-  return { issues, result: { checked: picks, applicable: picks > 0, note } };
+  // every pick left out as untestable: not verified, as opposed to a project with no crane picks
+  return { issues, result: { checked: picks, applicable: picks > 0, ...(!picks && untested ? { notChecked: true } : {}), note } };
 }
 
 // ── TEMP-EDGE ────────────────────────────────────────────────────────────────
@@ -630,26 +632,44 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
     }
     if (runs.length) perSlab.push({ i, runs, exposed, permanent, end: latest });
   }
-  // one issue per level and kind: temporary exposure (edge protection) or never closed (no guard modelled)
-  const levelOf = (i: number) => Math.round(topOf(S, i) * 10) / 10;
+  // one issue per level and kind: temporary exposure (edge protection) or never closed (no guard modelled);
+  // slab tops rounded to 100 mm only to tell levels apart, the real edge height is kept for labels and pins
+  const levelKey = (i: number) => Math.round(topOf(S, i) * 10) / 10;
   const groups = new Map<string, typeof perSlab>();
   for (const e of perSlab) {
     for (const kind of ['temp', 'perm'] as const) {
       if ((kind === 'temp' ? e.exposed : e.permanent) <= 0) continue;
-      const k = `${kind}|${levelOf(e.i)}`;
+      const k = `${kind}|${levelKey(e.i)}`;
       const g = groups.get(k);
       if (g) g.push(e);
       else groups.set(k, [e]);
     }
   }
-  // heights are given on the storeys' datum, so a model set out at a site datum still reads "LEVEL 2 (+3.10 m)"
-  const levelName = (yModel: number) => {
+  const signed = (y: number) => `${y >= 0 ? '+' : ''}${y.toFixed(2)} m`;
+  // the storey an edge belongs to, on the storeys' own datum (a model set out at a site datum still
+  // reads "LEVEL 2 (+3.10 m)"), labelled with the storey's own elevation; null when none is near
+  const storeyOf = (yModel: number) => {
     const y = yModel - S.levelShift;
     const lv = [...p.levels].filter((l) => l.code !== 'TOP').sort((a, b) => Math.abs(a.y - y) - Math.abs(b.y - y))[0];
-    return lv && Math.abs(lv.y - y) < 0.6 ? `${lv.code} (${y >= 0 ? '+' : ''}${y.toFixed(2)} m)` : `${y >= 0 ? '+' : ''}${y.toFixed(2)} m`;
+    return lv && Math.abs(lv.y - y) < 0.6 ? lv : null;
+  };
+  const levelName = (yModel: number) => {
+    const lv = storeyOf(yModel);
+    return lv ? `${lv.code} (${signed(lv.y)})` : signed(yModel - S.levelShift);
+  };
+  /** The edge height, said separately where it is not the storey's elevation ("ROOF (+6.00 m)", edge at +6.46 m). */
+  const edgeHeights = (ys: number[]) => {
+    const off = ys.filter((y) => {
+      const lv = storeyOf(y);
+      return lv && Math.abs(lv.y - (y - S.levelShift)) >= 0.05;
+    });
+    if (!off.length) return '';
+    const lo = minOf(off, (y) => y) - S.levelShift, hi = maxOf(off, (y) => y) - S.levelShift;
+    return off.length === 1 || hi - lo < 0.01 ? ` The edge is at ${signed(lo)}.` : ` The edges are at ${signed(lo)} to ${signed(hi)}.`;
   };
   interface Level {
     kind: 'temp' | 'perm';
+    /** Edge height: the mean height of its open edge. */
     y: number;
     slabs: number[];
     runs: Run[];
@@ -661,30 +681,70 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
   }
   const levels: Level[] = [];
   for (const [k, list] of [...groups.entries()].sort((a, b) => Number(a[0].split('|')[1]) - Number(b[0].split('|')[1]))) {
-    const [kind, yS] = k.split('|') as ['temp' | 'perm', string];
-    const y = Number(yS);
+    const kind = k.split('|')[0] as 'temp' | 'perm';
     const slabsHere = list.map((e) => e.i);
     const runs = list.flatMap((e) => e.runs.filter((r) => (kind === 'perm' ? r.end >= INF : r.end < INF)));
+    const len = runs.reduce((a, r) => a + r.len, 0);
+    const y = runs.reduce((a, r) => a + r.a[1] * r.len, 0) / (len || 1);
     const start = minOf(slabsHere, (i) => S.step[i]);
     const until = maxOf(runs, (r) => r.end);
     const closers = new Set<number>();
     if (kind === 'temp') for (const r of runs) if (r.by >= 0) closers.add(r.by);
-    levels.push({ kind, y, slabs: slabsHere, runs, len: runs.reduce((a, r) => a + r.len, 0), start, until, closers: [...closers], by: kind === 'temp' ? closerNames(S, [...closers]) : '' });
+    levels.push({ kind, y, slabs: slabsHere, runs, len, start, until, closers: [...closers], by: kind === 'temp' ? closerNames(S, [...closers]) : '' });
   }
-  // repeating floors (a tower's typical levels) read as one item: same kind, similar length, same closers
+  // repeating floors (a tower's typical levels) read as one item: same kind and a length within a quarter
+  // of the run's median. A lone floor unlike the floors either side (a slab left open round the core)
+  // neither splits the run nor heads one: it is an item of its own, and the run carries on past it.
+  /** Within a quarter of the typical length. */
+  const near = (x: number, typical: number) => Math.abs(x - typical) <= 0.25 * typical;
+  const median = (xs: number[]) => {
+    const s = xs.slice().sort((a, b) => a - b);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
   const merged: Level[][] = [];
+  /** Floors set apart from their run, with the typical floor they were measured against and the edge they have in addition. */
+  const outliers = new Map<Level, { typical: Level[]; extra: Run[] }>();
   for (const kind of ['temp', 'perm'] as const) {
+    const list = levels.filter((l) => l.kind === kind);
+    const L = list.map((l) => l.len);
+    const lone = list.map((_, k) => {
+      if (k > 0 && k < list.length - 1) return !near(L[k], L[k - 1]) && !near(L[k], L[k + 1]) && near(L[k + 1], L[k - 1]);
+      if (k === 0 && list.length >= 3) return !near(L[0], L[1]) && near(L[2], L[1]);
+      if (k === list.length - 1 && list.length >= 3) return !near(L[k], L[k - 1]) && near(L[k - 2], L[k - 1]);
+      return false;
+    });
+    const typical = list.filter((_, k) => !lone[k]);
     let cur: Level[] = [];
-    for (const lv of levels.filter((l) => l.kind === kind)) {
-      const head = cur[0];
-      if (head && Math.abs(lv.len - head.len) <= 0.25 * head.len) cur.push(lv);
+    for (let k = 0; k < typical.length; k++) {
+      const lv = typical[k];
+      const med = cur.length ? median(cur.map((l) => l.len)) : 0;
+      let joins = cur.length > 0 && near(lv.len, med);
+      // at a change of floor plate, a floor between the two goes with the one it is closer to
+      const next = typical[k + 1];
+      if (joins && next && !near(next.len, med) && Math.abs(lv.len - next.len) < Math.abs(lv.len - med)) joins = false;
+      if (joins) cur.push(lv);
       else {
         if (cur.length) merged.push(cur);
         cur = [lv];
       }
     }
     if (cur.length) merged.push(cur);
+    list.forEach((lv, k) => {
+      if (!lone[k]) return;
+      merged.push([lv]);
+      // a floor between two typical ones with more open edge than both: what it has in addition
+      // (the top or bottom of a run is a different plate, a roof or a podium, and is not compared)
+      if (k === 0 || k === list.length - 1) return;
+      const around = [list[k - 1], list[k + 1]];
+      if (lv.len <= median(around.map((l) => l.len))) return;
+      // the edge this floor has that the floors either side do not, matched in plan
+      const key = (r: Run) => `${Math.round(((r.a[0] + r.b[0]) / 2) * 2)},${Math.round(((r.a[2] + r.b[2]) / 2) * 2)}`;
+      const seen = new Set(around.flatMap((l) => l.runs.map(key)));
+      outliers.set(lv, { typical: around, extra: lv.runs.filter((r) => !seen.has(key(r))) });
+    });
   }
+  merged.sort((a, b) => (a[0].kind === b[0].kind ? a[0].y - b[0].y : a[0].kind === 'temp' ? -1 : 1));
   const issues: Draft[] = [];
   for (const group of merged) {
     const first = group[0], last = group[group.length - 1];
@@ -699,6 +759,22 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
     const spans = group.map((l) => l.until - l.start);
     const minS = minOf(spans, (x) => x), maxS = maxOf(spans, (x) => x);
     const mid = first.runs[Math.floor(first.runs.length / 2)];
+    // a floor with more open edge than the floors either side: say how much more, and what it is
+    const odd = group.length === 1 ? outliers.get(first) : undefined;
+    const extraLen = odd ? odd.extra.reduce((a, r) => a + r.len, 0) : 0;
+    const typicalLen = odd ? median(odd.typical.map((l) => l.len)) : 0;
+    let oddDetail = '';
+    if (odd) {
+      const extraBy = [...new Set(odd.extra.map((r) => r.by).filter((j) => j >= 0))];
+      oddDetail = ` That is ${(total - typicalLen).toFixed(0)} m more than the floors either side`;
+      if (extraLen <= 0) oddDetail += '.';
+      else if (kind === 'perm') oddDetail += `: ${extraLen.toFixed(1)} m of edge they do not have.`;
+      else oddDetail += `: ${extraLen.toFixed(1)} m of edge they do not have, open until ${stepName(p, maxOf(odd.extra, (r) => r.end))}, when ${closerNames(S, extraBy)} close${extraBy.length === 1 ? 's' : ''} it.`;
+    }
+    // floors of this kind within the run's range that are listed on their own
+    const apart = group.length > 1 ? [...outliers.keys(), ...merged.filter((g) => g.length === 1).map((g) => g[0])].filter((l, k, a) => a.indexOf(l) === k && l.kind === kind && l.y > first.y && l.y < last.y) : [];
+    const apartNote = apart.length ? ` The floor${apart.length === 1 ? '' : 's'} at ${apart.map((l) => levelName(l.y)).join(', ')} ${apart.length === 1 ? 'is' : 'are'} listed on ${apart.length === 1 ? 'its' : 'their'} own.` : '';
+    const heights = edgeHeights(group.length === 1 ? [first.y] : [first.y, last.y]);
     const title =
       kind === 'perm'
         ? group.length === 1
@@ -708,11 +784,14 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
           ? `Edge protection: ${total.toFixed(0)} m ${where}`
           : `Edge protection ${where} (${per.toFixed(0)} m each)`;
     const detail =
-      kind === 'perm'
+      (kind === 'perm'
         ? `No wall, glazing or guard ${fmtMm(st.guardHeight)} high closes ${group.length === 1 ? `${total.toFixed(1)} m` : `${per.toFixed(1)} m per floor (${total.toFixed(0)} m in all)`} of edge with a fall of ${st.fallHeight} m or more, from the time each floor is placed to the end of the sequence.`
         : group.length === 1
           ? `${total.toFixed(1)} m of edge with a fall of ${st.fallHeight} m or more is open from ${stepName(p, first.start)} until ${stepName(p, first.until)} (${plural(first.until - first.start, 'step')}), when ${first.by} close${first.closers.length === 1 ? 's' : ''} it.`
-          : `About ${per.toFixed(0)} m of edge per floor (${total.toFixed(0)} m in all) with a fall of ${st.fallHeight} m or more is open for ${minS === maxS ? plural(minS, 'step') : `${minS}–${maxS} steps`} on each floor, from ${stepName(p, first.start)} to ${stepName(p, last.until)}, until ${by} close it.`;
+          : `About ${per.toFixed(0)} m of edge per floor (${total.toFixed(0)} m in all) with a fall of ${st.fallHeight} m or more is open for ${minS === maxS ? plural(minS, 'step') : `${minS}–${maxS} steps`} on each floor, from ${stepName(p, first.start)} to ${stepName(p, last.until)}, until ${by} close it.`) +
+      oddDetail +
+      apartNote +
+      heights;
     issues.push({
       rule: 'TEMP-EDGE',
       key: kind === 'perm' ? 'never-guarded' : 'temporary',
@@ -728,7 +807,7 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
       primary: slabsAll,
       secondary: closersAll,
       step: first.start,
-      at: mid ? [(mid.a[0] + mid.b[0]) / 2, first.y, (mid.a[2] + mid.b[2]) / 2] : centreOf(S, first.slabs),
+      at: mid ? [(mid.a[0] + mid.b[0]) / 2, mid.a[1], (mid.a[2] + mid.b[2]) / 2] : centreOf(S, first.slabs),
       box: unionBox(S, first.slabs, 1),
       lines: runs.map((r) => [r.a, r.b] as [Vec3, Vec3]),
       value: total,
@@ -817,7 +896,7 @@ function overheadAction(p: Project, hub: string, others: number[], what: string,
 export async function checkClashes(S: CheckScene, st: CheckSettings, yieldNow: Yield): Promise<RuleOutput> {
   const p = S.project;
   if (p.meta.source !== 'ifc') {
-    return { issues: [], result: { checked: 0, applicable: false, note: 'generated massing: its boxes overlap by construction, so clashes are checked on imported models only' } };
+    return { issues: [], result: { checked: 0, applicable: false, notChecked: true, note: 'generated massing: its boxes overlap by construction, so clashes are checked on imported models only' } };
   }
   const tol = st.clashTol;
   const ref = (i: number) => p.parts[i].ref!;
@@ -890,9 +969,18 @@ export async function checkClashes(S: CheckScene, st: CheckSettings, yieldNow: Y
     const structuralHit = list.some((f) => S.role[f.i] === 'structure' || S.role[f.j] === 'structure');
     const overhead = S.role[hub] === 'structure' && ['beam', 'slab', 'roof'].includes(S.cat[hub]);
     // where each element sits against a beam or floor: standing under it, running through it, starting on it, or within its depth
+    // an element that crosses the floor is split there only when both sides are a real storey-height
+    // part: a 190 mm stub under the soffit means it should start on top, a short head above means it stops under
     const placeOf = (o: number): Place => {
-      const below = bottomOf(S, o) < bottomOf(S, hub) - tol, above = topOf(S, o) > topOf(S, hub) + tol;
-      return below ? (above ? 'through' : 'under') : above ? 'onTop' : 'inside';
+      const down = bottomOf(S, hub) - bottomOf(S, o), up = topOf(S, o) - topOf(S, hub);
+      const below = down > tol, above = up > tol;
+      if (below && above) {
+        const short = (a: number, b: number) => a < 0.5 || a < b / 4;
+        if (short(down, up)) return 'onTop';
+        if (short(up, down)) return 'under';
+        return 'through';
+      }
+      return below ? 'under' : above ? 'onTop' : 'inside';
     };
     // major: 50 mm or more into structure, or no deflection gap under a beam or floor
     let severity: Severity = 'minor';
@@ -943,7 +1031,8 @@ export async function checkClashes(S: CheckScene, st: CheckSettings, yieldNow: Y
     });
   }
   const note = `${pairs} touching pairs tested · ${interfaces} finish interfaces ignored${open ? ` · ${open} pairs with an open-shell element not tested` : ''}`;
-  return { issues, result: { checked: pairs, applicable: pairs > 0, note } };
+  // every touching pair had an open shell in it: nothing was actually measured
+  return { issues, result: { checked: pairs, applicable: pairs > 0, ...(pairs > 0 && open === pairs ? { notChecked: true } : {}), note } };
 }
 
 // ── CLASH-TEMP ───────────────────────────────────────────────────────────────
@@ -954,7 +1043,7 @@ export function checkCraneClearance(S: CheckScene, st: CheckSettings): RuleOutpu
   const c = p.crane;
   if (!c) return { issues: [], result: { checked: 0, applicable: false, note: 'no tower crane: lifted by mobile crane and by hand, so there is no mast to keep clear' } };
   // the importer stands the mast 7 m clear of the building by construction: there is nothing to verify
-  if (craneAssumed(p)) return { issues: [], result: { checked: 0, applicable: false, note: `crane position assumed by the importer (7 m off the west face), clearance not checked` } };
+  if (craneAssumed(p)) return { issues: [], result: { checked: 0, applicable: false, notChecked: true, note: `crane position assumed by the importer (7 m off the west face), clearance not checked` } };
   const mastHalf = 1.0; // a 2 m square mast section
   const clear = 1.0;
   const top = Math.max(c.mastStart, p.height + 4);
@@ -1153,8 +1242,12 @@ export function checkHandling(S: CheckScene, st: CheckSettings): RuleOutput {
       unit: 'kg',
     });
   }
-  const note = checked ? `${checked} hand-set pieces weighed · ${team} need a two-person lift${estimated ? ` · ${estimated} open-shell pieces not weighed` : ''}` : 'nothing is set by hand';
-  return { issues, result: { checked, applicable: checked > 0, note } };
+  const note = checked
+    ? `${checked} hand-set pieces weighed · ${team} need a two-person lift${estimated ? ` · ${estimated} open-shell pieces not weighed` : ''}`
+    : estimated
+      ? `${plural(estimated, 'hand-set piece')} modelled as open surfaces, not weighed`
+      : 'nothing is set by hand';
+  return { issues, result: { checked, applicable: checked > 0, ...(!checked && estimated ? { notChecked: true } : {}), note } };
 }
 
 // ── ACCESS-TRANSPORT ─────────────────────────────────────────────────────────
@@ -1322,12 +1415,30 @@ function kindOf(p: Project, i: number): string {
 export function checkModelData(S: CheckScene, st: CheckSettings): RuleOutput {
   void st;
   const p = S.project;
-  if (p.meta.source !== 'ifc') return { issues: [], result: { checked: 0, applicable: false, note: 'generated model: no authoring data to check' } };
+  if (p.meta.source !== 'ifc') return { issues: [], result: { checked: 0, applicable: false, notChecked: true, note: 'generated model: no authoring data to check' } };
   const r = (p.report ?? {}) as Record<string, unknown>;
   const issues: Draft[] = [];
   const all = [...Array(S.n).keys()];
   const add = (key: string, severity: Severity, title: string, detail: string, action: string, parts: number[]) =>
     issues.push({ rule: 'MODEL-DATA', key, severity, title, detail, action, primary: parts, secondary: [], step: parts.length ? minOf(parts, (i) => S.step[i]) : 0, at: parts.length ? centreOf(S, parts) : [0, 0, 0], box: unionBox(S, parts.length ? parts : all, 0.5), lines: [] });
+  // a file cut off part-way (a broken download): every other verdict covers only what was read
+  if (r.truncated) {
+    const box = unionBox(S, all, 0.5);
+    issues.push({
+      rule: 'MODEL-DATA',
+      key: 'truncated',
+      severity: 'critical',
+      title: 'The file ends early: results cover only part of the model',
+      detail: `The IFC data stops part-way through (its data section is never closed), so elements after the cut are missing. Every check here, passed or flagged, covers only the ${plural(S.n, 'element')} that were read.`,
+      action: 'Export the IFC again (or download it again) and re-run the checks on the complete file before relying on any result.',
+      primary: [],
+      secondary: [],
+      step: 0,
+      at: [(box[0][0] + box[1][0]) / 2, box[1][1], (box[0][2] + box[1][2]) / 2],
+      box,
+      lines: [],
+    });
+  }
   const outside = Number(r.openingsOutside ?? 0);
   const hosts = new Set((r.openingsOutsideHosts as string[] | undefined) ?? []);
   if (outside) add('openings-outside', 'minor', `${plural(outside, 'opening')} placed clear of ${outside === 1 ? 'its host' : 'their hosts'}`, `The file relates ${plural(outside, 'opening')} to elements ${outside === 1 ? 'it does' : 'they do'} not touch (placed a storey away or mirrored), so nothing was cut.`, 'Re-host the openings in the authoring model and re-export.', all.filter((i) => hosts.has(p.parts[i].ref?.guid ?? '')));

@@ -40,6 +40,14 @@ describe('carbonFacts', () => {
     expect(carbonFacts({ totalCarbonKg: 1000, totalBiogenicKg: 0, gifa: Number.NaN }).sub).toBe('no floor area');
   });
 
+  it('says in view when the file ends early, and puts it in the caveat (R64)', () => {
+    const c = carbonFacts(p, 0, false, true);
+    expect(c.sub).toBe('file ends early: partial model');
+    expect(c.label).toMatch(/The file ends early: partial model, so these figures cover only the elements that were read\./);
+    expect(carbonFacts(p).label).not.toMatch(/ends early/);
+    expect(carbonFacts(p).sub).toMatch(/kg\/m² GIA$/);
+  });
+
   it('says how many elements have an assumed material', () => {
     expect(carbonFacts(p, 114).label).toMatch(/114 elements have an assumed material \(see Import\)/);
     expect(carbonFacts(p, 1).label).toMatch(/1 element has an assumed material/);
@@ -121,7 +129,28 @@ describe('ifcName', () => {
     expect(ifcName('IFCSTAIRFLIGHT')).toBe('IfcStairFlight');
     expect(ifcName('IFCFURNISHINGELEMENT')).toBe('IfcFurnishingElement');
     expect(ifcName('IfcSlab')).toBe('IfcSlab');
-    expect(ifcName('IFCZZTOP')).toBe('IFCZZTOP');
+  });
+
+  it('writes geometry items in words too, and never leaves a class in capitals (O9)', () => {
+    expect(ifcName('IFCADVANCEDBREP')).toBe('IfcAdvancedBrep');
+    expect(ifcName('IFCADVANCEDBREPWITHVOIDS')).toBe('IfcAdvancedBrepWithVoids');
+    expect(ifcName('IFCFACETEDBREP')).toBe('IfcFacetedBrep');
+    expect(ifcName('IFCSWEPTDISKSOLID')).toBe('IfcSweptDiskSolid');
+    expect(ifcName('IFCBOOLEANCLIPPINGRESULT')).toBe('IfcBooleanClippingResult');
+    expect(ifcName('IFCPOLYGONALBOUNDEDHALFSPACE')).toBe('IfcPolygonalBoundedHalfSpace');
+    expect(ifcName('IFCSHELLBASEDSURFACEMODEL')).toBe('IfcShellBasedSurfaceModel');
+    expect(ifcName('IFCTRIANGULATEDFACESET')).toBe('IfcTriangulatedFaceSet');
+    expect(ifcName('IFCEXTRUDEDAREASOLIDTAPERED')).toBe('IfcExtrudedAreaSolidTapered');
+    expect(ifcName('IFCMAPPEDITEM')).toBe('IfcMappedItem');
+    expect(ifcName('IFCCSGSOLID')).toBe('IfcCsgSolid');
+    expect(ifcName('IFCOPENINGELEMENT')).toBe('IfcOpeningElement');
+    // a word it does not know: one plain word rather than the schema's capitals
+    expect(ifcName('IFCZZTOP')).toBe('IfcZztop');
+  });
+
+  it("is how the Import drawer's 'Not drawn' line names them", () => {
+    const main = read('../src/main.ts');
+    expect(main).toMatch(/Not drawn: \$\{skipped\.map\(\(\[k, v\]\) => `\$\{esc\(ifcName\(k\)\)\} × \$\{v\}`\)/);
   });
 });
 

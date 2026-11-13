@@ -44,7 +44,7 @@ export interface CraneState {
 }
 
 export interface CranePick {
-  /** Ring radius, m: the critical piece's radius, eased from the last pick while the jib slews. */
+  /** Ring radius, m: the critical piece's own radius from the mast (the jib eases; the ring does not). */
   radius: number;
   /** Where the critical piece sits (world). */
   at: Vec3;
@@ -104,7 +104,6 @@ export class Timeline {
   private readonly mastAfter: number[] = [];
   private readonly lifts: Lift[];
   private readonly liftT0: number[];
-  private readonly liftOfStep = new Map<number, number>();
   readonly erectT: number;
   readonly presentation: Presentation;
   readonly zoneTotal: Record<ZoneId, number>;
@@ -164,7 +163,6 @@ export class Timeline {
           })
       : [];
     this.liftT0 = this.lifts.map((l) => l.step.t0);
-    this.lifts.forEach((l, k) => this.liftOfStep.set(l.step.index, k));
     this.zoneTotal = Object.fromEntries(this.zoneIds.map((z) => [z, steps.filter((s) => s.zone === z).length])) as Record<ZoneId, number>;
     this.presentation = new Presentation(project);
     this.events = this.buildEvents();
@@ -276,25 +274,18 @@ export class Timeline {
   /**
    * The pick the reach ring shows: the active operation's when it is a crane lift
    * (steps overlap, so the jib may already be slewing to the next one), otherwise
-   * the crane's current or last lift. The ring's radius follows the jib: over each
-   * slew it eases from the previous pick's radius to the next one's, so it never
-   * jumps, while the piece, load and utilisation switch with the active operation.
+   * the crane's current or last lift. The ring stands at that pick's own radius,
+   * the one its label reads and its load is checked at: only the jib, trolley and
+   * hook ease between picks, so a paused frame never shows the ring part-way to
+   * the next pick while the label and the load are this one's.
    * `crane` is the lift the jib is on or slewing to.
    */
   private pickAt(t: number, i: number, crane: Step): CranePick | null {
     const cur = i >= 0 ? this.project.steps[i] : null;
     const s = cur && cur.method === 'crane' && cur.lift ? cur : crane.lift ? crane : null;
     if (!s || !s.lift) return null;
-    let radius: number;
-    if (crane !== s && crane.lift && crane.t0 > s.t0) {
-      // the active lift is still being placed while the jib already slews to the next pick
-      radius = lerp(s.lift.radius, crane.lift.radius, smoothstep(crane.t0 - SLEW_LEAD, crane.t0, t));
-    } else {
-      let k = (this.liftOfStep.get(s.index) ?? 0) - 1;
-      while (k >= 0 && !this.lifts[k].step.lift) k--;
-      const from = k >= 0 ? this.lifts[k].step.lift!.radius : s.lift.radius;
-      radius = lerp(from, s.lift.radius, smoothstep(s.t0 - SLEW_LEAD, s.t0, t));
-    }
+    const c = this.project.crane!;
+    const radius = Math.hypot(s.lift.at[0] - c.base[0], s.lift.at[2] - c.base[2]);
     return {
       radius,
       at: s.lift.at,

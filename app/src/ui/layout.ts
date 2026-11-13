@@ -71,6 +71,14 @@ export type ToastKind = 'info' | 'warn' | 'error';
 export const toastLife = (kind: ToastKind): number | null => (kind === 'info' ? 4200 : null);
 
 /**
+ * Whether a new toast may take the place of the one showing (`showing` is
+ * null when none shows): a passing note never covers a failure or a warning
+ * that stays until it is dismissed, so an import error is not lost under,
+ * say, an export's progress. A warning or a failure always shows.
+ */
+export const toastReplaces = (showing: ToastKind | null, next: ToastKind): boolean => showing === null || showing === 'info' || next !== 'info';
+
+/**
  * How far to scroll the page so the model's top edge sits just under the top
  * of the screen, where a framed issue shows above the sheet and the play bar;
  * 0 when it is already there (within `slack`).

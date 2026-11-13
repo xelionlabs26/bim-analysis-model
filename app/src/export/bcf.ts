@@ -11,6 +11,9 @@ import { RULE_BY_ID } from '../checks/types';
 import { dirToIfc, issueView, modelBounds, toIfc, type ModelBounds } from '../checks/view';
 import { zip, type ZipEntry } from './zip';
 
+/** Who the topics say created them, unless the export names someone. */
+export const DEFAULT_AUTHOR = 'Arbor Build';
+
 const PRIORITY: Record<Severity, string> = { critical: 'Critical', major: 'Major', minor: 'Minor', note: 'Info' };
 const LABEL: Record<string, string> = { ORDER: 'Sequence', TEMP: 'Temporary works', REACH: 'Crane', CLASH: 'Clash', ACCESS: 'Access', MODEL: 'Model data' };
 
@@ -44,16 +47,34 @@ function guidsOf(p: Project, parts: number[]): string[] {
 
 /**
  * A topic's GUID, from what the issue is about and never from what was measured:
- * the model file, the rule, the issue's key and its elements (GlobalIds, or the
- * step and part indices on a generated model). Titles carry measured values
+ * the rule, the issue's key and its elements. Titles carry measured values
  * ("at 116 % of the chart"), so a changed threshold would otherwise open a second
  * topic in the BCF tool instead of updating the first.
+ *
+ * On an imported model the elements are named by their IFC GlobalIds, which are
+ * unique across files and survive a re-export, so the file's name and the
+ * project's are left out: the same model saved as "…_rev2.ifc" updates its
+ * topics instead of opening new ones. An issue with no GlobalIds there is told
+ * apart by its step and parts within the IfcProject (or the model's name). A
+ * generated model keeps its id and file name with the step and part indices.
  */
 export function topicGuid(p: Project, issue: Issue): string {
   const guids = guidsOf(p, [...issue.primary, ...issue.secondary]).sort().join(',');
+  const what = `${issue.rule}|${issue.key ?? ''}`;
+  if (p.meta.source === 'ifc') return stableGuid(guids ? `ifc|${what}|${guids}` : `ifc|${ifcScope(p)}|${what}|${issue.step}|${issue.primary.slice(0, 50).join(',')}`);
   // without GlobalIds (generated models) the step and the parts tell two look-alike issues apart
   const parts = guids || `${issue.step}|${issue.primary.slice(0, 50).join(',')}`;
-  return stableGuid(`${p.id}|${p.meta.fileName ?? ''}|${issue.rule}|${issue.key ?? ''}|${parts}`);
+  return stableGuid(`${p.id}|${p.meta.fileName ?? ''}|${what}|${parts}`);
+}
+
+/**
+ * What names an imported model apart from its file: its IfcProject GlobalId,
+ * else its building or project name (not one the importer made from the file name).
+ */
+function ifcScope(p: Project): string {
+  if (p.meta.ifcProject) return p.meta.ifcProject;
+  const fromFile = (p.meta.fileName ?? '').replace(/\.ifc$/i, '').replace(/[_]+/g, ' ').trim();
+  return p.name === fromFile ? 'unnamed' : `name:${p.name}`;
 }
 
 /**
@@ -73,7 +94,7 @@ export function topicGuids(p: Project, issues: Issue[]): Map<Issue, string> {
   return out;
 }
 
-export function markupXml(p: Project, issue: Issue, index: number, when: Date, snapshot: boolean, settings: CheckReport['settings'], guid = topicGuid(p, issue)): string {
+export function markupXml(p: Project, issue: Issue, index: number, when: Date, snapshot: boolean, settings: CheckReport['settings'], guid = topicGuid(p, issue), author = DEFAULT_AUTHOR): string {
   const vp = stableGuid(`${guid}|viewpoint`);
   const rule = RULE_BY_ID[issue.rule];
   const date = when.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -93,7 +114,7 @@ export function markupXml(p: Project, issue: Issue, index: number, when: Date, s
     <Labels>${xml(LABEL[rule.family] ?? rule.family)}</Labels>
     <Labels>${xml(issue.rule)}</Labels>
     <CreationDate>${date}</CreationDate>
-    <CreationAuthor>Arbor Build</CreationAuthor>
+    <CreationAuthor>${xml(author.trim() || DEFAULT_AUTHOR)}</CreationAuthor>
     <Description>${xml(desc)}</Description>
   </Topic>
   <Viewpoints Guid="${vp}">
@@ -144,9 +165,16 @@ const VERSION = `<?xml version="1.0" encoding="UTF-8"?>
 </Version>
 `;
 
+/**
+ * The BCF project's id. An imported model's comes from its IfcProject GlobalId
+ * (else its name), never from the file name, so a renamed or re-exported file
+ * stays the same BCF project.
+ */
+export const projectGuid = (p: Project) => (p.meta.source === 'ifc' ? stableGuid(`ifc|${ifcScope(p)}|project`) : stableGuid(`${p.id}|${p.meta.fileName ?? p.name}|project`));
+
 const projectXml = (p: Project) => `<?xml version="1.0" encoding="UTF-8"?>
 <ProjectExtension>
-  <Project ProjectId="${stableGuid(`${p.id}|${p.meta.fileName ?? p.name}|project`)}">
+  <Project ProjectId="${projectGuid(p)}">
     <Name>${xml(p.name)}</Name>
   </Project>
   <ExtensionSchema></ExtensionSchema>
@@ -155,16 +183,17 @@ const projectXml = (p: Project) => `<?xml version="1.0" encoding="UTF-8"?>
 
 /**
  * The BCF archive. `snapshots` maps issue ids to PNG bytes (any missing
- * issue simply has no snapshot).
+ * issue simply has no snapshot). `opts.author` is the CreationAuthor on every
+ * topic (the brand name, so a white-labelled export does not say Arbor Build).
  */
-export function bcfZip(p: Project, report: CheckReport, snapshots: Map<string, Uint8Array> = new Map(), when = new Date()): Uint8Array {
+export function bcfZip(p: Project, report: CheckReport, snapshots: Map<string, Uint8Array> = new Map(), when = new Date(), opts: { author?: string } = {}): Uint8Array {
   const entries: ZipEntry[] = [{ name: 'bcf.version', data: VERSION }, { name: 'project.bcfp', data: projectXml(p) }];
   const bounds = modelBounds(p);
   const guids = topicGuids(p, report.issues);
   report.issues.forEach((issue, k) => {
     const dir = guids.get(issue)!;
     const snap = snapshots.get(issue.id);
-    entries.push({ name: `${dir}/markup.bcf`, data: markupXml(p, issue, k + 1, when, !!snap, report.settings, dir) });
+    entries.push({ name: `${dir}/markup.bcf`, data: markupXml(p, issue, k + 1, when, !!snap, report.settings, dir, opts.author ?? DEFAULT_AUTHOR) });
     entries.push({ name: `${dir}/viewpoint.bcfv`, data: viewpointXml(p, issue, bounds, dir) });
     if (snap) entries.push({ name: `${dir}/snapshot.png`, data: snap });
   });

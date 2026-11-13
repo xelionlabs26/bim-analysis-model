@@ -104,6 +104,13 @@ export interface RuleResult {
   flagged: number;
   /** False when the rule has nothing to act on in this project; it is then unverified, not passed. */
   applicable: boolean;
+  /**
+   * True when the rule was skipped (generated massing, an assumed crane
+   * position), failed, or left every candidate untested: it could not verify
+   * what is there. Absent or false when it ran, including when it had nothing
+   * to check (no stairs, no tower crane).
+   */
+  notChecked?: boolean;
   note: string;
 }
 

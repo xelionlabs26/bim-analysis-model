@@ -4,7 +4,7 @@ import { buildProject } from '../src/data/project';
 import { DEFAULT_SETTINGS, type CheckReport, type Issue, type RuleId, type RuleResult, type Severity } from '../src/checks/types';
 import { memberWords, partLabel, sentenceStart } from '../src/checks/rules';
 import { issueView } from '../src/checks/view';
-import { carryFilters, familySummary, issuePosition, IssuesUI, stepIndex } from '../src/ui/issues';
+import { carryFilters, familySummary, isTap, issuePosition, IssuesUI, markerGroups, noIssuesText, rulesTable, rulesTally, stepIndex } from '../src/ui/issues';
 import { boxSide, clearBox, issueFrame, pinLabel, type Box } from '../src/ui/place';
 import type { SequenceState } from '../src/engine/timeline';
 import type { Viewer } from '../src/scene/viewer';
@@ -31,6 +31,7 @@ class El {
   set innerHTML(v: string) {
     this.html = v;
     this.children = [];
+    this.found?.clear();
   }
   get childNodes() {
     return this.children;
@@ -59,13 +60,23 @@ class El {
     this.append(...items);
   }
   remove() {}
-  querySelector() {
-    return new El();
+  /** One stand-in per selector, so what the panel writes into a part of the markup can be read back. */
+  private found = new Map<string, El>();
+  querySelector(sel: string) {
+    if (!this.found.has(sel)) this.found.set(sel, new El());
+    return this.found.get(sel)!;
   }
   querySelectorAll() {
     return [];
   }
   scrollIntoView() {}
+  /** The page's focus, as a browser keeps it: one element at a time. */
+  focus() {
+    doc.activeElement = this;
+  }
+  contains(x: unknown): boolean {
+    return x === this || this.children.some((c) => c.contains(x));
+  }
   getBoundingClientRect() {
     return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
   }
@@ -77,8 +88,9 @@ const byId = (id: string) => {
   return els.get(id)!;
 };
 
+const doc = { activeElement: null as El | null, getElementById: byId, querySelectorAll: () => [], createElement: (t: string) => new El(t) };
 beforeAll(() => {
-  vi.stubGlobal('document', { getElementById: byId, querySelectorAll: () => [], createElement: (t: string) => new El(t) });
+  vi.stubGlobal('document', doc);
 });
 afterAll(() => vi.unstubAllGlobals());
 
@@ -176,7 +188,7 @@ describe('filters and the selection', () => {
     chip('issFamilies', 'bad').click(); // the first flagged family is TEMP: the selection stays
     expect(ui.selected?.id).toBe('EDG-01');
     chip('issFamilies', 'on').click(); // off again
-    const reach = byId('issFamilies').children.find((b) => b.children.length === 0 && b.attrs.get('aria-label')?.startsWith('Crane checks'))!;
+    const reach = byId('issFamilies').children.find((b) => b.children.length === 0 && b.attrs.get('aria-label')?.startsWith('Crane:'))!;
     reach.click();
     expect(listed()).toEqual(['RCH-01', 'RCH-02']);
     expect(ui.selected).toBeNull();
@@ -252,22 +264,22 @@ describe('plain wording', () => {
   it('says what "1/2 ✓" meant', () => {
     const s = familySummary('CLASH', [r('CLASH-HARD', 0, 40), r('CLASH-TEMP', 0, 0)]);
     expect(s.mark).toBe('1 of 2 passed');
-    expect(s.sentence).toBe('Clash checks: 1 of 2 passed; 1 had nothing to check');
+    expect(s.sentence).toBe('Clashes: 1 of 2 passed; 1 had nothing to check');
     expect(s.tone).toBe('ok');
   });
 
   it('words flagged, idle and passed families', () => {
-    expect(familySummary('CLASH', [r('CLASH-HARD', 16, 40), r('CLASH-TEMP', 0, 0)])).toMatchObject({ tone: 'bad', mark: '16 issues', sentence: 'Clash checks: 16 issues; 1 had nothing to check' });
+    expect(familySummary('CLASH', [r('CLASH-HARD', 16, 40), r('CLASH-TEMP', 0, 0)])).toMatchObject({ tone: 'bad', mark: '16 issues', sentence: 'Clashes: 16 issues; 1 had nothing to check' });
     expect(familySummary('MODEL', [r('MODEL-DATA', 1, 3)]).mark).toBe('1 issue');
-    expect(familySummary('MODEL', [r('MODEL-DATA', 0, 0)])).toMatchObject({ tone: 'unv', mark: 'nothing to check', sentence: 'Model data checks: nothing to check' });
-    expect(familySummary('ORDER', [r('ORDER-SUPPORT', 0, 9)])).toMatchObject({ mark: 'passed', sentence: 'Order checks: passed' });
+    expect(familySummary('MODEL', [r('MODEL-DATA', 0, 0)])).toMatchObject({ tone: 'unv', mark: 'nothing to check', sentence: 'Model data: nothing to check' });
+    expect(familySummary('ORDER', [r('ORDER-SUPPORT', 0, 9)])).toMatchObject({ mark: 'passed', sentence: 'Order: passed' });
     expect(familySummary('REACH', [r('REACH-CRANE', 0, 9), r('REACH-PATH', 0, 9)]).mark).toBe('all 2 passed');
   });
 
   it('family chips read in words, with no "✓" codes', () => {
     panel();
     const chips = byId('issFamilies').children;
-    expect(chips.map((b) => b.attrs.get('aria-label'))).toContain('Clash checks: 1 issue; 1 had nothing to check. Show only these issues.');
+    expect(chips.map((b) => b.attrs.get('aria-label'))).toContain('Clashes: 1 issue; 1 had nothing to check. Show only these issues.');
     for (const b of chips) expect(b.title).not.toMatch(/\d\/\d|unverified/);
   });
 
@@ -437,5 +449,186 @@ describe('the issue sheet on a narrow screen (phone first aid)', () => {
     expect(byId('issueSheet').hidden).toBe(false);
     compactPanel(true);
     expect(byId('issueSheet').hidden).toBe(true);
+  });
+});
+
+// ── honest status words (R21, R31): "not checked" is not "nothing to check" ──
+
+describe('rules that could not verify', () => {
+  const base = (id: RuleId, checked: number, flagged = 0): RuleResult => ({ id, checked, flagged, applicable: checked > 0, note: '' });
+  const assumedCrane: RuleResult = { id: 'CLASH-TEMP', checked: 0, flagged: 0, applicable: false, notChecked: true, note: 'crane position assumed by the importer (7 m off the west face), clearance not checked' };
+  const generatedClash: RuleResult = { id: 'CLASH-HARD', checked: 0, flagged: 0, applicable: false, notChecked: true, note: 'generated massing: its boxes overlap by construction, so clashes are checked on imported models only' };
+  const failed: RuleResult = { id: 'ACCESS-HEADROOM', checked: 0, flagged: 0, applicable: false, notChecked: true, note: 'check failed: boom' };
+  const noCrane: RuleResult = { id: 'CLASH-TEMP', checked: 0, flagged: 0, applicable: false, note: 'no tower crane: lifted by mobile crane and by hand' };
+
+  it('an assumed-crane CLASH-TEMP reads "not checked", and the family is never green', () => {
+    const s = familySummary('CLASH', [base('CLASH-HARD', 40), assumedCrane]);
+    expect(s).toEqual({ tone: 'unv', mark: '1 of 2 passed', sentence: 'Clashes: 1 of 2 passed; 1 not checked' });
+    expect(s.sentence).not.toMatch(/nothing to check/);
+  });
+
+  it('the generated CLASH-HARD reads "not checked", beside a crane clearance that passed', () => {
+    const s = familySummary('CLASH', [generatedClash, base('CLASH-TEMP', 3)]);
+    expect(s.tone).toBe('unv');
+    expect(s.sentence).toBe('Clashes: 1 of 2 passed; 1 not checked');
+  });
+
+  it('a family where nothing could be verified says so', () => {
+    expect(familySummary('CLASH', [generatedClash, assumedCrane])).toEqual({ tone: 'unv', mark: 'not checked', sentence: 'Clashes: not checked' });
+    expect(familySummary('CLASH', [generatedClash, noCrane])).toEqual({ tone: 'unv', mark: 'not checked', sentence: 'Clashes: not checked; 1 had nothing to check' });
+  });
+
+  it('a failed rule reads "not checked"; a rule with no subject still has "nothing to check"', () => {
+    const s = familySummary('ACCESS', [failed, base('ACCESS-HANDLING', 9)]);
+    expect(s).toMatchObject({ tone: 'unv', sentence: 'Access: 1 of 2 passed; 1 not checked' });
+    expect(familySummary('CLASH', [base('CLASH-HARD', 40), noCrane])).toMatchObject({ tone: 'ok', sentence: 'Clashes: 1 of 2 passed; 1 had nothing to check' });
+    // a rule that flagged something is flagged, whatever else it says
+    expect(familySummary('ACCESS', [{ ...failed, flagged: 2 }]).tone).toBe('bad');
+  });
+
+  it('the verdict, the empty list and the rules table keep the two apart', () => {
+    const rules = [base('ORDER-SUPPORT', 9), base('TEMP-EDGE', 9, 2), noCrane, generatedClash, failed];
+    expect(rulesTally(rules)).toBe('5 rules: 1 passed, 1 flagged, 1 nothing to check, 2 not checked');
+    expect(rulesTally([base('ORDER-SUPPORT', 9)])).toBe('1 rule: 1 passed, 0 flagged');
+    const quiet = [base('ORDER-SUPPORT', 9), noCrane, generatedClash];
+    expect(noIssuesText(quiet)).toBe('No issues: every rule that ran passed. 1 rule was not checked (see Rules and thresholds). 1 had nothing to check.');
+    expect(noIssuesText([base('ORDER-SUPPORT', 9)])).toBe('No issues: every rule that ran passed.');
+    const table = rulesTable({ issues: [], rules: quiet, settings: DEFAULT_SETTINGS, ms: 1 });
+    const row = (id: RuleId) => table.split('<tr').find((r) => r.includes(DEFAULT_TITLES[id]))!;
+    expect(row('CLASH-HARD')).toMatch(/<td>not checked<\/td>/);
+    expect(row('CLASH-HARD')).toMatch(/clashes are checked on imported models only/);
+    expect(row('CLASH-TEMP')).toMatch(/<td>nothing to check<\/td>/);
+  });
+
+  it('the panel puts the words where they are read: verdict, chip and empty list', () => {
+    const r: CheckReport = { issues: [], rules: [base('ORDER-SUPPORT', 9), generatedClash, base('CLASH-TEMP', 3)], settings: DEFAULT_SETTINGS, ms: 1 };
+    panel(r);
+    expect(byId('issVerdict').innerHTML).toMatch(/3 rules: 2 passed, 0 flagged, 1 not checked/);
+    const clash = byId('issFamilies').children.find((b) => b.dataset.family === 'CLASH')!;
+    expect(clash.className).toBe('fam unv');
+    expect(clash.attrs.get('aria-label')).toBe('Clashes: 1 of 2 passed; 1 not checked. Show only these issues.');
+    expect(clash.title).toMatch(/Hard clashes: not checked · generated massing/);
+    expect(byId('issList').children[0].textContent).toMatch(/1 rule was not checked/);
+  });
+
+  it('the verdict leads with a file that ends early', () => {
+    const cut: Issue = { ...issue('MDL-01', 'MODEL-DATA', 'critical', 0), key: 'truncated', title: 'The file ends early: results cover only part of the model' };
+    panel({ issues: [cut], rules: [base('MODEL-DATA', 4, 1)], settings: DEFAULT_SETTINGS, ms: 1 });
+    expect(byId('issVerdict').innerHTML).toMatch(/^<span class="iss-cut">MDL-01 · The file ends early: results cover only part of the model\.<\/span> <b>1<\/b> issue/);
+    expect(listed()).toEqual(['MDL-01']);
+  });
+});
+
+const DEFAULT_TITLES = { 'CLASH-HARD': 'Hard clashes', 'CLASH-TEMP': 'Crane clearance', 'ORDER-SUPPORT': 'Support before load' } as Record<RuleId, string>;
+
+// ── label in name (R23) ─────────────────────────────────────────────────────
+
+describe('family chips', () => {
+  it("each chip's accessible name starts with its visible label", () => {
+    panel();
+    const chips = byId('issFamilies').children;
+    expect(chips.length).toBeGreaterThan(3);
+    for (const b of chips) {
+      const label = b.querySelector('span').textContent;
+      expect(label.length).toBeGreaterThan(2);
+      expect(b.attrs.get('aria-label')!.startsWith(`${label}:`), `${label} / ${b.attrs.get('aria-label')}`).toBe(true);
+      expect(b.attrs.get('aria-label')).toContain(b.querySelector('b').textContent);
+    }
+  });
+});
+
+// ── the keyboard focus through a rebuild (R22, R59, R63) ────────────────────
+
+describe('the focus stays on what was pressed', () => {
+  const rowButton = (id: string) => byId('issList').children.find((li) => li.dataset.id === id)!.children[0];
+
+  it('Enter twice on a row selects the issue, then clears it, with the focus on the row throughout', () => {
+    const { ui } = panel();
+    rowButton('RCH-01').focus();
+    (doc.activeElement as El).click(); // Enter on a button is a click
+    expect(ui.selected?.id).toBe('RCH-01');
+    // the list was rebuilt: the focus is on the new row for the same issue, not on <body>
+    expect(doc.activeElement).toBe(rowButton('RCH-01'));
+    expect((doc.activeElement as El).dataset.row).toBe('RCH-01');
+    expect((doc.activeElement as El).attrs.get('aria-expanded')).toBe('true');
+    (doc.activeElement as El).click();
+    expect(ui.selected).toBeNull();
+    expect(doc.activeElement).toBe(rowButton('RCH-01'));
+    expect((doc.activeElement as El).attrs.get('aria-expanded')).toBe('false');
+  });
+
+  it('a family or severity chip keeps the focus when toggled', () => {
+    panel();
+    const fam = byId('issFamilies').children.find((b) => b.dataset.family === 'REACH')!;
+    fam.focus();
+    fam.click();
+    expect(byId('issFamilies').children).toContain(fam); // updated in place, not rebuilt
+    expect(doc.activeElement).toBe(fam);
+    expect(fam.attrs.get('aria-pressed')).toBe('true');
+    fam.click();
+    expect(fam.attrs.get('aria-pressed')).toBe('false');
+    const sev = byId('issSev').children.find((b) => b.dataset.sev === 'major')!;
+    sev.focus();
+    sev.click();
+    expect(byId('issSev').children).toContain(sev);
+    expect(doc.activeElement).toBe(sev);
+    expect(sev.attrs.get('aria-pressed')).toBe('false');
+    expect(sev.className).not.toMatch(/\bon\b/);
+  });
+
+  it("a row that did not have the focus does not take it (stepping with ']' from the model)", () => {
+    const { ui } = panel();
+    const elsewhere = new El();
+    elsewhere.focus();
+    ui.step(1);
+    expect(doc.activeElement).toBe(elsewhere);
+  });
+
+  it("closing the issue sheet hands the focus to the issue's row", () => {
+    const ui = new IssuesUI(project, viewer, (s) => s, { select: () => {}, exportBcf: () => {}, exportCsv: () => {}, compact: () => true });
+    ui.setReport(report(ISSUES));
+    ui.selectById('EDG-01');
+    byId('sheetClose').focus();
+    byId('sheetClose').click();
+    expect(ui.selected).toBeNull();
+    expect(doc.activeElement).toBe(rowButton('EDG-01'));
+    expect(byId('issueSheet').hidden).toBe(true);
+  });
+});
+
+// ── scrubber marks (R35, O12) ───────────────────────────────────────────────
+
+describe('scrubber marks', () => {
+  it('one mark per step, for its most severe issue, with the critical marks drawn last', () => {
+    const groups = markerGroups([
+      issue('TRN-07', 'ACCESS-TRANSPORT', 'major', 4),
+      issue('RCH-01', 'REACH-CRANE', 'critical', 4),
+      issue('HND-01', 'ACCESS-HANDLING', 'minor', 4),
+      issue('EDG-01', 'TEMP-EDGE', 'critical', 1),
+      issue('PTH-03', 'REACH-PATH', 'major', 2),
+    ]);
+    expect(groups.map((g) => g.map((i) => i.id))).toEqual([['PTH-03'], ['RCH-01', 'TRN-07'], ['EDG-01']]);
+  });
+
+  it('a tap selects; a drag, or a long press, is left to the scrubber', () => {
+    const at = { x: 100, y: 10, t: 0 };
+    expect(isTap(at, { x: 103, y: 12, t: 120 }, 'touch')).toBe(true);
+    expect(isTap(at, { x: 110, y: 10, t: 120 }, 'touch')).toBe(false);
+    expect(isTap(at, { x: 100, y: 10, t: 450 }, 'touch')).toBe(false);
+    expect(isTap(at, { x: 100, y: 10, t: 450 }, 'mouse')).toBe(true);
+  });
+});
+
+// ── the CHECKS row on a view pass (R44) ─────────────────────────────────────
+
+describe('the CHECKS row on a view pass', () => {
+  it("reads '—' while a material or section pass shows the whole build, as STEP does", () => {
+    const { ui } = panel();
+    const row = byId('opChecks');
+    ui.update({ stepIndex: 1, presentation: { kind: 'material' } } as unknown as SequenceState);
+    expect(row.textContent).toBe('—');
+    expect(row.dataset.level).toBeUndefined();
+    ui.update({ stepIndex: 1, presentation: { kind: null } } as unknown as SequenceState);
+    expect(row.dataset.level).toBe('critical');
   });
 });

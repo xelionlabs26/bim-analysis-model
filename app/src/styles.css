@@ -19,8 +19,8 @@
   --on-brand: #ffffff;
   --active-fill: #f0bb8b;
   --ghost: #5f9fd1;          /* non-photo blue: not yet built */
-  --green: #46743f;
-  --warn: #905f18;
+  --green: #44713d;
+  --warn: #8c5c17;
   --bad: #b3261e;
   --issue-b: #2f6db3;        /* what an issue's elements conflict with */
   --part: #fbfbf8;
@@ -116,12 +116,24 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 /* carbon: the indicative total, its intensity and the caveat, set off from the project facts by a rule */
 .status-carbon { border-left: 1px solid var(--line); padding-left: 12px; }
 .status-carbon .head { font-size: 11px; letter-spacing: 0.05em; }
+/* a file that ends early: "file ends early: / partial model" on two lines (main.ts breaks it), as narrow as the head */
+.status-carbon .sub.cut { white-space: pre; line-height: 1.15; color: var(--bad); }
+.status-carbon:has(.sub.cut) .main { line-height: 1.1; }
 .status-carbon .main small { font-size: 11px; letter-spacing: 0.02em; color: var(--ink-2); margin-left: 3px; }
 /* the card makes room for carbon: the decorative icon, then the stage count (the stage strip and the
    title block's sheet carry it too), then the parts count go as it narrows (widths of the card's content box) */
 @container status (max-width: 600px) { .status-icon { display: none; } }
 @container status (max-width: 490px) { .status-stage { display: none; } }
 @container status (max-width: 430px) { .status-pcs { display: none; } .status-phase { font-size: 18px; } }
+/* a 380–420 px panel (1101–1280 px windows): the drawing number goes (the title block and the crumb carry it; its line
+   stays, so the figures still line up) and the gaps close up, so the phase and the step read whole */
+@media (min-width: 1101px) {
+  @container status (max-width: 400px) {
+    .status-facts { margin-left: -4px; }
+    .status-main { min-width: 96px; }
+    #statusFacts .head { visibility: hidden; width: 0; overflow: hidden; }
+  }
+}
 
 /* ── Rail ─────────────────────────────────────────────────────────────── */
 /* thin, not hidden: a list cut off at the bottom has to show that it scrolls */
@@ -232,7 +244,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .tkey.on small { color: rgba(255, 255, 255, 0.9); }
 
 /* under the toolbar, however many rows it wraps to: --toolbar-bottom is measured in main.ts */
-.drawer { position: absolute; left: 14px; top: calc(var(--toolbar-bottom, 50px) + 12px); z-index: 6; width: 290px; padding: 14px 16px; border-radius: 16px; }
+/* never taller than the room above the scrubber and the transport (12 px under the toolbar, 160 px for the play controls): it scrolls instead */
+.drawer { position: absolute; left: 14px; top: calc(var(--toolbar-bottom, 50px) + 12px); z-index: 6; width: 290px; padding: 14px 16px; border-radius: 16px; max-height: calc(100% - var(--toolbar-bottom, 50px) - 172px); overflow: auto; overscroll-behavior: contain; }
 .drawer h5 { margin: 0 0 10px; font: 800 15px var(--display); letter-spacing: 0.08em; }
 .drawer label { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
 .drawer input[type='range'] { accent-color: var(--brand); }
@@ -255,7 +268,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .panel-head { display: flex; align-items: center; gap: 10px; }
 .panel-head h3 { margin: 0; font: 900 21px var(--display); letter-spacing: 0.05em; flex: 1; white-space: nowrap; }
 .seg { display: flex; padding: 3px; border-radius: 12px; background: var(--well); border: 1px solid var(--line); }
-.seg button { border: 0; background: transparent; padding: 6px 14px; border-radius: 9px; font-size: 13.5px; color: var(--muted); }
+.seg button { border: 0; background: transparent; padding: 6px 12px; border-radius: 9px; font-size: 13.5px; color: var(--muted); white-space: nowrap; }
 .seg button.on { background: var(--card); color: var(--brand); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06); }
 .sq { width: 38px; height: 38px; border-radius: 11px; border: 1px solid var(--line); background: var(--card); display: grid; place-items: center; flex: none; }
 .sq svg { width: 17px; height: 17px; }
@@ -385,8 +398,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .tagline { letter-spacing: 0.2em; }
   .app > * { min-width: 0; }
   .status { flex-wrap: wrap; height: auto; row-gap: 6px; }
-  .status-facts { flex-basis: 100%; display: flex; gap: 12px; align-items: baseline; }
-  .status-carbon { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 4px; }
+  /* the facts wrap onto a second line on a narrow phone rather than run out of the card; each fact stays whole */
+  .status-facts { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 2px 12px; align-items: baseline; white-space: normal; }
+  .status-facts > * { white-space: nowrap; }
+  .status-carbon { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 4px; flex-wrap: wrap; row-gap: 2px; }
   .toolbar { right: 14px; flex-wrap: wrap; }
   .caption { max-width: calc(100% - 28px); padding: 8px 12px; }
   .caption h2 { font-size: 17px; }
@@ -409,6 +424,14 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .transport.more-start.more-end { mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
   .playbar .tkey { height: 44px; }
   .playbar .tbtn { width: 44px; height: 44px; }
+  /* the transport scrolls sideways and has no padding to spare: the focus ring goes inside the key, where it is not clipped */
+  .playbar .tkey:focus-visible, .playbar .tbtn:focus-visible { outline-offset: -3px; }
+  /* the model sits in the part of the screen above the pinned play bar (selectRail scrolls it there): a drawer stops above the bar */
+  .drawer { max-height: min(calc(100% - var(--toolbar-bottom, 50px) - 24px), calc(100vh - var(--playbar-h, 120px) - var(--toolbar-bottom, 50px) - 32px)); }
+  /* the rail scrolls sideways on a phone, where the scrollbar is hidden: a fade says which way there is more (main.ts) */
+  .rail-items.more-end { mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent); }
+  .rail-items.more-start { mask-image: linear-gradient(90deg, transparent, #000 36px); }
+  .rail-items.more-start.more-end { mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
   /* a bigger track for a finger; the line, fill, knob and markers stay centred on it */
   .scrub-track { height: 30px; }
   .scrub-track::before { top: 14px; }
@@ -458,8 +481,9 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 @container panel (max-width: 470px) {
   .panel-head { flex-wrap: wrap; row-gap: 8px; }
   .panel-head h3 { flex-basis: 100%; }
-  /* tighter tabs, so the tabs, save and play share one row in a 380 px panel */
-  .seg button { padding: 6px 10px; }
+  /* tighter tabs and buttons, so the tabs, save and play share one row in a 380 px panel */
+  .seg button { padding: 6px 8px; font-size: 13px; }
+  .panel-head .sq { width: 34px; height: 34px; }
 }
 
 .toast {
@@ -518,7 +542,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 
 /* ── Import ───────────────────────────────────────────────────────────── */
-.drawer.wide { width: min(430px, calc(100% - 28px)); max-height: calc(100% - var(--toolbar-bottom, 50px) - 150px); overflow: auto; }
+.drawer.wide { width: min(430px, calc(100% - 28px)); }
 .drawer .opts button.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
 .drawer .report { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 10px 0 6px; font-size: 11px; }
 .drawer .report dt { color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px; }
@@ -555,7 +579,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 @media (prefers-reduced-motion: reduce) { .loading .bar i { transition: none; } }
 
 /* ── Issues (milestone 7) ─────────────────────────────────────────────── */
-.tab-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 3px; border-radius: 9px; font: 600 11px/16px var(--mono); text-align: center; background: var(--well); color: var(--muted); }
+.tab-badge { display: inline-block; white-space: nowrap; min-width: 18px; padding: 0 5px; margin-left: 3px; border-radius: 9px; font: 600 11px/16px var(--mono); text-align: center; background: var(--well); color: var(--muted); }
 .tab-badge.sev-critical { background: var(--bad); color: #fff; }
 .tab-badge.sev-major { background: var(--warn); color: #fff; }
 .tab-badge.sev-minor, .tab-badge.sev-note { background: var(--line); color: var(--ink-2); }
@@ -564,6 +588,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .iss-verdict { flex: 1; margin: 0; font-size: 12.5px; color: var(--ink-2); min-width: 0; }
 .iss-verdict b { color: var(--ink); }
 .iss-verdict .muted { white-space: nowrap; }
+.iss-verdict .iss-cut { display: block; margin-bottom: 3px; color: var(--bad); font-weight: 600; }
 .iss-exports { display: flex; gap: 6px; flex: none; }
 .xbtn { border: 1px solid var(--brand-line); background: var(--card); color: var(--brand); border-radius: 9px; padding: 4px 10px; font: 600 11.5px var(--mono); letter-spacing: 0.06em; }
 .xbtn:hover:not(:disabled) { background: var(--brand-wash); }
@@ -585,6 +610,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .sev-minor i, .iss.sev-minor .dot { background: #d6b25e; }
 .sev-note i, .iss.sev-note .dot { background: var(--muted); }
 /* previous / next issue: stays at the top of the pane while the list scrolls under it */
+/* the selected row scrolls into view below the sticky ‹ › bar (issues.ts sets the measured height) */
+#paneIssues { scroll-padding-top: 44px; }
 .iss-nav { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 4px 0 5px; background: var(--card); border-bottom: 1px solid var(--line); }
 .iss-step { width: 30px; height: 26px; border: 1px solid var(--brand-line); background: var(--card); color: var(--brand); border-radius: 8px; font: 600 17px/1 var(--sans); display: inline-grid; place-items: center; padding: 0 0 2px; }
 .iss-step:hover:not(:disabled) { background: var(--brand-wash); }
@@ -617,7 +644,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .iss-empty { padding: 14px 4px; color: var(--muted); }
 /* an issue on the scrubber: a small dot on the track line, under the playhead */
 .iss-mark { position: absolute; top: 4px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; border: 1.5px solid var(--card); cursor: pointer; z-index: 2; }
-.iss-mark.sev-critical { background: var(--bad); }
+/* a bigger target than the dot, for a finger: a tap selects, a drag from it scrubs */
+.iss-mark::before { content: ''; position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); border-radius: 50%; }
+@media (pointer: coarse) { .iss-mark::before { width: 28px; height: 28px; } }
+.iss-mark.sev-critical { background: var(--bad); z-index: 3; }
 .iss-mark.sev-major { background: var(--warn); }
 .scard .chip-i { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); background: var(--bad); color: #fff; font: 600 11px var(--mono); border-radius: 7px; padding: 1px 6px; }
 .m-row .iss-n { display: inline-block; min-width: 15px; margin-right: 5px; border-radius: 6px; font: 600 11px/15px var(--mono); text-align: center; color: #fff; font-style: normal; }
@@ -651,7 +681,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .drawer table.rules tr.unverified td:last-child { color: var(--muted); }
 .drawer .set { display: grid; grid-template-columns: 1fr 86px; gap: 4px 10px; align-items: center; font-size: 12px; margin: 6px 0 10px; }
 .drawer .set input { width: 86px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; font: 12px var(--mono); background: var(--card); }
-.drawer.checks-drawer { width: 380px; max-height: calc(100% - var(--toolbar-bottom, 50px) - 110px); overflow: auto; }
+.drawer.checks-drawer { width: 380px; }
 .iss-rules { margin: 0 0 6px; }
 .iss-rules summary { cursor: pointer; font-size: 11px; letter-spacing: 0.02em; color: var(--muted); padding: 2px 0; }
 .iss-rules[open] summary { color: var(--ink-2); }
@@ -705,6 +735,13 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .lift-banner .lb-close { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-2); border-radius: 8px; }
 .lift-banner .lb-close:hover { background: var(--brand-tint); }
 .lift-banner .lb-close svg { width: 14px; height: 14px; }
+/* a kiosk loop plays through the pick: the banner is a passing note, not a stop */
+.lift-banner.note { border-left-color: var(--warn); }
+.lift-banner.note .lb-text b { color: var(--warn); }
+/* one column: above the play bar pinned to the bottom of the screen (and the issue sheet), never below the fold */
+@media (max-width: 1100px) {
+  .lift-banner { position: fixed; bottom: calc(var(--playbar-h, 120px) + var(--sheet-h, 0px) + 8px); z-index: 24; max-width: min(600px, calc(100% - 16px)); }
+}
 
 /* ── Issue sheet (narrow screens) ─────────────────────────────────────── */
 /* the selected issue over the bottom of the screen, above the play bar; hidden on a wide screen, where the list shows it */
@@ -729,10 +766,16 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .sheet-body { overflow: auto; min-height: 0; font-size: 12.5px; padding: 2px 4px 0 0; overscroll-behavior: contain; }
 .sheet-body .iss-body { padding: 0; }
 .issue-sheet.folded .sheet-body { display: none; }
+/* one column, with the Issues list on screen: the selected row opens in place and the sheet gives way, so it never covers the list (main.ts listInView) */
+@media (max-width: 1100px) {
+  .app.list-in-view .issue-sheet:not([hidden]) { display: none; }
+  .app.list-in-view .iss.sel .iss-body { display: block; }
+}
 
 /* narrow screens, for rules that come after the narrow block above: the toast above the play bar, markers on the taller track */
 @media (max-width: 1100px) {
-  .toast { right: 12px; left: 12px; bottom: calc(var(--playbar-h, 120px) + 10px); max-width: 680px; margin-inline: auto; }
+  /* above the issue sheet too, so a message that stays never covers the sheet's close and step buttons */
+  .toast { right: 12px; left: 12px; bottom: calc(var(--playbar-h, 120px) + var(--sheet-h, 0px) + 10px); max-width: 680px; margin-inline: auto; }
   .iss-mark { top: 9px; width: 12px; height: 12px; margin-left: -6px; }
 }
 
@@ -830,7 +873,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .hero-play .hp-ico svg { width: 22px; height: 22px; }
   .hero-play b { font-size: 22px; white-space: nowrap; }
   .hero-play small { white-space: nowrap; }
-  .intro { top: 8px; bottom: auto; width: calc(100% - 16px); padding: 8px 10px 10px 12px; }
+  /* at the top of the page, not of the screen: it scrolls away with the header rather than sitting over the toolbar or a framed issue */
+  .intro { position: absolute; top: 8px; bottom: auto; width: calc(100% - 16px); padding: 8px 10px 10px 12px; }
   /* one card at a time, swiped sideways */
   .intro-cards { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(230px, 82%); overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
   .intro-card { scroll-snap-align: start; }

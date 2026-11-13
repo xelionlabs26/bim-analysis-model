@@ -61,6 +61,10 @@ export interface ShortcutRow {
   keys: string[];
   text: string;
   action?: ActionId;
+  /** A key with no action in KEY_ACTIONS that only the full view answers (the rail keys, the performance overlay). */
+  expert?: boolean;
+  /** What the row says in the presentation view, where it does less. */
+  clientText?: string;
 }
 
 export interface ShortcutGroup {
@@ -92,7 +96,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: ['K'], text: 'Show the crane', action: 'crane' },
       { keys: ['L'], text: 'Crane plan: the reach from above', action: 'cranePlan' },
       { keys: ['S'], text: 'Cut the model in section', action: 'section' },
-      { keys: ['A'], text: 'Turn the model slowly', action: 'rotate' },
+      { keys: ['A'], text: 'Turn the model slowly while it plays', action: 'rotate' },
       { keys: ['X'], text: 'Keep the model framed', action: 'frame' },
       { keys: ['V'], text: 'Next view', action: 'view' },
       { keys: ['P'], text: 'Presentation view on or off', action: 'present' },
@@ -102,10 +106,10 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     title: 'Issues and panels',
     rows: [
       { keys: [']', '['], text: 'Next or previous issue', action: 'nextIssue' },
-      { keys: ['Esc'], text: 'Close a drawer, dismiss a banner or let go of an issue' },
+      { keys: ['Esc'], text: 'Close a drawer, dismiss a banner or let go of an issue', clientText: 'Dismiss a banner or let go of an issue' },
       { keys: ['I'], text: 'Import an IFC file', action: 'import' },
-      { keys: ['1', '–', '7'], text: `Open ${RAIL_KEY_NAMES.join(', ')}` },
-      { keys: ['Shift', 'D'], text: 'Performance overlay' },
+      { keys: ['1', '–', '7'], text: `Open ${RAIL_KEY_NAMES.join(', ')}`, expert: true },
+      { keys: ['Shift', 'D'], text: 'Performance overlay', expert: true },
       { keys: ['?'], text: 'This list', action: 'help' },
     ],
   },
@@ -124,6 +128,33 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     rows: [{ keys: ['←', '→'], text: 'Move between Sequence, Members and Issues' }],
   },
 ];
+
+/**
+ * The page's own keys the presentation view answers: playback, the toggles it
+ * shows in plain words (colours, unbuilt parts, the crane, turning), the
+ * issues, P and ?. The rest (the drawers, the section, the crane plan, the
+ * framing, the views, the speed) belong to controls that view puts away, so
+ * their keys do nothing there.
+ */
+export const CLIENT_ACTIONS: ReadonlySet<ActionId> = new Set<ActionId>([
+  'play', 'rebuild', 'rotate', 'colour', 'ghost', 'crane', 'nextIssue', 'prevIssue', 'stepBack', 'stepOn', 'start', 'present', 'help',
+]);
+
+/** Whether the view on show answers an action's key. */
+export const actionInView = (id: ActionId, client: boolean) => !client || CLIENT_ACTIONS.has(id);
+
+/** The sheet for the view on show: the presentation view lists only the keys it answers, in its own words. */
+export function shortcutGroupsFor(client: boolean, groups: ShortcutGroup[] = SHORTCUT_GROUPS): ShortcutGroup[] {
+  if (!client) return groups;
+  return groups
+    .map((g) => ({
+      ...g,
+      rows: g.rows
+        .filter((r) => !r.expert && (!r.action || CLIENT_ACTIONS.has(r.action)))
+        .map((r) => (r.clientText ? { ...r, text: r.clientText } : r)),
+    }))
+    .filter((g) => g.rows.length);
+}
 
 /** The keys of a row as one string, for a screen reader or a test ("Shift D", "] [", "1 – 7"). */
 export const rowKeys = (r: ShortcutRow) => r.keys.join(' ');

@@ -100,11 +100,11 @@ export function markIntroSeen(store: Pick<PrefsStore, 'setItem'> | null): boolea
   }
 }
 
-/** The first-run cards' words for the model on show. */
+/** The first-run cards' words for the model on show: short enough for two lines each over the stage strip. */
 export function introCards(projectName: string): { title: string; body: string }[] {
   return [
-    { title: 'What this is', body: `${projectName} in the order it goes up: every part, crane lift and buildability check, step by step.` },
-    { title: 'Play the build', body: 'Press Play or Space to watch it from the start. Drag the timeline to any step. Press ? for every shortcut.' },
-    { title: 'Import your own IFC', body: 'Open a model from Revit, ArchiCAD or Tekla. It is read in your browser and never uploaded.' },
+    { title: 'What this is', body: `${projectName} in the order it goes up: every part, crane lift and buildability check.` },
+    { title: 'Play the build', body: 'Press Play or Space to watch it from the first step. Press ? for every shortcut.' },
+    { title: 'Import your own IFC', body: 'From Revit, ArchiCAD or Tekla. Read in your browser, never uploaded.' },
   ];
 }

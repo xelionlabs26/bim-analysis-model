@@ -17,7 +17,7 @@ npm run build            # typecheck + production bundle in dist/
 npm run build:artifact   # one-page build for the claude.ai host → dist-artifact/arbor-build.html
 ```
 
-URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`, plus `?sample=duplex` to open the IFC sample (the Arbor House demo is then not built unless the sample fails to load). The Arbor House sequence runs about 29 s: assembly to 18.1 s, material pass to 22.1 s, then the section.
+URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`, plus `?sample=duplex` to open the IFC sample (the Arbor House demo is then not built unless the sample fails to load). The page opens paused on the finished, coloured model with a large **Play the build** button; `?t=` opens at that moment instead (playing unless `?paused=1`), and `?play=1` plays from the start at once. `?mode=client` opens the presentation view and `?mode=expert` the full view, without changing the saved choice. `?intro=0` leaves out the first-run cards. The Arbor House sequence runs about 29 s: assembly to 18.1 s, material pass to 22.1 s, then the section.
 
 ## The building
 
@@ -188,7 +188,9 @@ The crane's reach is drawn on the ground, as on a site logistics plan, while the
 
 ## Controls
 `Space` play/pause · `←/→` step · `Home` start · `R` rebuild · `A` auto-rotate · `C` material colours ·
-`X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `L` crane plan · `S` section · `1–7` rail · `I` import IFC · `[` / `]` previous / next issue · `Shift+D` performance overlay · `Esc` dismiss the over-chart banner, then clear the issue, then close the drawer.
+`X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `L` crane plan · `S` section · `1–7` rail · `I` import IFC · `[` / `]` previous / next issue · `Shift+D` performance overlay · `P` presentation view · `?` shortcut sheet · `Esc` dismiss the over-chart banner, then clear the issue, then the first-run cards, then close the drawer.
+The shortcut sheet (`?`, or the **?** button in the header) is written from the same table the key handler reads (`src/ui/shortcuts.ts`), so it lists every key and only those.
+**Present** in the header (or `P`) switches to the presentation view for a client: the rail and its telemetry, the build log, the exports, the thresholds and the drawing controls go, the model takes the rail's column, and the toggles that stay say what they do (**Show unbuilt**, **Material colours**, **Show crane**, **Mark issues**). **Exit presentation**, in the same place, or `P` again brings the full view back; the choice is kept like the other view toggles. On a first visit three short cards say what the page is, how to play it and how to import your own IFC; **Got it** or `Esc` puts them away for good in this browser.
 `Space` plays only from the page, the model or the scrubber. On a focused button, checkbox, tab or disclosure, `Space` and `Enter` press that control, so the Layers checkboxes and the toolbar work from the keyboard. The panel tabs move with the arrow keys. The scrubber is a slider: arrows step, `Page Up` / `Page Down` jump a stage, `Home` / `End` go to either end. A drawer opened from the rail with the keyboard takes the focus, and `Esc` hands it back.
 On a narrow screen (up to 1100 px wide) the play bar stays pinned to the bottom of the screen while the page scrolls, and with Orbit Cam off a swipe over the model scrolls the page. Below about 1420 px wide the title block folds to one line under the toolbar. Messages show at the foot of the panel, or above the play bar on a narrow screen; an import error stays until it is dismissed, and the Import drawer keeps it too.
 The view toggles and the check thresholds are kept in this browser between visits; Settings (`6`) has **Reset to defaults**. Paused with a still camera, the viewer stops drawing until something changes.

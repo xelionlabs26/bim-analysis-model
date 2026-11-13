@@ -209,12 +209,9 @@ function renderIntro() {
   el.hidden = !introOpen || !project;
   if (el.hidden) return;
   const [what, play, own] = introCards(project.name);
-  const card = (c: { title: string; body: string }, action = '') => `<article class="intro-card"><h3>${esc(c.title)}</h3><p>${esc(c.body)}</p>${action}</article>`;
-  $('introCards').innerHTML =
-    card(what) +
-    card(play, '<button class="intro-act primary" id="introPlay">Play the build</button>') +
-    card(own, '<button class="intro-act" id="introOpen">Open IFC file…</button>');
-  $('introPlay').addEventListener('click', playFromStart);
+  const card = (c: { title: string; body: string }, action = '') => `<article class="intro-card"><h3>${esc(c.title)}</h3>${action}<p>${esc(c.body)}</p></article>`;
+  // the large Play button is the second card's action, so the cards only add the way to bring a model in
+  $('introCards').innerHTML = card(what) + card(play) + card(own, '<button class="intro-act" id="introOpen">Open IFC file…</button>');
   $('introOpen').addEventListener('click', () => {
     dismissIntro();
     $<HTMLInputElement>('fileIfc').click();

@@ -44,7 +44,7 @@ export function renderHeaderDrawing(el: HTMLElement, p: Project, sheet: string) 
       <path d="M35 20l7 24-7 4-7-4Z" fill="currentColor"/>
       <path d="M35 68l7-24-7 4-7-4Z" style="fill: var(--card)"/>
     </svg>
-    <svg viewBox="0 0 110 80" width="110" aria-label="Drawing register" fill="none" stroke="currentColor" stroke-width="1.1">
+    <svg class="hd-reg" viewBox="0 0 110 80" width="110" aria-label="Drawing register" fill="none" stroke="currentColor" stroke-width="1.1">
       <rect x="2" y="12" width="104" height="60"/>
       <path d="M2 32h104M2 52h104M44 12v60"/>
       <g font-family="Geist Mono, monospace" font-size="8.5" stroke="none" style="fill: var(--muted)">

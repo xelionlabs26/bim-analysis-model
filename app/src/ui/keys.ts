@@ -105,3 +105,11 @@ export function modifierOwnsKey(e: ModifierState): boolean {
 
 /** A single printed character that is neither a letter, a digit nor white space: [ ] ? and the like. */
 const typedSymbol = (key: string) => [...key].length === 1 && !/[\p{L}\p{N}\s]/u.test(key);
+
+/**
+ * Whether a click came from a pointer (a mouse click or a tap) rather than
+ * from the keyboard (Space or Enter on a focused button, whose click reports
+ * no clicks: `detail` 0). A button that changes the whole view lets go of the
+ * focus after a pointer press, so the next Space reaches the page's shortcuts.
+ */
+export const pointerPress = (e: { detail: number }) => e.detail > 0;

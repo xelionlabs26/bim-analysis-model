@@ -8,23 +8,27 @@
  */
 import { MOBILE_CRANE, liftingLabel, type Project, type Vec3 } from '../data/types';
 import type { CheckReport } from '../checks/types';
+import { ruleStatus } from '../checks/run';
 import { toIfc } from '../checks/view';
 
 const round3 = (v: Vec3) => v.map((x) => +x.toFixed(3));
 
 /** Why no check on a file that ends early can be said to have passed. */
 const CUT_SHORT = 'file ends early';
+/** Why a rule that ran but measured nothing it could trust is not a pass. */
+const NOT_CHECKED = 'not checked';
 
 export function sequenceJson(project: Project, report: CheckReport | null): string {
   const off = project.meta.ifcOffset ?? [0, 0, 0];
   const at = (v: Vec3) => round3(toIfc(v, off));
   // a file cut off part-way: what was read is written, but nothing about the rest can pass
   const cut = !!(project.report as { truncated?: unknown } | undefined)?.truncated;
+  // the same status the Issues pane shows: a rule that ran but could not verify what is there never passes
   const verdict = (r: CheckReport['rules'][number]) => {
-    const status = !r.applicable || !r.checked ? 'unverified' : r.flagged ? 'flagged' : 'passed';
-    return cut && status === 'passed'
-      ? { rule: r.id, checked: r.checked, flagged: r.flagged, status: 'unverified', reason: CUT_SHORT, note: r.note }
-      : { rule: r.id, checked: r.checked, flagged: r.flagged, status, note: r.note };
+    const status = ruleStatus(r);
+    if (cut && status === 'passed') return { rule: r.id, checked: r.checked, flagged: r.flagged, status: 'unverified', reason: CUT_SHORT, note: r.note };
+    if (status === 'unverified' && r.notChecked) return { rule: r.id, checked: r.checked, flagged: r.flagged, status, reason: NOT_CHECKED, note: r.note };
+    return { rule: r.id, checked: r.checked, flagged: r.flagged, status, note: r.note };
   };
   return JSON.stringify(
     {

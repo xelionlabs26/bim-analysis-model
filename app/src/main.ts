@@ -32,12 +32,12 @@ import { cranePlanPose, firstOverPick, OverPickWatch, riggedLift, type OverPick,
 import { issueView, modelBounds, type ModelBounds } from './checks/view';
 import { chromeBoxes, IssuesUI, rulesTable } from './ui/issues';
 import { keepFocus } from './ui/focus';
-import { centreSpot, issueFrame, restFrame } from './ui/place';
+import { centreSpot, issueFrame, restFrame, restFrameClear } from './ui/place';
 import { bcfZip } from './export/bcf';
 import { issuesCsv } from './export/csv';
 import { sequenceJson } from './export/sequence';
 import type { CameraPose } from './engine/presentation';
-import { modifierOwnsKey, nextTab, routeKey } from './ui/keys';
+import { modifierOwnsKey, nextTab, pointerPress, routeKey } from './ui/keys';
 import { applyBrand, brandName } from './ui/brand';
 import { moreSides, NARROW_QUERY, orbitTouchAction, revealScroll, ScrubDrag, toastLife, toastReplaces, type ToastKind } from './ui/layout';
 import { actionInView, keyAction, shortcutGroupsFor, shortcutSheetHtml, type ActionId } from './ui/shortcuts';
@@ -186,6 +186,8 @@ let focusBox: Pick<Issue, 'box'> | null = null;
 let focusFrame: { aim: { x: number; y: number }; hideCaption: boolean; w: number; h: number } | null = null;
 /** Cards and controls over the viewport that an issue is framed clear of. */
 const FRAME_CHROME = '.toolbar, #titleBlock, #scrubber, #transport, #drawer, #loading, #liftBanner, #issueSheet, #intro';
+/** The cards a piece is never framed under while the over-chart banner is up, however little room they leave. */
+const BANNER_HARD = '#liftBanner, #scrubber, #transport, #issueSheet';
 /** Camera pose of the crane plan; released when the view is dragged (the emphasis stays until the plan is turned off). */
 let planPose: CameraPose | null = null;
 /** Where the plan's target sits on screen, whether the caption steps aside for it, and the viewport size it was worked out for. */
@@ -324,6 +326,20 @@ function planBounds(p: Project) {
     z0 = Math.min(z0, part.pos[2] - part.size[2] / 2); z1 = Math.max(z1, part.pos[2] + part.size[2] / 2);
   }
   return { x0, x1, z0, z1 };
+}
+
+/** The model's shape for the default framing: its width in plan, its height, and the width of its top third (a tower's crown). */
+const shapes = new WeakMap<Project, { w: number; h: number; top: number }>();
+function modelShape(p: Project) {
+  let s = shapes.get(p);
+  if (!s) {
+    const b = planBounds(p);
+    const hi = p.parts.filter((part) => part.pos[1] + part.size[1] / 2 >= (p.height * 2) / 3);
+    const t = hi.length ? planBounds({ ...p, parts: hi }) : b;
+    s = { w: Math.max(b.x1 - b.x0, b.z1 - b.z0), h: p.height, top: Math.max(t.x1 - t.x0, t.z1 - t.z0) };
+    shapes.set(p, s);
+  }
+  return s;
 }
 
 let firstFrame = true;
@@ -1047,7 +1063,12 @@ bind('btnRebuild', actions.rebuild);
 bind('btnRotate', actions.rotate);
 bind('btnColour', actions.colour);
 bind('btnMaterials', actions.colour);
-bind('btnPresent', () => setClient(!view.client));
+$('btnPresent').addEventListener('click', (e) => {
+  setClient(!view.client);
+  // a click or tap leaves the focus on the page, so the Space the first-run card suggests next plays the build
+  // rather than pressing the button again; a key press keeps it on the button (ui/keys.ts pointerPress)
+  if (pointerPress(e)) $('btnPresent').blur();
+});
 bind('btnHelp', openHelp);
 bind('helpClose', closeHelp);
 bind('heroPlay', playFromStart);
@@ -1666,7 +1687,9 @@ function frameIssue(i: Pick<Issue, 'box'>) {
   focusBox = i;
   const { w, h } = viewer.viewportSize;
   const host = $('viewport');
-  const fr = issueFrame({ x0: 0, y0: 0, x1: w, y1: h }, chromeBoxes(host, FRAME_CHROME, 8, document), captionBox());
+  // the over-chart banner and the controls under it hide what is behind them: the piece is never framed there
+  const hard = $('liftBanner').hidden ? [] : chromeBoxes(host, BANNER_HARD, 8, document);
+  const fr = issueFrame({ x0: 0, y0: 0, x1: w, y1: h }, chromeBoxes(host, FRAME_CHROME, 8, document), captionBox(), { hard });
   const bw = fr.box.x1 - fr.box.x0, bh = fr.box.y1 - fr.box.y0;
   // issueView reads only the box, so an over-chart piece is framed as an issue is
   const v = issueView(i as Issue, w / Math.max(1, h), bounds(), { w: bw / Math.max(1, w), h: bh / Math.max(1, h) });
@@ -1754,9 +1777,11 @@ function syncRestBox() {
   if (!mounted) return;
   const { w, h } = viewer.viewportSize;
   if (w < 1 || h < 1) return;
-  const b = planBounds(project);
-  const model = { w: Math.max(b.x1 - b.x0, b.z1 - b.z0), h: project.height };
-  const box = restFrame({ x0: 0, y0: 0, x1: w, y1: h }, chromeBoxes($('viewport'), FRAME_CHROME, 8, document), captionBox(), model);
+  const model = modelShape(project);
+  const bounds = { x0: 0, y0: 0, x1: w, y1: h }, chrome = chromeBoxes($('viewport'), FRAME_CHROME, 8, document), caption = captionBox();
+  // a tall model whose top the usual framing would draw under the caption takes the clear column beside it, smaller (wide screens:
+  // on a phone the caption spans the model's width and steps aside for the opening frame)
+  const box = isNarrow() ? restFrame(bounds, chrome, caption, model) : restFrameClear(bounds, chrome, caption, model, w > 700 ? 0.57 : 0.5);
   const q = (v: number) => Math.round(v * 50) / 50;
   viewer.setRestBox(box && { x0: q(box.x0 / w), y0: q(box.y0 / h), x1: q(box.x1 / w), y1: q(box.y1 / h) });
   placeHero();

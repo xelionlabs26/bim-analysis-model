@@ -67,10 +67,15 @@ export async function runChecks(project: Project, settings: CheckSettings = DEFA
   return { issues, rules, settings, ms: performance.now() - t0 };
 }
 
-/** One-line status of a rule: passed, flagged, or unverified when there was nothing to check. */
+/**
+ * One-line status of a rule: passed, flagged, or unverified when there was
+ * nothing to check or the rule could not verify what is there (every clash
+ * pair had an open shell in it, an assumed crane position, a failed rule).
+ */
 export function ruleStatus(r: RuleResult): 'passed' | 'flagged' | 'unverified' {
-  if (!r.applicable || r.checked === 0) return 'unverified';
-  return r.flagged ? 'flagged' : 'passed';
+  if (r.flagged) return 'flagged';
+  if (!r.applicable || r.checked === 0 || r.notChecked) return 'unverified';
+  return 'passed';
 }
 
 export { RULE_BY_ID };

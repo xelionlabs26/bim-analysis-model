@@ -429,7 +429,7 @@ describe('the issue sheet on a narrow screen (phone first aid)', () => {
 
   it('does not scroll the page down to the list on a narrow screen, and still does on a wide one', () => {
     const scrolled: string[] = [];
-    const row = { scrollIntoView: () => scrolled.push('row') };
+    const row = { scrollIntoView: () => scrolled.push('row'), getBoundingClientRect: () => ({ top: 0, bottom: 0 }) };
     const list = byId('issList') as unknown as { querySelector: () => unknown };
     const was = list.querySelector;
     list.querySelector = () => row;

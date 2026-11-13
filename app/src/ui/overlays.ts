@@ -75,6 +75,20 @@ export function heightBoxAt(want: { x: number; y: number }, size: { w: number; h
   return { x: want.x, y };
 }
 
+/**
+ * How strongly a member callout draws: its label, its leader line and the
+ * ring on the member, fading by rank (the newest callout's ring stays solid).
+ * A callout with no room left on its side's stack loses its label and leader
+ * and keeps only the newest ring. A callout whose label is not shown at all
+ * (the stylesheet hides the labels on a narrow screen) draws nothing: a
+ * leader and ring with no label point from nowhere at nothing.
+ */
+export function calloutOpacity(rank: number, stackedOff: boolean, labelShown: boolean): { label: number; line: number; ring: number } {
+  if (!labelShown || rank < 0 || rank >= RANK_OPACITY.length) return { label: 0, line: 0, ring: 0 };
+  const op = stackedOff ? 0 : RANK_OPACITY[rank];
+  return { label: op, line: op * 0.9, ring: rank === 0 ? 1 : op * 0.6 };
+}
+
 interface CalloutEl {
   el: HTMLDivElement;
   line: SVGLineElement;
@@ -412,15 +426,16 @@ export class Overlays {
     }
     for (const p of placed) {
       const { c, rank } = p;
-      const op = p.hidden ? 0 : RANK_OPACITY[rank];
       const fresh = this.frameNo - c.seen < 2;
       c.el.className = `callout rank-${rank}`;
       c.line.setAttribute('class', `rank-${rank}`);
       c.ring.setAttribute('class', `rank-${rank}`);
-      c.el.style.opacity = fresh ? '0' : String(op);
       c.el.style.color = rank === 0 ? 'var(--ink)' : 'var(--muted)';
       (c.el.lastElementChild as HTMLElement).style.color = rank === 0 ? 'var(--brand)' : 'var(--brand-soft)';
+      // a label the stylesheet hides (a narrow screen) lays out at no width: its leader and ring would point from nothing
       const width = c.el.offsetWidth;
+      const op = calloutOpacity(rank, !!p.hidden, width > 0);
+      c.el.style.opacity = fresh ? '0' : String(op.label);
       const x = p.side === 'l' ? 24 : w - width - 186;
       c.el.style.transform = `translate(${x}px, ${p.y}px)`;
       const lx = p.side === 'l' ? x + width : x;
@@ -431,8 +446,8 @@ export class Overlays {
       c.line.setAttribute('y2', String(p.ay));
       c.ring.setAttribute('cx', String(p.ax));
       c.ring.setAttribute('cy', String(p.ay));
-      c.line.style.opacity = String(op * 0.9);
-      c.ring.style.opacity = String(rank === 0 ? 1 : op * 0.6);
+      c.line.style.opacity = String(op.line);
+      c.ring.style.opacity = String(op.ring);
     }
   }
 }

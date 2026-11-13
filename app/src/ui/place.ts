@@ -148,10 +148,66 @@ export function restFrame(bounds: Box, chrome: Box[], caption: Box | null, model
   return best && scale(best) >= least * scale(bounds) ? best : null;
 }
 
+/**
+ * Roughly where the usual framing (no rest box) draws the top third of a
+ * model: fitted to the viewport's height (with headroom for the toolbar and
+ * the transport) or its width, whichever is tighter, with its middle at
+ * (`aimX`, ½) of the viewport. `model.top` is the width of the model's top
+ * third in plan (a tower's crown); seen at an angle, it shows about 0.9 of
+ * that across.
+ */
+export function usualCrown(bounds: Box, model: { w: number; h: number; top: number }, aimX: number): Box {
+  const W = width(bounds), H = height(bounds);
+  const px = Math.min(H / (1.32 * model.h + 8), W / (1.2 * Math.max(1e-6, model.w)));
+  const cx = bounds.x0 + aimX * W, cy = bounds.y0 + H / 2;
+  const y0 = cy - (model.h / 2) * px;
+  const half = 0.45 * model.top * px;
+  return { x0: cx - half, y0, x1: cx + half, y1: y0 + (model.h / 3) * px };
+}
+
+/**
+ * The default framing's place for the model (restFrame), and, when no clear
+ * box shows it at half its full size but the usual framing would draw its
+ * top (a tower's crown) a third or more under the caption, the clear box
+ * that shows it at a smaller size (`least`, as an issue is framed), nearest
+ * the usual spot. A model the usual framing keeps off the caption keeps it
+ * (null), at full size.
+ */
+export function restFrameClear(bounds: Box, chrome: Box[], caption: Box | null, model: { w: number; h: number; top: number }, aimX: number, least = 0.35): Box | null {
+  const box = restFrame(bounds, chrome, caption, model);
+  if (box || !caption) return box;
+  const crown = usualCrown(bounds, model, aimX);
+  const area = width(crown) * height(crown);
+  if (!(area > 0) || overlap(crown, caption) < area / 3) return null;
+  // of the boxes that show it as large, the one whose middle is nearest the usual spot (not the first found, at the edge)
+  const mw = Math.max(1e-6, model.w), mh = Math.max(1e-6, model.h);
+  const scale = (b: Box) => Math.min(width(b) / mw, height(b) / mh);
+  const ax = bounds.x0 + aimX * width(bounds);
+  const best = bestClearBox(bounds, [...chrome, caption], (b) => scale(b) - 1e-6 * Math.abs((b.x0 + b.x1) / 2 - ax));
+  return best && scale(best) >= least * scale(bounds) ? best : null;
+}
+
 /** Where a selected issue is framed: the box to centre it in, and whether the caption card steps aside for it. */
 export interface IssueFrame {
   box: Box;
   hideCaption: boolean;
+}
+
+/** How issueFrame weighs the room it is given. */
+export interface IssueFrameOptions {
+  /** The caption stays when the room it leaves is at least this share of the room without it … */
+  keep?: number;
+  /** … or at least this many pixels square. */
+  enough?: number;
+  /** A clear box smaller than this share of the viewport's side is too small to frame in. */
+  least?: number;
+  /**
+   * Cards the subject is never framed under, even when the cards leave too
+   * little room (the over-chart banner over the middle of a short viewport,
+   * and the controls under it): the frame then takes the biggest box clear
+   * of these alone rather than the whole viewport.
+   */
+  hard?: Box[];
 }
 
 /**
@@ -159,18 +215,20 @@ export interface IssueFrame {
  * the space it leaves is nearly as good as the space without it, or roomy
  * anyway (`enough` pixels square); on a smaller screen it steps aside (the
  * issue card in the panel says the same). When even that leaves too little
- * room, the whole viewport is used.
+ * room, the whole viewport is used, less any `hard` card.
  */
-export function issueFrame(bounds: Box, chrome: Box[], caption: Box | null, keep = 0.8, least = 0.35, enough = 380): IssueFrame {
-  const without = clearBox(bounds, chrome);
+export function issueFrame(bounds: Box, chrome: Box[], caption: Box | null, o: IssueFrameOptions = {}): IssueFrame {
+  const { keep = 0.8, least = 0.35, enough = 380, hard = [] } = o;
+  const without = clearBox(bounds, [...chrome, ...hard]);
   const full = boxSide(bounds);
   if (caption) {
-    const withCaption = clearBox(bounds, [...chrome, caption]);
+    const withCaption = clearBox(bounds, [...chrome, ...hard, caption]);
     const side = boxSide(withCaption);
     if ((side >= keep * boxSide(without) || side >= enough) && side >= least * full) return { box: withCaption, hideCaption: false };
   }
   if (boxSide(without) >= least * full) return { box: without, hideCaption: !!caption };
-  return { box: bounds, hideCaption: !!caption };
+  const clear = hard.length ? clearBox(bounds, hard) : bounds;
+  return { box: boxSide(clear) > 0 ? clear : bounds, hideCaption: !!caption };
 }
 
 /**

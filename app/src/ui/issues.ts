@@ -152,6 +152,42 @@ export function issuePosition(k: number, shown: number, total: number): string {
  * ones left out. Looked for inside `root`: the whole page, for chrome that is
  * fixed to the screen rather than placed in the viewport (the issue sheet).
  */
+/**
+ * Where the Issues pane comes to rest once a row is scrolled into view. The
+ * ‹ › bar sticks to the top of the pane only once the pane has scrolled past
+ * it (`navTop`, its place in the pane's content); short of that, a slice of
+ * the summary and the filter chips above it shows over the bar, cut through.
+ * So the pane goes on to the bar, where the header has gone and the row
+ * (which starts below the bar) still shows whole, or back to the top when
+ * the row shows whole from there (`rowBottom`, the row's foot in the pane's
+ * content, within the pane's `height`).
+ */
+export function paneScroll(scrollTop: number, navTop: number, rowBottom: number, height: number): number {
+  if (scrollTop < 1 || scrollTop > navTop - 1) return scrollTop;
+  return rowBottom <= height ? 0 : Math.round(navTop);
+}
+
+/**
+ * The scrubber mark a tap at `x` (screen px) meant: the one whose dot is
+ * nearest, of those within `reach` (the half-width of a finger's target).
+ * The targets of marks closer together than a finger overlap, so the mark
+ * whose target happens to be on top is not the one to go by. A tie goes to
+ * the later mark (drawn on top: the critical ones go on last). Null when no
+ * mark is in reach.
+ */
+export function nearestMark(x: number, marks: { id: string; x: number }[], reach = 14): string | null {
+  let best: string | null = null;
+  let bestD = Infinity;
+  for (const m of marks) {
+    const d = Math.abs(m.x - x);
+    if (d <= reach && d <= bestD) {
+      best = m.id;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
 export function chromeBoxes(host: HTMLElement, selector: string, pad = 6, root: ParentNode = host): Box[] {
   const h = host.getBoundingClientRect();
   const out: Box[] = [];
@@ -215,6 +251,8 @@ export class IssuesUI {
     $('btnCsv').toggleAttribute('disabled', true);
     // the buttons outlive the panel: assigning (not adding) keeps one handler for the newest panel
     $('issPrev').onclick = () => this.step(-1);
+    // a tap on the scrubber at an issue mark selects it (the track still starts its scrub, as anywhere on it)
+    $('scrubTrack').onpointerdown = (e) => this.markPress(e);
     $('issNext').onclick = () => this.step(1);
     $('sheetPrev').onclick = () => this.step(-1);
     $('sheetNext').onclick = () => this.step(1);
@@ -471,6 +509,12 @@ export class IssuesUI {
     if (navH) pane.style.scrollPaddingTop = `${navH + 4}px`;
     const tall = li.offsetHeight > pane.clientHeight - navH - 4;
     (tall ? (this.rows.get(i.id) ?? li) : li).scrollIntoView({ block: tall ? 'start' : 'nearest' });
+    // where the bar sits before it sticks: the list follows it directly
+    const top = pane.getBoundingClientRect().top - pane.scrollTop;
+    const navTop = $('issList').getBoundingClientRect().top - top - navH;
+    const rowBottom = li.getBoundingClientRect().bottom - top;
+    const snapped = paneScroll(pane.scrollTop, navTop, rowBottom, pane.clientHeight);
+    if (snapped !== pane.scrollTop) pane.scrollTop = snapped;
   }
 
   /** The selected issue in the sheet over the bottom of a narrow screen (CSS keeps it hidden on a wide one). */
@@ -516,7 +560,8 @@ export class IssuesUI {
    * One mark on the scrubber per step with a critical or major issue, for the
    * most severe of them (its tooltip lists them all); the critical ones go on
    * last, so a major mark close by never covers one. A tap on a mark selects
-   * its issue; a drag that starts on one scrubs, as anywhere on the track.
+   * the issue of the mark nearest it (nearestMark); a drag that starts on one
+   * scrubs, as anywhere on the track.
    */
   private renderMarkers() {
     const track = $('scrubTrack');
@@ -529,20 +574,38 @@ export class IssuesUI {
       m.style.left = `${(this.timeOf(i.step) / D) * 100}%`;
       m.title = group.map((x) => `${x.id} · ${x.title}`).join('\n');
       m.dataset.id = i.id;
-      // no stopPropagation: the track starts its scrub as usual, and a release on the spot without moving is a tap
-      m.addEventListener('pointerdown', (e) => {
-        const down = { x: e.clientX, y: e.clientY, t: e.timeStamp };
-        const up = (u: PointerEvent) => {
-          if (u.pointerId !== e.pointerId) return;
-          removeEventListener('pointerup', up, true);
-          removeEventListener('pointercancel', up, true);
-          if (u.type === 'pointerup' && isTap(down, { x: u.clientX, y: u.clientY, t: u.timeStamp }, e.pointerType)) this.selectById(i.id);
-        };
-        addEventListener('pointerup', up, true);
-        addEventListener('pointercancel', up, true);
-      });
       track.append(m);
     }
+  }
+
+  /**
+   * A press on the scrubber that lets go on the spot, within a dot's target
+   * of a mark (half of the target the stylesheet draws round it: wider for a
+   * finger), selects the issue of the mark nearest it. The track decides,
+   * not the mark under the finger: the targets of marks close together
+   * overlap each other and the playhead's knob, so the one on top is often a
+   * neighbour's.
+   */
+  private markPress(e: PointerEvent) {
+    if (!this.report || e.button > 0) return;
+    const reach = e.pointerType === 'mouse' ? 9 : 14;
+    const marks = [...$('scrubTrack').querySelectorAll<HTMLElement>('.iss-mark')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { id: el.dataset.id ?? '', x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    const near = marks.filter((m) => Math.abs(m.y - e.clientY) <= reach);
+    if (nearestMark(e.clientX, near, reach) === null) return;
+    const down = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+    const up = (u: PointerEvent) => {
+      if (u.pointerId !== e.pointerId) return;
+      removeEventListener('pointerup', up, true);
+      removeEventListener('pointercancel', up, true);
+      if (u.type !== 'pointerup' || !isTap(down, { x: u.clientX, y: u.clientY, t: u.timeStamp }, e.pointerType)) return;
+      const id = nearestMark(down.x, near, reach);
+      if (id) this.selectById(id);
+    };
+    addEventListener('pointerup', up, true);
+    addEventListener('pointercancel', up, true);
   }
 
   /** Issue counts on stage cards, member rows and Gantt pills. */

@@ -17,6 +17,7 @@ import { runChecks, ruleStatus } from '../src/checks/run';
 import { DEFAULT_SETTINGS, type CheckReport, type CheckSettings, type RuleId } from '../src/checks/types';
 import { readIfc } from '../src/ifc/model';
 import { projectFromIfc } from '../src/ifc/sequence';
+import { sequenceJson } from '../src/export/sequence';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -400,5 +401,43 @@ describe('a truncated IFC file', () => {
     const model = await readIfc(readFileSync(join(here, '../public/samples/duplex-apartment.ifc.txt'), 'latin1'), () => {}, 'Duplex_A_20110907.ifc');
     const r = await run(projectFromIfc(model, 'Duplex_A_20110907.ifc').project);
     expect(of(r, 'MODEL-DATA').some((i) => i.key === 'truncated')).toBe(false);
+  });
+});
+
+// ── CLASH-HARD with nothing measured: never a pass, in the pane or the JSON ──
+
+describe('CLASH-HARD when every touching pair has an open shell', () => {
+  // a surface-model export: the slab and the wall through it are both open shells
+  const open = (lo: Vec3, hi: Vec3): MeshData => ({ ...boxMesh(lo, hi), closed: false });
+  const project = (closedWall: boolean) => {
+    const slab = open([-3, 2.8, -3], [3, 3.1, 3]);
+    const wall = closedWall ? boxMesh([-1, 0, -0.05], [1, 6, 0.05]) : open([-1, 0, -0.05], [1, 6, 0.05]);
+    const meshes = [slab, wall];
+    return mk(
+      [
+        step('L1 · FLOOR', 'cast', [meshPart(slab, 0, 'concrete', { category: 'slab', guid: 'S' })]),
+        step('L1 · WALLS', 'manual', [meshPart(wall, 1, 'gypsum', { category: 'wall', guid: 'W', phase: 'fitout' })]),
+      ],
+      { source: 'ifc', meshes },
+    );
+  };
+
+  it('reads as unverified, not passed, wherever the rule status is shown', async () => {
+    const p = project(false);
+    const r = await run(p);
+    const clash = result(r, 'CLASH-HARD');
+    // the pair was counted but never measured
+    expect(clash).toMatchObject({ applicable: true, flagged: 0, notChecked: true });
+    expect(clash.checked).toBeGreaterThan(0);
+    expect(ruleStatus(clash)).toBe('unverified');
+    const verdict = JSON.parse(sequenceJson(p, r)).checks.verdict.find((v: { rule: string }) => v.rule === 'CLASH-HARD');
+    expect(verdict).toMatchObject({ status: 'unverified', reason: 'not checked' });
+  });
+
+  it('still passes a rule that measured its pairs, and a flag outranks not checked', async () => {
+    expect(ruleStatus({ id: 'CLASH-HARD', checked: 3, applicable: true, flagged: 1, notChecked: true, note: '' })).toBe('flagged');
+    expect(ruleStatus({ id: 'CLASH-HARD', checked: 3, applicable: true, flagged: 0, note: '' })).toBe('passed');
+    const verdicts = JSON.parse(sequenceJson(project(true), { issues: [], rules: [{ id: 'CLASH-HARD', checked: 3, applicable: true, flagged: 0, note: '' }], settings: DEFAULT_SETTINGS, ms: 0 })).checks.verdict;
+    expect(verdicts[0]).toEqual({ rule: 'CLASH-HARD', checked: 3, flagged: 0, status: 'passed', note: '' });
   });
 });

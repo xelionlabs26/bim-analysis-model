@@ -330,6 +330,25 @@ describe('material keywords', () => {
       ['Aluminium-faced composite panel', 'aluminium'],
       ['Foil-faced PIR board', 'insulation'],
       ['Foil-faced insulation', 'insulation'],
+      // a faced plasterboard is gypsum whatever the facing, never aluminium
+      ['Aluminium-faced plasterboard', 'gypsum'],
+      ['Aluminum faced gypsum board', 'gypsum'],
+      ['Aluminium_faced_plasterboard', 'gypsum'],
+      ['Foil faced drywall', 'gypsum'],
+      ['Aluminium-faced PIR board', 'insulation'],
+      ['Aluminium sheet', 'aluminium'],
+      // compounds written with hyphens, underscores or no gap, as Revit and ArchiCAD export them
+      ['Glass-Fibre-Reinforced-Concrete', 'concrete'],
+      ['Glass_Fibre_Reinforced_Concrete', 'concrete'],
+      ['GlassFiberReinforcedCement', 'concrete'],
+      ['Glass-Fibre-Reinforced-Gypsum', 'gypsum'],
+      ['Glass_Fibre_Reinforced_Plastic', undefined],
+      ['Glass-Fiber-Reinforced-Polymer', undefined],
+      ['Glass-Wool', 'insulation'],
+      ['Glass_wool_insulation', 'insulation'],
+      ['Fibre-glass batt', 'insulation'],
+      ['Insulated-Glass', 'glass'],
+      ['Glass', 'glass'],
     ];
     for (const [name, mat] of cases) expect(classifyMaterial(name), name).toBe(mat);
   });

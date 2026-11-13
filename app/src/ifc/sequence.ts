@@ -60,14 +60,19 @@ const CATEGORY_DEFAULT: Record<Category, MaterialId> = {
 /** Material keyword → MaterialId; null means "ignore this layer" (air). */
 export function classifyMaterial(name: string): MaterialId | null | undefined {
   const n = name.toLowerCase();
-  // the first match wins, so names that mention two materials are settled first
-  if (/glass.?fib(re|er).?reinforced (concrete|cement)|\bgrc\b|\bgfrc\b/.test(n)) return 'concrete';
+  // the first match wins, so names that mention two materials are settled first.
+  // Words in a compound may be joined by a space, a hyphen, an underscore or nothing
+  // ("Glass-Fibre-Reinforced-Concrete", "Glass_Wool"), hence the `.?` between them.
+  if (/glass.?fib(re|er).?reinforced.?(concrete|cement)|\bgrc\b|\bgfrc\b/.test(n)) return 'concrete';
   // glass-fibre-reinforced gypsum is a gypsum board; reinforced plastics have no material of their own here
-  if (/glass.?fib(re|er).?reinforced gypsum|\bgrg\b/.test(n)) return 'gypsum';
-  if (/glass.?fib(re|er).?reinforced (plastic|polymer)|\bg?frp\b|\bgrp\b/.test(n)) return undefined;
-  if (/glass ?wool|fib(re|er) ?glass|mineral ?(wool|fib)|stone ?wool|rock ?wool|\bbatts?\b/.test(n) && !/glaz|\bigu\b|insulat(ed|ing) glass/.test(n)) return 'insulation';
+  if (/glass.?fib(re|er).?reinforced.?gypsum|\bgrg\b/.test(n)) return 'gypsum';
+  if (/glass.?fib(re|er).?reinforced.?(plastic|polymer)|\bg?frp\b|\bgrp\b/.test(n)) return undefined;
+  if (/glass.?wool|fib(re|er).?glass|mineral.?(wool|fib)|stone.?wool|rock.?wool|\bbatts?\b/.test(n) && !/glaz|\bigu\b|insulat(ed|ing).?glass/.test(n)) return 'insulation';
   // a foil or aluminium facing marks insulation board, unless the name is a faced plasterboard or panel
-  if (/(alumin\w*|foil)[- ]faced/.test(n) && (!/plaster|gypsum|board|panel/.test(n) || /insul|wool|foam|phenolic|\beps\b|\bxps\b|\bpir\b|\bpur\b/.test(n))) return 'insulation';
+  const faced = /(alumin\w*|foil)[-_ ]?faced/.test(n);
+  if (faced && (!/plaster|gypsum|drywall|gips|gyproc|board|panel/.test(n) || /insul|wool|foam|phenolic|\beps\b|\bxps\b|\bpir\b|\bpur\b/.test(n))) return 'insulation';
+  // a foil- or aluminium-faced plasterboard is still a gypsum board, not a sheet of aluminium
+  if (faced && /plaster|gypsum|drywall|gips|gyproc/.test(n)) return 'gypsum';
   // an air layer or empty cavity, but not a cavity fill, an air barrier or a board
   if (/\bair\b|air ?space|air gap|cavity/.test(n) && !/insul|wool|fib|foam|\beps\b|\bxps\b|\bpir\b|\bpur\b|fill|membrane|barrier|board|block|brick|concrete|masonry|timber|steel/.test(n)) return null;
   if (/glass|glaz|\bglas\b|vitr/.test(n)) return 'glass';

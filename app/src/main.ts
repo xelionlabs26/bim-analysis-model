@@ -32,16 +32,16 @@ import { cranePlanPose, firstOverPick, OverPickWatch, riggedLift, type OverPick,
 import { issueView, modelBounds, type ModelBounds } from './checks/view';
 import { chromeBoxes, IssuesUI, rulesTable } from './ui/issues';
 import { keepFocus } from './ui/focus';
-import { centreSpot, issueFrame, restFrame, restFrameClear } from './ui/place';
+import { centreSpot, heroLayout, issueFrame, overlapDepth, restFrame, restFrameClear, type Box } from './ui/place';
 import { bcfZip } from './export/bcf';
 import { issuesCsv } from './export/csv';
 import { sequenceJson } from './export/sequence';
 import type { CameraPose } from './engine/presentation';
 import { modifierOwnsKey, nextTab, pointerPress, routeKey } from './ui/keys';
 import { applyBrand, brandName } from './ui/brand';
-import { moreSides, NARROW_QUERY, orbitTouchAction, revealScroll, ScrubDrag, toastLife, toastReplaces, type ToastKind } from './ui/layout';
+import { moreSides, NARROW_QUERY, scaleLift, orbitTouchAction, revealScroll, ScrubDrag, toastLife, toastReplaces, type ToastKind } from './ui/layout';
 import { actionInView, keyAction, shortcutGroupsFor, shortcutSheetHtml, type ActionId } from './ui/shortcuts';
-import { heroLine, importHint, introCards, markIntroSeen, openingPlan, overBannerStays, overPickResponse, presentButton, presentNote, showIntro, startsInClientMode, TOUCH_QUERY } from './ui/present';
+import { cranePlanNote, heroLine, importHint, introCards, markIntroSeen, openingPlan, overBannerStays, overPickResponse, presentButton, presentNote, showIntro, startsInClientMode, TOUCH_QUERY } from './ui/present';
 import { browserStore, clearPrefs, craneShown, loadPrefs, readThresholds, RESOLUTIONS, sameSettings, savePrefs, THRESHOLD_FIELDS, thresholdValue, toggleCrane, toggleCranePlan, type ViewPrefs } from './ui/prefs';
 import { timeForStep as settledStepTime } from './ui/steps';
 import { ExportGuard, LoadGate, sampleFallback } from './ui/loads';
@@ -90,6 +90,8 @@ const openPlayback = (p: Project) => {
   playback.toggle(plan.playing);
   opening = false;
   hero = plan.hero;
+  // a new opening frame (another model) is laid out afresh
+  heroShrunk = heroModel = null;
   syncHero();
 };
 /** Set while the page puts the playhead where it opens: that is not the user pressing Play. */
@@ -101,27 +103,103 @@ function syncHero() {
   // a keyboard user who had it focused carries on from the transport's Play button, not from the top of the page
   if (hide && !b.hidden && document.activeElement === b) $('btnPlay').focus();
   b.hidden = hide;
+  if (hide) heroShrunk = heroModel = null;
   if (project) $('heroSub').textContent = heroLine(project.steps.length, project.duration);
-  placeHero();
+  // on a wide screen the button and the model's framing are placed together (syncRestBox)
+  syncRestBox();
 }
+/** The strip down the viewport's right side where the level datums are drawn (ui/overlays.ts): a model framed smaller for the large Play button keeps off it. */
+const DATUM_STRIP = (w: number, h: number): Box => ({ x0: w - 112, y0: 0, x1: w, y1: h });
 /** Cards and controls the large Play button keeps off (the play bar is fixed over the foot of a phone's screen). */
 const HERO_CHROME = '.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner, #intro, #playbar';
+/** The model's outline on screen when the large Play button was last placed against it (wide screens; see watchHero). */
+let heroModel: Box[] | null = null;
 /**
- * The large Play button in the clear part of the model, nearest its middle:
- * off the caption, the toolbar and the title block (ui/place.ts centreSpot);
- * on a phone, in the part above the pinned play bar. Where nothing clear
- * holds it, the stylesheet's place stands.
+ * The viewport size for which the model was framed smaller beside the large
+ * Play button, there being no room for it beside the model as framed; `clear`
+ * is how far the model's box keeps off the button (it grows while the model
+ * as drawn still runs into it), and `done` is set once it can grow no more.
  */
-function placeHero() {
+let heroShrunk: { w: number; h: number; clear: number; done: boolean } | null = null;
+/** The large Play button's box in the viewport, or null while it is hidden. */
+function heroBox(): Box | null {
   const b = $('heroPlay');
-  if (b.hidden) return;
+  if (b.hidden) return null;
+  const r = b.getBoundingClientRect(), o = $('viewport').getBoundingClientRect();
+  return r.width >= 1 && r.height >= 1 ? { x0: r.left - o.left, y0: r.top - o.top, x1: r.right - o.left, y1: r.bottom - o.top } : null;
+}
+/**
+ * The large Play button at `at` (its centre, in the viewport), as the opening
+ * frame's layout put it beside the model (syncRestBox); else in the clear part
+ * of the viewport, nearest its middle: off the caption, the toolbar and the
+ * title block (ui/place.ts centreSpot) and, on a wide screen, off the model
+ * as last seen (heroModel); on a phone, in the part above the pinned play
+ * bar. Where nothing clear holds it, the stylesheet's place stands, and the
+ * result is false.
+ */
+function placeHero(given: { x: number; y: number } | null = null): boolean {
+  const b = $('heroPlay');
+  if (b.hidden) return true;
   const host = $('viewport');
   const r = host.getBoundingClientRect();
   // on a phone the model runs on below the screen: only what shows counts
   const h = Math.min(r.height, window.innerHeight - r.top);
-  const at = r.width > 0 && h > 0 ? centreSpot({ x0: 0, y0: 0, x1: r.width, y1: h }, chromeBoxes(host, HERO_CHROME, 8, document), { w: b.offsetWidth, h: b.offsetHeight }) : null;
-  b.style.left = at ? `${Math.round(at.x)}px` : '';
-  b.style.top = at ? `${Math.round(at.y)}px` : '';
+  const model = !isNarrow() && heroModel ? heroModel.map((m) => ({ x0: m.x0 - 10, y0: m.y0 - 10, x1: m.x1 + 10, y1: m.y1 + 10 })) : [];
+  const at = given ?? (r.width > 0 && h > 0 ? centreSpot({ x0: 8, y0: 0, x1: r.width - 8, y1: h }, [...chromeBoxes(host, HERO_CHROME, 8, document), ...model], { w: b.offsetWidth, h: b.offsetHeight }) : null);
+  const left = at ? `${Math.round(at.x)}px` : '', top = at ? `${Math.round(at.y)}px` : '';
+  if (b.style.left !== left || b.style.top !== top) {
+    b.style.left = left;
+    b.style.top = top;
+    // the labels over the model keep off it
+    if (mounted) chromeMoved();
+  }
+  return !!at;
+}
+/**
+ * Each frame of the opening frame on a wide screen: once the default framing
+ * has come to rest, the large Play button is put beside the model as it is
+ * drawn (its outline turns with the view no more than the model does). When
+ * no clear spot beside it holds the button, the model is framed smaller
+ * beside the button instead (syncRestBox, ui/place.ts heroLayout), until the
+ * viewport changes size; and should the model as drawn there still run into
+ * the button (the framing fits a box, not the model's perspective), it is
+ * framed further off it, for as long as that leaves it room.
+ */
+function watchHero() {
+  if ($('heroPlay').hidden || isNarrow() || !viewer.autoFrame) {
+    heroModel = null;
+    return;
+  }
+  const { w, h } = viewer.viewportSize;
+  if (heroShrunk && (heroShrunk.w !== w || heroShrunk.h !== h)) {
+    heroShrunk = null;
+    heroModel = null;
+    syncRestBox();
+    return;
+  }
+  if (!viewer.settled) return;
+  const seen = viewer.modelOutline();
+  if (!seen.length) return;
+  if (heroShrunk) {
+    const hb = heroBox();
+    const depth = hb && !heroShrunk.done ? Math.max(0, ...seen.map((m) => overlapDepth(m, hb))) : 0;
+    if (depth <= 0) return;
+    const was = heroShrunk.clear;
+    heroShrunk.clear = was + Math.ceil(depth) + 8;
+    // no layout leaves the model room that far off the button: keep the last one
+    if (heroShrunk.clear > 240 || !syncRestBox()) {
+      heroShrunk.clear = was;
+      heroShrunk.done = true;
+      syncRestBox();
+    }
+    return;
+  }
+  const same = heroModel && heroModel.length === seen.length && heroModel.every((m, i) => Math.max(Math.abs(m.x0 - seen[i].x0), Math.abs(m.y0 - seen[i].y0), Math.abs(m.x1 - seen[i].x1), Math.abs(m.y1 - seen[i].y1)) < 3);
+  if (same) return;
+  heroModel = seen;
+  if (placeHero()) return;
+  heroShrunk = { w, h, clear: 12, done: false };
+  syncRestBox();
 }
 /** The large Play button goes once the user changes the view (a drawer, the crane plan, an issue, a view, a drag). */
 function dropHero() {
@@ -192,6 +270,8 @@ const BANNER_HARD = '#liftBanner, #scrubber, #transport, #issueSheet';
 let planPose: CameraPose | null = null;
 /** Where the plan's target sits on screen, whether the caption steps aside for it, and the viewport size it was worked out for. */
 let planFrame: { aim: { x: number; y: number }; hideCaption: boolean; w: number; h: number } | null = null;
+/** Whether the crane stood at the last frame drawn with the crane plan on: playback past the strike then says why the plan empties. */
+let planCraneUp = true;
 /** The view preset to go back to when the crane plan is turned off. */
 let presetBeforePlan = 0;
 /** Stops playback once per playthrough on the first pick over the crane's chart. */
@@ -594,7 +674,7 @@ function syncCaption() {
   if ($('caption').style.visibility !== v) {
     $('caption').style.visibility = v;
     chromeMoved();
-    placeHero();
+    syncRestBox();
   }
 }
 
@@ -621,7 +701,10 @@ function drawDrawer() {
   drawer.classList.toggle('wide', id === 'import');
   chromeMoved();
   syncCaption();
-  if (drawer.hidden) return syncRestBox();
+  if (drawer.hidden) {
+    syncRestBox();
+    return;
+  }
   drawer.setAttribute('aria-label', DRAWERS[id] ?? 'Settings');
   if (id === 'layers') {
     drawer.innerHTML =
@@ -1153,7 +1236,29 @@ viewer.controls.addEventListener('start', dropHero);
     // the open issue sheet covers the foot of the page too: the page grows by it so its end can still be read
     const sh = sheet.getBoundingClientRect().height;
     document.documentElement.style.setProperty('--sheet-h', `${sh > 0 ? Math.ceil(sh) + 6 : 0}px`);
+    liftScale();
     chromeMoved();
+  };
+  // on a phone the viewport runs on under the pinned play bar (at the top of the page by about 30 px): the scale bar,
+  // at the viewport's foot, rises by as much as the bar covers, so its scale reads as the page scrolls
+  const vp = $('viewport');
+  let lift = -1;
+  const liftScale = () => {
+    const b = bar.getBoundingClientRect(), v = vp.getBoundingClientRect();
+    const next = b.height > 0 ? scaleLift(v.top, v.bottom, b.top) : 0;
+    if (next === lift) return;
+    lift = next;
+    vp.style.setProperty('--scale-lift', `${next}px`);
+    overlays?.chromeChanged();
+  };
+  let liftQueued = false;
+  const queueLift = () => {
+    if (liftQueued) return;
+    liftQueued = true;
+    requestAnimationFrame(() => {
+      liftQueued = false;
+      liftScale();
+    });
   };
   // the transport and the rail scroll sideways on a phone, where the scrollbar is hidden: a fade marks the side with more
   const railItems = $('railItems');
@@ -1177,6 +1282,9 @@ viewer.controls.addEventListener('start', dropHero);
       fade();
     });
     for (const el of [toolbar, bar, transport, sheet, railItems]) ro.observe(el);
+    // the viewport moves down the page when the header above it grows (a font arriving, the view's mode): the scale bar follows
+    const lifts = new ResizeObserver(queueLift);
+    for (const el of [vp, document.body, ...document.querySelectorAll<HTMLElement>('.header')]) lifts.observe(el);
     // the default framing keeps clear of the cards: a resize, a drawer opening or closing, a caption
     // or a title block changing size all change the room the model has
     const rest = new ResizeObserver(() => syncRestBox());
@@ -1203,6 +1311,8 @@ viewer.controls.addEventListener('start', dropHero);
   };
   window.addEventListener('scroll', queueList, { passive: true });
   window.addEventListener('resize', queueList, { passive: true });
+  window.addEventListener('scroll', queueLift, { passive: true });
+  window.addEventListener('resize', queueLift, { passive: true });
   $('tabIssues').addEventListener('click', queueList);
 }
 
@@ -1516,6 +1626,13 @@ function loop(now: number) {
   if (focusPose && !viewer.autoFrame) focusPose = null; // the view was dragged away
   if (planPose && !viewer.autoFrame) planPose = null;
   syncCaption();
+  watchHero();
+  // playback (or the scrubber) carried the crane plan past the strike: the reach goes, and the plan says why
+  if (view.cranePlan) {
+    const up = timeline.craneUp(state.t);
+    if (planCraneUp && !up) toast(cranePlanNote(project.crane?.id ?? 'The crane', 'gone'));
+    planCraneUp = up;
+  }
   // the member callouts step aside while an issue is explained, and datums across it fade
   overlays.issueBox = issuesUI?.selected?.box ?? null;
   overlays.update(crane === state.crane ? state : { ...state, crane }, craneShown(craneView()));
@@ -1737,7 +1854,21 @@ function setCranePlan(on: boolean) {
     return;
   }
   if (on === view.cranePlan) return;
+  // the reach is drawn only while the crane stands: from the material pass on (where the page opens) it has been struck,
+  // so the plan goes to its last lift (its first, before it is up) and says so, rather than showing an empty site
+  const at = on ? timeline.planTime(playback.t) : null;
+  if (on && at === null) {
+    toast(`${project.crane!.id} makes no lifts on this project: there is no reach to plan.`);
+    return;
+  }
   view.cranePlan = on;
+  planCraneUp = true;
+  if (on && at !== null && at !== playback.t) {
+    const before = playback.t < timeline.erectT;
+    playback.toggle(false);
+    playback.seek(at);
+    toast(cranePlanNote(project.crane!.id, before ? 'before' : 'struck', timeline.stepIndexAt(at) + 1));
+  }
   if (on) {
     presetBeforePlan = view.presetIndex;
     // the plan shows the crane (craneShown) without changing the user's choice, which is what is saved
@@ -1770,21 +1901,36 @@ function captionBox() {
  * the play bar, an open drawer), chosen for the model's shape (ui/place.ts
  * restFrame: a tower takes a tall column, a low building a wide band), so the
  * building is not drawn under them. When no clear part shows it at a fair
- * size, the usual framing stands. Kept as shares of the viewport, rounded, so
- * a caption that grows by a line does not set the camera moving.
+ * size, the usual framing stands. On the opening frame of a wide screen the
+ * large Play button and the model are placed together (ui/place.ts
+ * heroLayout), so the button is beside the model rather than over it. Kept as
+ * shares of the viewport, rounded, so a caption that grows by a line does not
+ * set the camera moving.
  */
-function syncRestBox() {
-  if (!mounted) return;
+function syncRestBox(): boolean {
+  if (!mounted || viewer.viewportSize.w < 1 || viewer.viewportSize.h < 1) {
+    placeHero();
+    return false;
+  }
   const { w, h } = viewer.viewportSize;
-  if (w < 1 || h < 1) return;
   const model = modelShape(project);
   const bounds = { x0: 0, y0: 0, x1: w, y1: h }, chrome = chromeBoxes($('viewport'), FRAME_CHROME, 8, document), caption = captionBox();
+  const q = (v: number) => Math.round(v * 50) / 50;
+  // the opening frame on a wide screen with no room for the large Play button beside the model: the two placed together, the model smaller
+  const b = $('heroPlay');
+  const lay = !b.hidden && !isNarrow() && heroShrunk?.w === w && heroShrunk.h === h ? heroLayout(bounds, chromeBoxes($('viewport'), HERO_CHROME, 8, document), [...chrome, ...chromeBoxes($('viewport'), '#scaleBar', 8, document), DATUM_STRIP(w, h)], caption, model, { w: b.offsetWidth, h: b.offsetHeight }, w > 700 ? 0.57 : 0.5, 12, 0.3, 0.9, heroShrunk!.clear) : null;
+  if (lay) {
+    const r = lay.rest;
+    viewer.setRestBox({ x0: q(r.x0 / w), y0: q(r.y0 / h), x1: q(r.x1 / w), y1: q(r.y1 / h) });
+    placeHero(lay.at);
+    return true;
+  }
   // a tall model whose top the usual framing would draw under the caption takes the clear column beside it, smaller (wide screens:
   // on a phone the caption spans the model's width and steps aside for the opening frame)
   const box = isNarrow() ? restFrame(bounds, chrome, caption, model) : restFrameClear(bounds, chrome, caption, model, w > 700 ? 0.57 : 0.5);
-  const q = (v: number) => Math.round(v * 50) / 50;
   viewer.setRestBox(box && { x0: q(box.x0 / w), y0: q(box.y0 / h), x1: q(box.x1 / w), y1: q(box.y1 / h) });
   placeHero();
+  return false;
 }
 
 /** Fit the slew circle, seen from above, into the part of the viewport the cards and controls leave clear. */

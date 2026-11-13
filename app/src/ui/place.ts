@@ -285,3 +285,80 @@ export function centreSpot(bounds: Box, obstacles: Box[], size: { w: number; h: 
   });
   return box ? spot(box) : null;
 }
+
+/** The opening frame's layout: the centre of the large Play button, and the box the model is framed in. */
+export interface HeroLayout {
+  at: { x: number; y: number };
+  rest: Box;
+}
+
+/**
+ * The opening frame: where the large Play button goes and the clear box the
+ * model is framed in, chosen together so that neither covers the other. The
+ * button stays off `buttonChrome` (the cards and controls, the caption among
+ * them); the model stays off `modelChrome`, the caption and the button
+ * (`clear` round it: more than `gap` where the model as drawn was found to
+ * run past the box it was framed in). Of the button's spots (against an edge of the chrome or
+ * of `bounds`, or in the middle), those that leave the model within `slack`
+ * of its largest scale are kept, and of those the one that frames the model
+ * nearest its usual spot (`aimX` across, half way down) wins: the button goes
+ * aside, not the model. Null when no spot holds the button or leaves the
+ * model at least `least` of the scale the whole of `bounds` would.
+ */
+export function heroLayout(
+  bounds: Box,
+  buttonChrome: Box[],
+  modelChrome: Box[],
+  caption: Box | null,
+  model: { w: number; h: number },
+  size: { w: number; h: number },
+  aimX = 0.5,
+  gap = 12,
+  least = 0.3,
+  slack = 0.9,
+  clear = gap,
+): HeroLayout | null {
+  const mw = Math.max(1e-6, model.w), mh = Math.max(1e-6, model.h);
+  const scale = (b: Box) => Math.min(width(b) / mw, height(b) / mh);
+  const inside = buttonChrome.filter((o) => o.x1 > bounds.x0 && o.x0 < bounds.x1 && o.y1 > bounds.y0 && o.y0 < bounds.y1);
+  const mx = (bounds.x0 + bounds.x1) / 2, my = (bounds.y0 + bounds.y1) / 2;
+  const edges = (lo: number, hi: number, mid: number, len: number, vals: number[]) => [
+    ...new Set([lo, hi - len, mid - len / 2, ...vals.flatMap((v) => [v, v - len])].map((v) => Math.round(v * 2) / 2)),
+  ];
+  const xs = edges(bounds.x0 + gap, bounds.x1 - gap, mx, size.w, inside.flatMap((o) => [o.x0, o.x1]));
+  const ys = edges(bounds.y0 + gap, bounds.y1 - gap, my, size.h, inside.flatMap((o) => [o.y0, o.y1]));
+  const fixed = caption ? [...modelChrome, caption] : modelChrome;
+  const found: { at: { x: number; y: number }; rest: Box; s: number }[] = [];
+  for (const x of xs)
+    for (const y of ys) {
+      const b = { x0: x, y0: y, x1: x + size.w, y1: y + size.h };
+      // the button keeps `gap` off the viewport's sides, as off the chrome
+      if (b.x0 < bounds.x0 + gap || b.y0 < bounds.y0 + gap || b.x1 > bounds.x1 - gap || b.y1 > bounds.y1 - gap) continue;
+      if (inside.some((o) => overlap(b, o) > 0)) continue;
+      const pad = { x0: b.x0 - clear, y0: b.y0 - clear, x1: b.x1 + clear, y1: b.y1 + clear };
+      const rest = bestClearBox(bounds, [...fixed, pad], scale);
+      if (rest) found.push({ at: { x: x + size.w / 2, y: y + size.h / 2 }, rest, s: scale(rest) });
+    }
+  if (!found.length) return null;
+  const top = Math.max(...found.map((f) => f.s));
+  if (top < least * scale(bounds)) return null;
+  const ax = bounds.x0 + aimX * width(bounds);
+  let best = found[0];
+  let bestD = Infinity;
+  for (const f of found) {
+    if (f.s < slack * top) continue;
+    const d = Math.hypot((f.rest.x0 + f.rest.x1) / 2 - ax, (f.rest.y0 + f.rest.y1) / 2 - my) + 1e-3 * Math.hypot(f.at.x - mx, f.at.y - my);
+    if (d < bestD - 1e-6 || (Math.abs(d - bestD) <= 1e-6 && f.s > best.s)) {
+      best = f;
+      bestD = d;
+    }
+  }
+  return { at: best.at, rest: best.rest };
+}
+
+/** How far two boxes run into each other: the least distance either must move to clear the other (0 when apart). */
+export function overlapDepth(a: Box, b: Box): number {
+  const x = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+  const y = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+  return x > 0 && y > 0 ? Math.min(x, y) : 0;
+}

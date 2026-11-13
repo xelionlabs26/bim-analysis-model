@@ -176,6 +176,9 @@ export class Overlays {
     this.controlsAt = -Infinity;
   }
 
+  /** The opening frame's large Play button, as of the last read of the controls: the member callouts it would cover are left out. */
+  private heroBox: Box | null = null;
+
   /** The viewport's controls in overlay pixels; they move only on resize, a drawer, the banner or the caption, so a few reads a second do (and chromeChanged clears them at once). */
   private controls(host: DOMRect): Obstacle[] {
     const now = performance.now();
@@ -183,11 +186,14 @@ export class Overlays {
     this.controlsAt = now;
     const out: Obstacle[] = [];
     const root = this.html.parentElement ?? document;
-    for (const el of root.querySelectorAll<HTMLElement>('.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner')) {
+    this.heroBox = null;
+    for (const el of root.querySelectorAll<HTMLElement>('.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner, #heroPlay')) {
       if (el.hidden || el.style.visibility === 'hidden') continue;
       const r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
-      out.push({ x0: r.left - host.left - 6, y0: r.top - host.top - 6, x1: r.right - host.left + 6, y1: r.bottom - host.top + 6, weight: Infinity });
+      const box = { x0: r.left - host.left - 6, y0: r.top - host.top - 6, x1: r.right - host.left + 6, y1: r.bottom - host.top + 6, weight: Infinity };
+      out.push(box);
+      if (el.id === 'heroPlay') this.heroBox = box;
     }
     return (this.controlBoxes = out);
   }
@@ -434,9 +440,12 @@ export class Overlays {
       (c.el.lastElementChild as HTMLElement).style.color = rank === 0 ? 'var(--brand)' : 'var(--brand-soft)';
       // a label the stylesheet hides (a narrow screen) lays out at no width: its leader and ring would point from nothing
       const width = c.el.offsetWidth;
-      const op = calloutOpacity(rank, !!p.hidden, width > 0);
-      c.el.style.opacity = fresh ? '0' : String(op.label);
       const x = p.side === 'l' ? 24 : w - width - 186;
+      // the opening frame's large Play button is not drawn over a label (nor its leader drawn across the button)
+      const hb = this.heroBox;
+      const underHero = !!hb && x < hb.x1 && x + width > hb.x0 && p.y < hb.y1 && p.y + c.el.offsetHeight > hb.y0;
+      const op = calloutOpacity(rank, !!p.hidden || underHero, width > 0);
+      c.el.style.opacity = fresh ? '0' : String(op.label);
       c.el.style.transform = `translate(${x}px, ${p.y}px)`;
       const lx = p.side === 'l' ? x + width : x;
       const ly = p.y + 18;

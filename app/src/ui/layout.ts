@@ -92,3 +92,15 @@ export function revealScroll(viewportTop: number, margin = 8, slack = 24): numbe
 export function moreSides(scrollLeft: number, clientWidth: number, scrollWidth: number): { start: boolean; end: boolean } {
   return { start: scrollLeft > 1, end: scrollLeft + clientWidth < scrollWidth - 1 };
 }
+
+/**
+ * How far the scale bar rises on a phone to show above the pinned play bar:
+ * the part of the viewport's foot the bar covers (`vpBottom` below `barTop`,
+ * screen px, as the page is scrolled), no more than leaves it `room` px under
+ * the viewport's top. Nothing when the bar covers none of the viewport.
+ */
+export function scaleLift(vpTop: number, vpBottom: number, barTop: number, room = 120): number {
+  const cover = vpBottom - barTop;
+  if (!(cover > 0)) return 0;
+  return Math.round(Math.max(0, Math.min(cover, vpBottom - vpTop - room)));
+}

@@ -32,7 +32,7 @@ describe('member callouts on a narrow screen (Z4, Z10)', () => {
   });
 
   it('measure the label before choosing, and give the line and ring the same answer', () => {
-    expect(OVERLAYS).toMatch(/const width = c\.el\.offsetWidth;\s*const op = calloutOpacity\(rank, !!p\.hidden, width > 0\);/);
+    expect(OVERLAYS).toMatch(/const width = c\.el\.offsetWidth;[\s\S]{0,400}?const op = calloutOpacity\(rank, !!p\.hidden \|\| underHero, width > 0\);/);
     expect(OVERLAYS).toMatch(/c\.line\.style\.opacity = String\(op\.line\);\s*c\.ring\.style\.opacity = String\(op\.ring\);/);
     // the labels are what the narrow stylesheet hides
     expect(CSS).toMatch(/@media \(max-width: 1100px\) \{[\s\S]*?\.overlay \.callout \{ display: none; \}/);

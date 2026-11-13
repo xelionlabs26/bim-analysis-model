@@ -148,11 +148,6 @@ export function issuePosition(k: number, shown: number, total: number): string {
 }
 
 /**
- * Boxes of the chrome over the viewport, relative to `host`, padded; hidden
- * ones left out. Looked for inside `root`: the whole page, for chrome that is
- * fixed to the screen rather than placed in the viewport (the issue sheet).
- */
-/**
  * Where the Issues pane comes to rest once a row is scrolled into view. The
  * ‹ › bar sticks to the top of the pane only once the pane has scrolled past
  * it (`navTop`, its place in the pane's content); short of that, a slice of
@@ -188,6 +183,33 @@ export function nearestMark(x: number, marks: { id: string; x: number }[], reach
   return best;
 }
 
+/** What a swipe on the issue sheet's head does once the finger lifts. */
+export type SheetSwipe = 'none' | 'fold' | 'unfold' | 'close';
+
+/**
+ * What a vertical swipe on the issue sheet's head (its grip and title line)
+ * does: `dy` px down (negative up) in `ms`. Down folds the open sheet to its
+ * title line, or closes it when it is pulled most of its `height` down or is
+ * folded already; up opens a folded sheet out. A movement under `slop` px is
+ * a tap, left to the buttons; a quick flick counts at half the distance.
+ */
+export function sheetSwipe(dy: number, ms: number, folded: boolean, height: number, slop = 8): SheetSwipe {
+  if (!Number.isFinite(dy) || Math.abs(dy) < slop) return 'none';
+  const flick = ms > 0 && Math.abs(dy) / ms > 0.5;
+  const far = (px: number) => Math.abs(dy) >= (flick ? px / 2 : px);
+  if (dy > 0) {
+    if (folded) return far(40) ? 'close' : 'none';
+    if (dy >= Math.max(120, height * 0.6)) return 'close';
+    return far(40) ? 'fold' : 'none';
+  }
+  return folded && far(30) ? 'unfold' : 'none';
+}
+
+/**
+ * Boxes of the chrome over the viewport, relative to `host`, padded; hidden
+ * ones left out. Looked for inside `root`: the whole page, for chrome that is
+ * fixed to the screen rather than placed in the viewport (the issue sheet).
+ */
 export function chromeBoxes(host: HTMLElement, selector: string, pad = 6, root: ParentNode = host): Box[] {
   const h = host.getBoundingClientRect();
   const out: Box[] = [];
@@ -224,6 +246,8 @@ export class IssuesUI {
   private chromeAt = -Infinity;
   /** The issue sheet folded down to its title line (narrow screens). */
   private folded = false;
+  /** When a swipe on the sheet's head last ended: the click its lift makes on a button there is not a tap. */
+  private swipedAt = -Infinity;
   /** The list's row buttons by issue id, and the chips, from the last render. */
   private rows = new Map<string, HTMLButtonElement>();
   private famChips = new Map<RuleInfo['family'], HTMLButtonElement>();
@@ -254,19 +278,24 @@ export class IssuesUI {
     // a tap on the scrubber at an issue mark selects it (the track still starts its scrub, as anywhere on it)
     $('scrubTrack').onpointerdown = (e) => this.markPress(e);
     $('issNext').onclick = () => this.step(1);
-    $('sheetPrev').onclick = () => this.step(-1);
-    $('sheetNext').onclick = () => this.step(1);
-    $('sheetClose').onclick = () => {
+    // a swipe that ends on one of the head's buttons is not a press of it
+    const tap = (fn: () => void) => () => {
+      if (performance.now() - this.swipedAt > 400) fn();
+    };
+    $('sheetPrev').onclick = tap(() => this.step(-1));
+    $('sheetNext').onclick = tap(() => this.step(1));
+    $('sheetClose').onclick = tap(() => {
       // the close button goes with the sheet: the focus moves to the issue's row, or to › when it is filtered out
       const was = this.selected;
       this.select(null);
       const to = (was && this.rows.get(was.id)) || $('issNext');
       to.focus({ preventScroll: !!this.hooks.compact?.() });
-    };
-    $('sheetToggle').onclick = () => {
+    });
+    $('sheetToggle').onclick = tap(() => {
       this.folded = !this.folded;
       this.renderSheet();
-    };
+    });
+    this.bindSheetSwipe();
     this.renderNav();
     this.renderSheet();
   }
@@ -515,6 +544,56 @@ export class IssuesUI {
     const rowBottom = li.getBoundingClientRect().bottom - top;
     const snapped = paneScroll(pane.scrollTop, navTop, rowBottom, pane.clientHeight);
     if (snapped !== pane.scrollTop) pane.scrollTop = snapped;
+  }
+
+  /**
+   * The sheet's head is its handle: dragged down it follows the finger, and
+   * on release folds the sheet to its title line or closes it; dragged up it
+   * opens a folded sheet (sheetSwipe). The stylesheet keeps a drag there from
+   * scrolling the page behind the sheet.
+   */
+  private bindSheetSwipe() {
+    const sheet = $('issueSheet');
+    const head = sheet.querySelector<HTMLElement>('.sheet-head');
+    if (!head) return;
+    let drag: { id: number; y: number; at: number; dy: number } | null = null;
+    const follow = (dy: number) => {
+      // down follows the finger; up gives a little, as a sheet that is already as high as it goes
+      sheet.style.transform = dy ? `translateY(${Math.round(dy > 0 ? dy : dy / 4)}px)` : '';
+    };
+    head.onpointerdown = (e) => {
+      if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      drag = { id: e.pointerId, y: e.clientY, at: performance.now(), dy: 0 };
+      sheet.classList.add('dragging');
+    };
+    head.onpointermove = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag.dy = e.clientY - drag.y;
+      if (Math.abs(drag.dy) >= 8 && !head.hasPointerCapture(e.pointerId)) {
+        try {
+          head.setPointerCapture(e.pointerId);
+        } catch {
+          /* the pointer is gone already */
+        }
+      }
+      if (Math.abs(drag.dy) >= 8) follow(drag.dy);
+    };
+    const end = (e: PointerEvent, cancelled: boolean) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const d = drag;
+      drag = null;
+      sheet.classList.remove('dragging');
+      follow(0);
+      if (Math.abs(d.dy) >= 8) this.swipedAt = performance.now();
+      const act = cancelled ? 'none' : sheetSwipe(d.dy, performance.now() - d.at, this.folded, sheet.offsetHeight);
+      if (act === 'close') this.select(null);
+      else if (act === 'fold' || act === 'unfold') {
+        this.folded = act === 'fold';
+        this.renderSheet();
+      }
+    };
+    head.onpointerup = (e) => end(e, false);
+    head.onpointercancel = (e) => end(e, true);
   }
 
   /** The selected issue in the sheet over the bottom of a narrow screen (CSS keeps it hidden on a wide one). */

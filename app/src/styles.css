@@ -438,7 +438,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .scrub-track i { top: 13px; }
   #scrubKnob { top: 4px; width: 22px; height: 22px; margin-left: -11px; }
   .scrub-tick { top: 9px; height: 12px; }
-  .scalebar { left: 16px; bottom: 16px; }
+  /* --scale-lift: as much as the pinned play bar covers of the viewport's foot (main.ts liftScale) */
+  .scalebar { left: 16px; bottom: calc(16px + var(--scale-lift, 0px)); }
   .watermark { display: none; }
   .stages-head { flex-wrap: wrap; row-gap: 4px; }
   .legend { margin-left: 0; }
@@ -757,6 +758,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   box-shadow: 0 -6px 26px -14px var(--shadow);
 }
 .sheet-head { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+/* the head is the sheet's handle (issues.ts bindSheetSwipe): a drag on it, or on the sheet's edge, moves the sheet and never
+   scrolls the page behind it; the detail scrolls in itself, and its end does not carry on into the page */
+.issue-sheet { touch-action: none; overscroll-behavior: contain; transition: transform 0.18s ease-out; }
+.issue-sheet.dragging { transition: none; }
+@media (prefers-reduced-motion: reduce) { .issue-sheet { transition: none; } }
+.sheet-body { touch-action: pan-y; }
 .sheet-grip { flex: none; width: 36px; height: 36px; margin-left: -6px; border: 0; background: transparent; border-radius: 10px; display: grid; place-items: center; padding: 0; }
 .sheet-grip::before { content: ''; width: 20px; height: 4px; border-radius: 2px; background: var(--muted); }
 .issue-sheet .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
@@ -815,6 +822,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 /* ── Opening frame: the finished model and a large Play button ────────── */
 .hero-play {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5;
+  /* its own width wherever it is put: near the viewport's edge it would otherwise wrap, and the opening layout measures it */
+  width: max-content; white-space: nowrap;
   display: flex; align-items: center; gap: 14px; padding: 10px 26px 10px 10px; border: 0; border-radius: 999px;
   background: var(--brand); color: var(--on-brand); text-align: left; box-shadow: 0 18px 40px -14px var(--shadow);
 }

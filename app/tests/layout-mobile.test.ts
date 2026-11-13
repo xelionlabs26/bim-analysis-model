@@ -281,10 +281,12 @@ describe('the large Play button keeps off the caption (R53)', () => {
   });
 
   it('is placed whenever the cards move, and on a phone only in the part of the model above the fold', () => {
-    const fn = MAIN.match(/function placeHero\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+    const fn = MAIN.match(/function placeHero\([\s\S]*?\n\}/)?.[0] ?? '';
     expect(fn).toMatch(/Math\.min\(r\.height, window\.innerHeight - r\.top\)/);
     expect(MAIN).toMatch(/const HERO_CHROME = '[^']*#caption[^']*#playbar'/);
     expect(MAIN.match(/function syncRestBox\(\)[\s\S]*?\n\}/)?.[0]).toMatch(/placeHero\(\);/);
+    // the opening layout's own spot for it, beside the model (Y2)
+    expect(MAIN.match(/function syncRestBox\(\)[\s\S]*?\n\}/)?.[0]).toMatch(/placeHero\(lay\.at\);/);
   });
 });
 

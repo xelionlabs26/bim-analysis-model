@@ -239,6 +239,26 @@ export class Timeline {
     return this.events.slice(Math.max(0, i - limit + 1), i + 1);
   }
 
+  /** Whether the tower crane stands at `t` with its jib on: erected, and not yet being struck. */
+  craneUp(t: number): boolean {
+    return !!this.project.crane && t >= this.erectT && t < this.presentation.strikeT;
+  }
+
+  /**
+   * Where the crane plan shows the reach for a playhead at `t`: `t` itself
+   * while the crane stands; once it is struck (the material pass and the
+   * section), the end of its last lift; before it goes up, the end of its
+   * first. Null with no tower crane, or none of its lifts to show.
+   */
+  planTime(t: number): number | null {
+    if (!this.project.crane) return null;
+    if (this.craneUp(t)) return t;
+    if (!this.lifts.length) return null;
+    const s = (t < this.erectT ? this.lifts[0] : this.lifts[this.lifts.length - 1]).step;
+    const at = Math.min(Math.max(s.t1, this.erectT), this.presentation.strikeT - 0.01);
+    return this.craneUp(at) ? at : null;
+  }
+
   craneAt(t: number, i: number): CraneState {
     if (!this.project.crane) return { visible: false, mastTop: 0, slew: 0, radius: 0, hookY: 0, lifting: false, ties: [], headVisible: false, pick: null };
     let mastTop = i >= 0 ? this.mastAfter[i] : this.mastStart;

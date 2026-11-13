@@ -67,6 +67,19 @@ export function heroLine(steps: number, seconds: number): string {
   return `${steps} step${steps === 1 ? '' : 's'} in ${Math.max(1, Math.round(seconds))} s, from the start`;
 }
 
+// ── the crane plan ────────────────────────────────────────────────────────────
+
+/**
+ * What the crane plan says when it moves the playhead to a moment the crane
+ * stands (`before`: it was not up yet, so its first lift; else it had been
+ * struck, so its last), and when playback carries the plan past the strike.
+ */
+export function cranePlanNote(crane: string, kind: 'before' | 'struck' | 'gone', step = 0): string {
+  if (kind === 'before') return `${crane} is not up yet at this point: the plan shows its first lift, step ${step}.`;
+  if (kind === 'struck') return `${crane} is struck by this point: the plan shows its last lift, step ${step}.`;
+  return `${crane} is struck here, so the plan has no reach to show. Step back to see it.`;
+}
+
 // ── first-run cards ───────────────────────────────────────────────────────────
 
 /** Set once the first-run cards have been dismissed in this browser. */

@@ -34,6 +34,7 @@ import { CraneRig } from './crane';
 import { CraneReach, type ReachMode } from './reach';
 import { FlagLayer, IssueHighlight } from './highlight';
 import { disposeTree } from './dispose';
+import { bandOutline, heightBands, type Band } from './bands';
 import type { IssueView } from '../checks/view';
 import { fillFragment, fillVertex, ghostFragment, ghostVertex, groundFragment, groundVertex, meshFillFragment, meshFillVertex, meshLineFragment, meshLineVertex } from './shaders';
 
@@ -158,6 +159,10 @@ export class Viewer {
   private distance = 90;
   private maxTop = 10;
   private footprint = 17;
+  /** The model in slices of height (scene/bands.ts), for its outline on screen. */
+  private bands: Band[] = [];
+  /** The default framing has come to rest (its distance and height reached; the view may still turn). */
+  private restSettled = false;
   autoFrame = true;
   pathActive = false;
   private resolution = 1.5;
@@ -290,6 +295,7 @@ export class Viewer {
     this.partTex?.dispose();
     this.partTex = null;
     this.maxTop = project.height;
+    this.bands = heightBands(project.parts);
 
     // ── instanced boxes ──
     const boxes = project.parts.map((p, i) => ({ p, i })).filter(({ p }) => p.mesh === undefined);
@@ -605,6 +611,7 @@ export class Viewer {
       if (Math.abs(aim.x - this.aim.x) < 1e-4 && Math.abs(aim.y - this.aim.y) < 1e-4) this.aim = { ...aim };
       this.applyAim();
     }
+    this.restSettled = false;
     if (pose && this.autoFrame) {
       this.followPose(pose, snap ? 1 : 1 - Math.exp(-dt * poseRate));
       this.draw();
@@ -629,6 +636,7 @@ export class Viewer {
       const off = this.camera.position.clone().sub(this.controls.target);
       this.target.y += (desiredY - this.target.y) * k;
       this.distance += (desiredD - this.distance) * k;
+      this.restSettled = Math.abs(desiredD - this.distance) <= 0.01 * desiredD && Math.abs(desiredY - this.target.y) <= 0.02 * Math.max(1, desiredY) && Math.abs(aim!.x - this.aim.x) < 0.002 && Math.abs(aim!.y - this.aim.y) < 0.002 && Math.abs(this.camera.fov - FOV) < 0.05;
       this.controls.target.copy(this.target);
       this.camera.position.copy(this.target).add(off.setLength(this.distance));
     } else {
@@ -690,6 +698,31 @@ export class Viewer {
     const mm = 12 / Math.tan(fov / 2);
     const pxPerMetre = this.size.h / (2 * d * Math.tan(fov / 2));
     return { az, el, mm, distance: d, pxPerMetre };
+  }
+
+  /**
+   * Whether the default framing has come to rest as of the last frame: no
+   * pose, the camera in the viewer's hands, its distance, height and aim
+   * reached (auto-rotate may still turn it, which moves nothing in modelOutline).
+   */
+  get settled(): boolean {
+    return this.restSettled;
+  }
+
+  /**
+   * The model's outline on screen (CSS pixels within the viewport host), one
+   * box per slice of height, each the same whichever way the view turns
+   * about its axis (scene/bands.ts). Empty while a slice is behind the camera.
+   */
+  modelOutline(): { x0: number; y0: number; x1: number; y1: number }[] {
+    const t = this.controls.target;
+    const out = [];
+    for (const b of this.bands) {
+      const box = bandOutline(b, t.x, t.z, (p) => this.project(p));
+      if (!box) return [];
+      out.push(box);
+    }
+    return out;
   }
 
   /** World → CSS pixels within the viewport host. */

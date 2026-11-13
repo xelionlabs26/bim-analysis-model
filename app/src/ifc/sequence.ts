@@ -14,8 +14,8 @@
  * (steel, mass timber, precast, curtain-wall panels, trees), by hand (the
  * rest). Only crane picks are checked against the crane's load chart.
  */
-import { assembleProject, type StageConfig } from '../data/assemble';
-import { MATERIAL_INFO, REAL_DENSITY, type Crane, type MaterialId, type MeshData, type Method, type Motion, type Part, type PresentationSpec, type Project, type StepDef, type ZoneDef } from '../data/types';
+import { assembleProject, partMassKg, type StageConfig } from '../data/assemble';
+import { MATERIAL_INFO, MOBILE_CRANE, REAL_DENSITY, mobilePick, planBox, type Crane, type PlanBox, type MaterialId, type MeshData, type Method, type Motion, type Part, type PresentationSpec, type Project, type StepDef, type ZoneDef } from '../data/types';
 import type { Category, IfcModel, ImportedElement, Layer } from './model';
 
 type Phase = 'structure' | 'envelope' | 'fitout' | 'landscape';
@@ -60,14 +60,20 @@ const CATEGORY_DEFAULT: Record<Category, MaterialId> = {
 /** Material keyword → MaterialId; null means "ignore this layer" (air). */
 export function classifyMaterial(name: string): MaterialId | null | undefined {
   const n = name.toLowerCase();
-  if (/\bair\b|air ?space|air gap|cavity/.test(n)) return null;
+  // the first match wins, so names that mention two materials are settled first
+  if (/glass.?fib(re|er).?reinforced|\bgrc\b|\bgfrc\b/.test(n)) return 'concrete';
+  if (/glass ?wool|fib(re|er) ?glass|mineral ?(wool|fib)|stone ?wool|rock ?wool|\bbatts?\b|(alumin\w*|foil)[- ]faced/.test(n) && !/glaz|\bigu\b|insulat(ed|ing) glass/.test(n)) return 'insulation';
+  // an air layer or empty cavity, but not a cavity fill, an air barrier or a board
+  if (/\bair\b|air ?space|air gap|cavity/.test(n) && !/insul|wool|fib|foam|\beps\b|\bxps\b|\bpir\b|\bpur\b|fill|membrane|barrier|board|block|brick|concrete|masonry|timber|steel/.test(n)) return null;
   if (/glass|glaz|\bglas\b|vitr/.test(n)) return 'glass';
   if (/alumin/.test(n)) return 'aluminium';
   if (/cross.?lam|\bclt\b|x-?lam|brettsperr/.test(n)) return 'clt';
   if (/glulam|\bglt\b|glued.?lam|\blvl\b|brettschicht|laminated veneer/.test(n)) return 'glulam';
-  if (/insul|wool|\beps\b|\bxps\b|\bpir\b|foam|thermal|rigid insul|semi-?rigid/.test(n)) return 'insulation';
-  if (/timber|wood|lumber|plywood|\bosb\b|holz|spruce|pine|\bfir\b|\boak\b|larch|hout|joist|sheathing/.test(n)) return 'timber';
-  if (/steel|stahl|metal|s235|s275|s355|iron|\d{3} ?mpa/.test(n)) return 'steel';
+  if (/insul|wool|\beps\b|\bxps\b|\bpir\b|\bpur\b|foam|thermal|rigid insul|semi-?rigid/.test(n)) return 'insulation';
+  if (/timber|wood|lumber|plywood|\bosb\b|holz|spruce|pine|\bfir\b|\boak\b|larch|\bhout\b/.test(n)) return 'timber';
+  // joists and sheathing are timber unless the name says steel or gypsum
+  if (/joist|sheathing/.test(n) && !/steel|stahl|metal|\biron\b|gypsum|gips|plaster/.test(n)) return 'timber';
+  if (/steel|stahl|metal|s235|s275|s355|\biron\b|\d{3} ?mpa/.test(n)) return 'steel';
   if (/brick|masonry|\bblock\b|\bcmu\b|clay|stone|granite|marble|limestone|baksteen|ziegel/.test(n)) return 'masonry';
   if (/concrete|beton|cast.?in|precast|\bc\d\d\/\d\d|cement|screed|grout/.test(n)) return 'concrete';
   if (/ceramic|tile|terracotta|porcelain/.test(n)) return 'terracotta';
@@ -81,7 +87,7 @@ export function classifyMaterial(name: string): MaterialId | null | undefined {
 function framingFill(name: string): number {
   const n = name.toLowerCase();
   if (/\bstud|framing|\bframe\b|batten|purlin|furring|channel|track/.test(n)) return /metal|steel/.test(n) ? 0.04 : 0.12;
-  if (/dimensional lumber|joist|rafter|truss/.test(n)) return 0.12;
+  if (/dimensional lumber|joist|rafter|truss/.test(n)) return /metal|steel/.test(n) ? 0.04 : 0.12;
   return 1;
 }
 
@@ -262,10 +268,62 @@ function familyOf(items: Classified[]): string {
   return best.length > 46 ? `${best.slice(0, 45)}…` : best;
 }
 
+/** An element whose material was not recognised (or missing), so a default was used. */
+export interface DefaultedElement {
+  id: number; // IFC entity id
+  guid: string;
+  name: string;
+  ifcType: string;
+  material: MaterialId; // the default it was given
+}
+
 export interface SequenceResult {
   project: Project;
   defaultedMaterials: number;
+  /** The elements behind defaultedMaterials; also on project.report.defaultedElements. */
+  defaultedElements: DefaultedElement[];
   bands: string[];
+}
+
+/** A building under this height (m) is low-rise: a mobile crane reaches over it from the street. */
+export const LOW_RISE_M = 12;
+/** A mobile crane is chosen only when every pick stays under this share of its chart (the checks' default review threshold). */
+const MOBILE_MARGIN = 0.85;
+
+export interface LiftPlan {
+  /** Whether the building needs a tower crane. */
+  tower: boolean;
+  /** Why, in a sentence for the import report. */
+  reason: string;
+  /** Heaviest crane pick, kg, and the highest share of the mobile crane's chart any pick takes. */
+  heaviestKg: number;
+  mobileUtil: number;
+}
+
+/**
+ * Tower crane or not. A low-rise building (under LOW_RISE_M) whose every crane
+ * pick fits an indicative mobile crane's chart, set up beside the nearest face,
+ * with the review margin to spare, is lifted by mobile crane and by hand; a
+ * tower crane beside a house is the kind of plan nobody would believe.
+ */
+export function liftPlanFor(height: number, picks: readonly { x: number; z: number; kg: number }[], box: PlanBox): LiftPlan {
+  let heaviestKg = 0, mobileUtil = 0, worstKg = 0;
+  for (const q of picks) {
+    heaviestKg = Math.max(heaviestKg, q.kg);
+    const u = mobilePick(box, q.x, q.z, q.kg).util;
+    if (u > mobileUtil) {
+      mobileUtil = u;
+      worstKg = q.kg;
+    }
+  }
+  const kg = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v / 10) * 10} kg`);
+  const h = `${height.toFixed(1)} m`;
+  if (height >= LOW_RISE_M) return { tower: true, reason: `tower crane assumed: the building is ${h} tall (${LOW_RISE_M} m or more)`, heaviestKg, mobileUtil };
+  if (mobileUtil > MOBILE_MARGIN) {
+    return { tower: true, reason: `tower crane assumed: a pick of ${kg(worstKg)} needs ${Math.round(mobileUtil * 100)} % of a mobile crane's chart`, heaviestKg, mobileUtil };
+  }
+  const heaviest = picks.length ? `heaviest pick ${kg(heaviestKg)}, at most ${Math.round(mobileUtil * 100)} % of ${MOBILE_CRANE.chart}` : 'no crane picks';
+  return { tower: false, reason: `mobile crane / by hand: ${h} tall, ${heaviest}`, heaviestKg, mobileUtil };
 }
 
 export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): SequenceResult {
@@ -273,10 +331,12 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
   const byId = new Map(els.map((e) => [e.id, e]));
   const guidOf = new Map<number, string>([...model.parents, ...els.map((e) => [e.id, e.guid] as [number, string])]);
   const meshes: MeshData[] = [];
+  // extents in one pass (spreading one argument per element overflows the stack on big models)
+  const { min: bmin, max: bmax } = extents(els);
+  const [minX, lo, minZ] = bmin;
+  const [maxX, hi, maxZ] = bmax;
   // storey bands from geometry: the highest storey at or below an element's bottom
   let storeys = model.storeys.slice();
-  const lo = Math.min(...els.map((e) => e.min[1]));
-  const hi = Math.max(...els.map((e) => e.max[1]));
   if (!storeys.length) {
     storeys = [];
     for (let y = lo, k = 0; y < hi - 1; y += 3.5, k++) storeys.push({ id: -k - 1, name: `LEVEL ${String(k).padStart(2, '0')}`, elevation: y });
@@ -284,6 +344,8 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
   // merge storeys closer than 1.2 m (split levels, top-of-structure markers)
   const levels: typeof storeys = [];
   for (const s of storeys) if (!levels.length || s.elevation - levels[levels.length - 1].elevation > 1.2) levels.push(s);
+  // always one band, so a model under 1 m tall with no storeys is still sequenced
+  if (!levels.length) levels.push({ id: -1, name: 'LEVEL 00', elevation: lo });
   const bandOf = (y: number) => {
     let b = 0;
     for (let i = 0; i < levels.length; i++) if (levels[i].elevation <= y + 0.25) b = i;
@@ -303,11 +365,11 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
     }
   }
 
-  let defaulted = 0;
+  const defaultedElements: DefaultedElement[] = [];
   const items: Classified[] = els.map((el) => {
     const c = classify(el, byId, supporting);
     const mm = materialMix(el);
-    if (mm.defaulted) defaulted++;
+    if (mm.defaulted) defaultedElements.push({ id: el.id, guid: el.guid, name: el.name, ifcType: el.type, material: mm.mat });
     const meshIndex = meshes.length;
     meshes.push({ positions: el.positions, indices: el.indices, edges: el.edges, closed: el.closed, min: el.min, max: el.max });
     const part: Part = {
@@ -333,8 +395,8 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
     return { ...c, part, band: bandOf(el.min[1]), defaulted: mm.defaulted };
   });
 
-  const cx = (Math.min(...els.map((e) => e.min[0])) + Math.max(...els.map((e) => e.max[0]))) / 2;
-  const cz = (Math.min(...els.map((e) => e.min[2])) + Math.max(...els.map((e) => e.max[2]))) / 2;
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
   const quadrantOf = (c: Classified) => (c.part.pos[2] < cz ? (c.part.pos[0] < cx ? 0 : 1) : c.part.pos[0] < cx ? 3 : 2);
   const bandName = (b: number) => (levels[b]?.name || `BAND ${b + 1}`).toUpperCase();
 
@@ -381,12 +443,16 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
   };
   const by = (phase: Phase, band: number) => items.filter((c) => c.phase === phase && c.band === band);
 
+  // ── a tower crane, or a mobile crane and the site team for a low-rise building ──
+  const picks = items.filter((c) => c.method === 'crane' && !MATERIAL_INFO[c.part.mat].bulk).map((c) => ({ x: c.part.pos[0], z: c.part.pos[2], kg: partMassKg(c.part, REAL_DENSITY) }));
+  const plan = liftPlanFor(hi - Math.max(0, lo), picks, planBox(items.map((c) => c.part)));
+
   // ── interleave: structure of band b, then envelope + fit-out of band b − 2 ──
   const ordered: { band: number; defs: StepDef[] }[] = [];
   const LAG = 2;
   for (let b = 0; b < nBands; b++) {
     const defs = stepsFor(by('structure', b), b);
-    if (b === 0) {
+    if (b === 0 && plan.tower) {
       // the crane goes up once the foundations are in
       const firstNonFoundation = defs.findIndex((d) => !d.code.startsWith('FD'));
       const at = firstNonFoundation < 0 ? defs.length : firstNonFoundation;
@@ -431,34 +497,38 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
   stages.push({ code: 'SECTION', tick: 'SECT', title: 'SECTION A–A', zones: [], kind: 'section', sheet: `A-${301 + stages.length}`, seconds: 6.8, subtitle: () => 'cut · fly-through · 6.8 s' });
 
   // ── crane on the west side, sized to reach every element ──
-  const minX = Math.min(...els.map((e) => e.min[0]));
-  const base: [number, number, number] = [minX - 7, 0, cz];
-  let reach = 0;
-  for (const e of els) for (const x of [e.min[0], e.max[0]]) for (const z of [e.min[2], e.max[2]]) reach = Math.max(reach, Math.hypot(x - base[0], z - base[2]));
-  const jib = Math.min(80, Math.max(30, Math.ceil((reach + 3) / 5) * 5));
-  const r0 = jib / 3;
-  const crane: Crane = {
-    id: 'TC-1',
-    base,
-    jib,
-    counterJib: Math.round(jib * 0.3),
-    maxKg: 12000,
-    tipKg: Math.round(12000 * Math.pow(r0 / jib, 1.45)),
-    capacityAt: (r: number) => Math.min(12000, 12000 * Math.pow(r0 / Math.max(r, 1), 1.45)),
-    tieX: minX,
-    mastStart: hi < 18 ? Math.max(12, hi + 9) : Math.max(20, Math.min(44, hi + 14)),
-  };
+  let crane: Crane | null = null;
+  if (plan.tower) {
+    const base: [number, number, number] = [minX - 7, 0, cz];
+    let reach = 0;
+    for (const e of els) for (const x of [e.min[0], e.max[0]]) for (const z of [e.min[2], e.max[2]]) reach = Math.max(reach, Math.hypot(x - base[0], z - base[2]));
+    const jib = Math.min(80, Math.max(30, Math.ceil((reach + 3) / 5) * 5));
+    const r0 = jib / 3;
+    crane = {
+      id: 'TC-1',
+      base,
+      jib,
+      counterJib: Math.round(jib * 0.3),
+      maxKg: 12000,
+      tipKg: Math.round(12000 * Math.pow(r0 / jib, 1.45)),
+      capacityAt: (r: number) => Math.min(12000, 12000 * Math.pow(r0 / Math.max(r, 1), 1.45)),
+      tieX: minX,
+      mastStart: hi < 18 ? Math.max(12, hi + 9) : Math.max(20, Math.min(44, hi + 14)),
+      assumed: true,
+    };
+  }
 
-  // ── floor area for carbon intensity: slab plan areas ──
+  // ── floor area for carbon intensity: plan areas of the floor slabs ──
   let gifa = 0;
-  for (const c of items) if (c.el.category === 'slab' && c.el.volume > 0) gifa += c.el.volume / Math.max(0.05, c.el.max[1] - c.el.min[1]);
-  if (gifa < 10) gifa = (Math.max(...els.map((e) => e.max[0])) - minX) * (Math.max(...els.map((e) => e.max[2])) - Math.min(...els.map((e) => e.min[2]))) * Math.max(1, levels.length - 1);
+  for (const c of items) if (isFloorSlab(c)) gifa += c.el.volume / Math.max(0.05, c.el.max[1] - c.el.min[1]);
+  if (gifa < 10) gifa = (maxX - minX) * (maxZ - minZ) * Math.max(1, levels.length - 1);
 
   const datums = pickDatums(levels.map((l) => ({ code: shortLabel(l.name.toUpperCase(), 8), y: l.elevation })));
   const name = model.name;
   const nSteps = allDefs.length;
   const id = `${name.replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase() || 'IF'}-${String(levels.length).padStart(2, '0')}`;
-  const report = { ...model.report, defaultedMaterials: defaulted, bands: levels.map((l) => l.name) };
+  const defaulted = defaultedElements.length;
+  const report = { ...model.report, defaultedMaterials: defaulted, defaultedElements, bands: levels.map((l) => l.name), lifting: plan.reason };
 
   const project = assembleProject({
     id,
@@ -489,7 +559,37 @@ export function projectFromIfc(model: IfcModel, fileName = 'model.ifc'): Sequenc
     presentation: (p) => genericPresentation(p, levels.map((l) => ({ name: l.name, y: l.elevation })), { cx, cz }),
     report,
   });
-  return { project, defaultedMaterials: defaulted, bands: levels.map((l) => l.name) };
+  return { project, defaultedMaterials: defaulted, defaultedElements, bands: levels.map((l) => l.name) };
+}
+
+/** Bounding box of all elements, in one pass. */
+function extents(els: ImportedElement[]): { min: [number, number, number]; max: [number, number, number] } {
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const e of els)
+    for (let k = 0; k < 3; k++) {
+      if (e.min[k] < min[k]) min[k] = e.min[k];
+      if (e.max[k] > max[k]) max[k] = e.max[k];
+    }
+  return { min, max };
+}
+
+/**
+ * A slab that counts towards the gross internal floor area: not a floor finish (the
+ * same test classify() applies), not a roof or landing, and not an external slab
+ * such as a patio (often flagged only in its name).
+ */
+function isFloorSlab(c: Classified): boolean {
+  const e = c.el;
+  return (
+    e.category === 'slab' &&
+    e.volume > 0 &&
+    c.group !== 'FLOOR FINISHES' &&
+    e.predefined !== 'ROOF' &&
+    e.predefined !== 'LANDING' &&
+    e.isExternal !== true &&
+    !/\bexterior\b|\bexternal\b|\bpatio\b|\bterrace\b/i.test(`${e.name} ${e.objectType}`)
+  );
 }
 
 function shortLabel(s: string, n: number) {
@@ -533,7 +633,7 @@ function genericPresentation(p: Omit<Project, 'presentation'>, levels: { name: s
     { t: 0.9, target: [c.cx + 0.5, H * 0.5, c.cz] as [number, number, number], az: 90, el: 8, dist: far, fov: 26 },
   ];
   const shots: PresentationSpec['shots'] = [
-    { id: 'M-00', stage: 'material', dt: 0.05, title: 'TC-1 · CRANE DISMANTLED', spec: 'sections lowered by a mobile crane at street level', anchor: null },
+    ...(p.crane ? [{ id: 'M-00', stage: 'material' as const, dt: 0.05, title: `${p.crane.id} · CRANE DISMANTLED`, spec: 'sections lowered by a mobile crane at street level', anchor: null }] : []),
     { id: 'M-01', stage: 'material', dt: 0.15, title: 'MATERIAL PASS 1/2 · STRUCTURE', spec: 'frame, slabs and walls in their own materials', anchor: [minX, H * 0.3, maxZ] },
     { id: 'M-02', stage: 'material', dt: 1.6, title: 'MATERIAL PASS 2/2 · ENVELOPE & FINISHES', spec: 'glazing, cladding, finishes and planting', anchor: [c.cx, H * 0.55, maxZ] },
     { id: 'M-03', stage: 'material', dt: 2.9, title: 'EMBODIED CARBON · INDICATIVE', spec: `≈ ${fmtInt(p.totalCarbonKg / 1000)} tCO₂e A1–A3 · ≈ ${Math.round(p.totalCarbonKg / Math.max(1, p.gifa))} kg/m²`, anchor: [c.cx - halfX * 0.5, H * 0.45, maxZ] },

@@ -33,6 +33,13 @@ export class CheckScene {
   readonly mesh: (MeshData | null)[];
   /** Lowest part bottom: the dig level. */
   readonly groundY: number;
+  /**
+   * Finished ground level, which every "at the ground" test is measured from.
+   * Zero unless an import keeps a site datum (say +30 m) that its storeys do not.
+   */
+  readonly ground: number;
+  /** Model height minus storey elevation, so level names still match a model set out at a site datum. */
+  readonly levelShift: number;
   private readonly cell: Vec3;
   private readonly origin: Vec3;
   private readonly dims: [number, number, number];
@@ -82,6 +89,9 @@ export class CheckScene {
       this.cat[i] = k.cat;
     }
     this.groundY = Number.isFinite(lo[1]) ? lo[1] : 0;
+    const datum = groundDatum(project, this);
+    this.ground = datum.ground;
+    this.levelShift = datum.shift;
     // grid cells sized to the model: about 40 across in plan, storey-ish in height
     const span = Math.max(hi[0] - lo[0], hi[2] - lo[2], 1);
     const c = Math.max(1, span / 40);
@@ -232,6 +242,43 @@ export class CheckScene {
     }
     return merged;
   }
+}
+
+/**
+ * Where the ground is, for imports. The importer keeps a file's height datum,
+ * so a building set out at +30 m arrives with its slab on grade at y = 30 while
+ * its storey elevations still read 0, 3.1, 6.0. The offset that lines up the
+ * most storey elevations with the tops of structural slabs is the shift between
+ * the two; the ground is the storey at elevation 0 (or, when the storeys carry
+ * the site datum too, the lowest storey with a slab), moved by that shift.
+ * Generated projects are built on y = 0. Offsets under 0.5 m are read as none,
+ * so a model at datum keeps exactly the thresholds it always had.
+ */
+export function groundDatum(project: Project, S: Pick<CheckScene, 'n' | 'role' | 'cat' | 'max'>): { ground: number; shift: number } {
+  const none = { ground: 0, shift: 0 };
+  if (project.meta.source !== 'ifc') return none;
+  const levels = project.levels.filter((l) => l.code !== 'TOP').map((l) => l.y);
+  const tops: number[] = [];
+  for (let i = 0; i < S.n; i++) {
+    if (S.role[i] !== 'structure' || S.cat[i] !== 'slab') continue;
+    const y = S.max[i * 3 + 1];
+    if (!tops.some((t) => Math.abs(t - y) < 0.05)) tops.push(y);
+  }
+  if (!levels.length || !tops.length) return none;
+  const TOL = 0.15;
+  const hasSlab = (y: number) => tops.some((t) => Math.abs(t - y) <= TOL);
+  let shift = 0, score = 0;
+  for (const t of tops)
+    for (const l of levels) {
+      const d = t - l;
+      const n = levels.filter((y) => hasSlab(y + d)).length;
+      if (n > score || (n === score && Math.abs(d) < Math.abs(shift))) [shift, score] = [d, n];
+    }
+  if (Math.abs(shift) < 0.5) shift = 0;
+  const atZero = levels.filter((y) => Math.abs(y) <= 0.5).sort((a, b) => Math.abs(a) - Math.abs(b))[0];
+  const floor = atZero ?? levels.filter((y) => hasSlab(y + shift)).sort((a, b) => a - b)[0] ?? 0;
+  const ground = shift + floor;
+  return { ground: Math.abs(ground) < 0.5 ? 0 : ground, shift };
 }
 
 /** The oriented box of a generated part. */

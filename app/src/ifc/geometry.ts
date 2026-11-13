@@ -259,12 +259,18 @@ export interface GeometryReport {
   openingsSkipped: number;
   clipsApplied: number;
   booleansApproximated: number;
+  /** Placement chains that loop back on themselves; each was broken at the repeat. */
+  placementCycles: number;
+  /** Placement types that are not read (e.g. IfcLinearPlacement), per type: drawn from the origin. */
+  unsupportedPlacements: Map<string, number>;
 }
 
 export class IfcGeometry {
   private placements = new Map<number, M4>();
+  private placing = new Set<number>(); // placements being resolved: a repeat is a cycle
+  private gridOfAxis: Map<number, number> | null = null; // IfcGridAxis → its IfcGrid
   private axisCache = new Map<number, M4>();
-  readonly report: GeometryReport = { items: new Map(), skipped: new Map(), openingsCut: 0, openingsSkipped: 0, clipsApplied: 0, booleansApproximated: 0 };
+  readonly report: GeometryReport = { items: new Map(), skipped: new Map(), openingsCut: 0, openingsSkipped: 0, clipsApplied: 0, booleansApproximated: 0, placementCycles: 0, unsupportedPlacements: new Map() };
   /** Openings that cut at least one item; the caller counts the rest as not cut. */
   readonly opened = new Set<Mesh>();
   /** Plane angle unit in radians (degrees → π/180). */
@@ -322,19 +328,102 @@ export class IfcGeometry {
     return m;
   }
 
-  /** IfcLocalPlacement chain → world matrix (file units). */
+  /** IfcLocalPlacement / IfcGridPlacement chain → world matrix (file units). */
   placement(v: StepValue): M4 {
     if (!(v instanceof Ref)) return I4();
     const hit = this.placements.get(v.id);
     if (hit) return hit;
+    if (this.placing.has(v.id)) {
+      // a malformed file whose PlacementRelTo chain loops: treat the repeat as unparented
+      this.report.placementCycles++;
+      return I4();
+    }
     const e = this.f.get(v.id);
     let m = I4();
-    if (e?.type === 'IFCLOCALPLACEMENT') {
-      const parent = e.args[0] instanceof Ref ? this.placement(e.args[0]) : I4();
-      m = mul(parent, this.axis2(e.args[1]));
+    this.placing.add(v.id);
+    try {
+      if (e?.type === 'IFCLOCALPLACEMENT') {
+        const parent = e.args[0] instanceof Ref ? this.placement(e.args[0]) : I4();
+        m = mul(parent, this.axis2(e.args[1]));
+      } else if (e?.type === 'IFCGRIDPLACEMENT') {
+        const gm = this.gridPlacement(e);
+        if (gm) m = gm;
+        else this.count(this.report.unsupportedPlacements, e.type);
+      } else if (e) this.count(this.report.unsupportedPlacements, e.type);
+    } finally {
+      this.placing.delete(v.id);
     }
     this.placements.set(v.id, m);
     return m;
+  }
+
+  /**
+   * IfcGridPlacement: the intersection of two grid axes (each offset sideways by
+   * its OffsetDistance), lifted by the third offset, in the owning grid's frame.
+   * IFC4X3 put PlacementRelTo first; earlier schemas start at PlacementLocation.
+   */
+  private gridPlacement(e: Entity): M4 | null {
+    const a = e.args.length >= 3 ? e.args.slice(1) : e.args;
+    const at = this.gridPoint(a[0]);
+    if (!at) return null;
+    // the grid's frame: from the IfcGrid holding the axes, else PlacementRelTo (IFC4X3)
+    const gridId = this.gridOf(at.axis);
+    const grid = gridId !== undefined ? this.f.get(gridId) : undefined;
+    const frame = grid ? this.placement(grid.args[5]) : e.args.length >= 3 ? this.placement(e.args[0]) : I4();
+    // orientation: an explicit direction, or towards a second intersection; else the grid's own axes
+    let x: V3 = [1, 0, 0];
+    const ref = this.f.deref(a[1]);
+    if (ref?.type === 'IFCDIRECTION') x = this.direction(a[1], x);
+    else if (ref?.type === 'IFCVIRTUALGRIDINTERSECTION') {
+      const to = this.gridPoint(a[1]);
+      if (to) {
+        const d: V3 = [to.p[0] - at.p[0], to.p[1] - at.p[1], 0];
+        if (len(d) > 1e-9) x = norm(d);
+      }
+    }
+    x = norm([x[0], x[1], 0]);
+    if (len(x) < 1e-9) x = [1, 0, 0];
+    return mul(frame, basis(at.p, x, [-x[1], x[0], 0], [0, 0, 1]));
+  }
+
+  /** IfcVirtualGridIntersection → point in the grid's frame (and one of its axes, to find the grid). */
+  private gridPoint(v: StepValue): { p: V3; axis: number } | null {
+    const vi = this.f.deref(v);
+    if (!vi || vi.type !== 'IFCVIRTUALGRIDINTERSECTION') return null;
+    const axes = refs(vi.args[0]);
+    const off = Array.isArray(vi.args[1]) ? vi.args[1].map((x) => num(x)) : [];
+    if (axes.length < 2) return null;
+    const lines: { o: V2; d: V2 }[] = [];
+    for (let k = 0; k < 2; k++) {
+      const ax = this.f.get(axes[k]);
+      if (!ax) return null;
+      const pts = this.curve2(ax.args[1]);
+      if (pts.length < 2) return null;
+      const p = pts[0], q = pts[pts.length - 1];
+      const l = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      if (l < 1e-12) return null;
+      const sense = bool(ax.args[2]) !== false ? 1 : -1;
+      const d: V2 = [((q[0] - p[0]) / l) * sense, ((q[1] - p[1]) / l) * sense];
+      // a positive offset lies to the left of the axis, as for an offset curve
+      const o = off[k] ?? 0;
+      lines.push({ o: [p[0] - d[1] * o, p[1] + d[0] * o], d });
+    }
+    const [A, B] = lines;
+    const den = A.d[0] * B.d[1] - A.d[1] * B.d[0];
+    if (Math.abs(den) < 1e-12) return null; // parallel axes do not meet
+    const t = ((B.o[0] - A.o[0]) * B.d[1] - (B.o[1] - A.o[1]) * B.d[0]) / den;
+    return { p: [A.o[0] + A.d[0] * t, A.o[1] + A.d[1] * t, off[2] ?? 0], axis: axes[0] };
+  }
+
+  private gridOf(axis: number): number | undefined {
+    if (!this.gridOfAxis) {
+      this.gridOfAxis = new Map();
+      for (const gid of this.f.idsOfType('IFCGRID')) {
+        const g = this.f.get(gid)!;
+        for (const k of [7, 8, 9]) for (const id of refs(g.args[k])) this.gridOfAxis.set(id, gid);
+      }
+    }
+    return this.gridOfAxis.get(axis);
   }
 
   /** IfcCartesianTransformationOperator3D (+NonUniform) → matrix. */
@@ -408,21 +497,33 @@ export class IfcGeometry {
   }
 
   private conic(e: Entity, a0: number, a1: number, closed: boolean): V2[] {
+    return this.conic3(e, a0, a1, closed).map((p) => [p[0], p[1]] as V2);
+  }
+
+  /** Points along a circle or ellipse, in 3D (its placement may tilt it out of the xy plane). */
+  private conic3(e: Entity, a0: number, a1: number, closed: boolean): V3[] {
     const { m, r1, r2 } = this.conicFrame(e);
-    let span = a1 - a0;
+    const span = a1 - a0;
     const steps = Math.max(4, Math.ceil(Math.abs(span) / (Math.PI / 18)));
-    const out: V2[] = [];
+    const out: V3[] = [];
     const n = closed ? steps : steps + 1;
     for (let i = 0; i < n; i++) {
       const t = a0 + (span * i) / steps;
-      const p = tp(m, r1 * Math.cos(t), r2 * Math.sin(t), 0);
-      out.push([p[0], p[1]]);
+      out.push(tp(m, r1 * Math.cos(t), r2 * Math.sin(t), 0));
     }
-    if (closed) span = 0;
     return out;
   }
 
   private trimmed(e: Entity): V2[] {
+    const pts = this.trimmed3(e);
+    if (pts) return pts.map((p) => [p[0], p[1]] as V2);
+    const sense = bool(e.args[3]) !== false;
+    const rest = this.curve2(e.args[0]);
+    return sense ? rest : rest.reverse();
+  }
+
+  /** A trimmed circle, ellipse or line in 3D; null for other basis curves (the caller recurses). */
+  private trimmed3(e: Entity): V3[] | null {
     const basisCurve = this.f.deref(e.args[0]);
     if (!basisCurve) return [];
     const sense = bool(e.args[3]) !== false;
@@ -455,23 +556,22 @@ export class IfcGeometry {
       } else {
         while (a1 >= a0 - 1e-9) a1 -= Math.PI * 2;
       }
-      return this.conic(basisCurve, a0, a1, false);
+      return this.conic3(basisCurve, a0, a1, false);
     }
     if (basisCurve.type === 'IFCLINE') {
       const p = this.point(basisCurve.args[0]);
       const vec = this.f.deref(basisCurve.args[1]);
       const dir = vec ? this.direction(vec.args[0], [1, 0, 0]) : ([1, 0, 0] as V3);
       const mag = vec ? num(vec.args[1], 1) : 1;
-      const at = (tr: { param?: number; point?: V3 }): V2 => {
-        if (tr.point) return [tr.point[0], tr.point[1]];
+      const at = (tr: { param?: number; point?: V3 }): V3 => {
+        if (tr.point) return tr.point;
         const s = tr.param ?? 0;
-        return [p[0] + dir[0] * mag * s, p[1] + dir[1] * mag * s];
+        return [p[0] + dir[0] * mag * s, p[1] + dir[1] * mag * s, p[2] + dir[2] * mag * s];
       };
       const a = at(t1), b = at(t2);
       return sense ? [a, b] : [b, a];
     }
-    const pts = this.curve2(e.args[0]);
-    return sense ? pts : pts.reverse();
+    return null;
   }
 
   private indexedPolyCurve(e: Entity): V2[] {
@@ -897,19 +997,40 @@ export class IfcGeometry {
   private curve3(v: StepValue): V3[] {
     const e = this.f.deref(v);
     if (!e) return [];
-    if (e.type === 'IFCPOLYLINE') return refs(e.args[0]).map((id) => this.point(new Ref(id)));
-    if (e.type === 'IFCCOMPOSITECURVE') {
-      const out: V3[] = [];
-      for (const sid of refs(e.args[0])) {
-        const seg = this.f.get(sid);
-        if (seg) out.push(...this.curve3(seg.args[2]));
+    switch (e.type) {
+      case 'IFCPOLYLINE':
+        return refs(e.args[0]).map((id) => this.point(new Ref(id)));
+      case 'IFCCOMPOSITECURVE':
+      case 'IFCCOMPOSITECURVEONSURFACE': {
+        const out: V3[] = [];
+        for (const sid of refs(e.args[0])) {
+          const seg = this.f.get(sid);
+          if (!seg) continue;
+          // SameSense .F.: the segment runs against its parent curve
+          let pts = this.curve3(seg.args[2]);
+          if (bool(seg.args[1]) === false) pts = pts.slice().reverse();
+          // segments share their end points: keep one, so no zero-length piece is swept
+          for (const p of pts) {
+            const q = out[out.length - 1];
+            if (!q || Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]) + Math.abs(q[2] - p[2]) > 1e-9) out.push(p);
+          }
+        }
+        return out;
       }
-      return out;
-    }
-    if (e.type === 'IFCINDEXEDPOLYCURVE') {
-      const list = this.f.deref(e.args[0]);
-      const coords = list?.args[0];
-      if (Array.isArray(coords)) return coords.map((c) => (Array.isArray(c) ? ([num(c[0]), num(c[1]), num(c[2])] as V3) : ([0, 0, 0] as V3)));
+      case 'IFCTRIMMEDCURVE': {
+        const pts = this.trimmed3(e);
+        if (pts) return pts;
+        const rest = this.curve3(e.args[0]);
+        return bool(e.args[3]) !== false ? rest : rest.slice().reverse();
+      }
+      case 'IFCCIRCLE':
+      case 'IFCELLIPSE':
+        return this.conic3(e, 0, Math.PI * 2, true);
+      case 'IFCINDEXEDPOLYCURVE': {
+        const list = this.f.deref(e.args[0]);
+        const coords = list?.args[0];
+        if (Array.isArray(coords)) return coords.map((c) => (Array.isArray(c) ? ([num(c[0]), num(c[1]), num(c[2])] as V3) : ([0, 0, 0] as V3)));
+      }
     }
     return this.curve2(v).map(([x, y]) => [x, y, 0] as V3);
   }
@@ -976,9 +1097,14 @@ export class IfcGeometry {
     const coords = list?.args[0];
     if (!Array.isArray(coords)) return local;
     const C: V3[] = coords.map((c) => (Array.isArray(c) ? [num(c[0]), num(c[1]), num(c[2])] : [0, 0, 0]) as V3);
+    // PnIndex is a flat list of point indices. IFC4 before ADD2 had NormalIndex, a list of
+    // triples, in the same slot of IfcTriangulatedFaceSet: that one is ignored (normals are not used)
     const pnIdx = e.type === 'IFCPOLYGONALFACESET' ? e.args[3] : e.args[4];
-    const pn = Array.isArray(pnIdx) ? pnIdx.map((x) => num(x)) : null;
-    const P = (i: number) => C[(pn ? pn[i - 1] : i) - 1] ?? C[0];
+    const pn = Array.isArray(pnIdx) && pnIdx.length && pnIdx.every((x) => typeof x === 'number' || x instanceof Typed) ? pnIdx.map((x) => num(x)) : null;
+    const P = (i: number) => {
+      const j = pn ? pn[i - 1] : i;
+      return C[(j > 0 ? j : i) - 1] ?? C[i - 1] ?? C[0];
+    };
     if (e.type === 'IFCPOLYGONALFACESET') {
       for (const fid of refs(e.args[2])) {
         const face = this.f.get(fid);
@@ -1141,8 +1267,9 @@ export class IfcGeometry {
         if (inside && clear && !wallCuts.length) {
           single.holes.push(rect.slice().reverse());
           this.opened.add(op);
+          continue;
         }
-        continue;
+        // not a hole in the plan: a full-height opening through a wall is cut as a wall strip below
       }
       const ttol = (tmax - tmin) * 0.05 + 1e-6;
       if (axis && !single!.holes.length && tl <= tmin + ttol && th >= tmax - ttol) {

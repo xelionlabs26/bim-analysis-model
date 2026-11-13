@@ -91,3 +91,94 @@ export function placeOnRing(
   const b = corner(best.c, points[best.k], size.w, size.h, gap);
   return { x: b.x0, y: b.y0, k: best.k, corner: best.c };
 }
+
+const width = (b: Box) => b.x1 - b.x0;
+const height = (b: Box) => b.y1 - b.y0;
+/** The side of the biggest square a box holds: what an object framed in it can grow to. */
+export const boxSide = (b: Box) => Math.max(0, Math.min(width(b), height(b)));
+
+/**
+ * The biggest box inside `bounds` that overlaps none of the obstacles. A clear
+ * box worth framing in is square-ish, so the widest square wins and area breaks
+ * ties. Every maximal clear box has its sides on obstacle or bounds edges, so
+ * only those lines are tried.
+ */
+export function clearBox(bounds: Box, obstacles: Box[]): Box {
+  const inside = obstacles.filter((o) => o.x1 > bounds.x0 && o.x0 < bounds.x1 && o.y1 > bounds.y0 && o.y0 < bounds.y1);
+  const lines = (lo: number, hi: number, vals: number[]) => [...new Set([lo, hi, ...vals.map((v) => Math.min(hi, Math.max(lo, v)))])].sort((a, b) => a - b);
+  const xs = lines(bounds.x0, bounds.x1, inside.flatMap((o) => [o.x0, o.x1]));
+  const ys = lines(bounds.y0, bounds.y1, inside.flatMap((o) => [o.y0, o.y1]));
+  let best: Box = { x0: bounds.x0, y0: bounds.y0, x1: bounds.x0, y1: bounds.y0 };
+  let bestSide = -1, bestArea = -1;
+  for (let a = 0; a < xs.length; a++)
+    for (let b = a + 1; b < xs.length; b++)
+      for (let c = 0; c < ys.length; c++)
+        for (let d = c + 1; d < ys.length; d++) {
+          const box = { x0: xs[a], x1: xs[b], y0: ys[c], y1: ys[d] };
+          const side = boxSide(box), area = width(box) * height(box);
+          if (side < bestSide || (side === bestSide && area <= bestArea)) continue;
+          if (inside.some((o) => overlap(box, o) > 0)) continue;
+          best = box;
+          bestSide = side;
+          bestArea = area;
+        }
+  return best;
+}
+
+/** Where a selected issue is framed: the box to centre it in, and whether the caption card steps aside for it. */
+export interface IssueFrame {
+  box: Box;
+  hideCaption: boolean;
+}
+
+/**
+ * Frame an issue clear of the viewport's chrome. The caption card stays when
+ * the space it leaves is nearly as good as the space without it, or roomy
+ * anyway (`enough` pixels square); on a smaller screen it steps aside (the
+ * issue card in the panel says the same). When even that leaves too little
+ * room, the whole viewport is used.
+ */
+export function issueFrame(bounds: Box, chrome: Box[], caption: Box | null, keep = 0.8, least = 0.35, enough = 380): IssueFrame {
+  const without = clearBox(bounds, chrome);
+  const full = boxSide(bounds);
+  if (caption) {
+    const withCaption = clearBox(bounds, [...chrome, caption]);
+    const side = boxSide(withCaption);
+    if ((side >= keep * boxSide(without) || side >= enough) && side >= least * full) return { box: withCaption, hideCaption: false };
+  }
+  if (boxSide(without) >= least * full) return { box: without, hideCaption: !!caption };
+  return { box: bounds, hideCaption: !!caption };
+}
+
+/**
+ * Top-left of a pin's label: up and to the right of the dot as a rule, else
+ * the first other side that stays on screen and clear of the obstacles, else
+ * the side that covers least of them. The dot itself never moves.
+ */
+export function pinLabel(dot: { x: number; y: number }, size: { w: number; h: number }, bounds: Box, obstacles: Box[], gap = { x: 26, y: 34 }): { x: number; y: number } {
+  const spots = [
+    { x: dot.x + gap.x, y: dot.y - gap.y - size.h / 2 }, // right, above
+    { x: dot.x + gap.x, y: dot.y + gap.y - size.h / 2 }, // right, below
+    { x: dot.x - gap.x - size.w, y: dot.y - gap.y - size.h / 2 }, // left, above
+    { x: dot.x - gap.x - size.w, y: dot.y + gap.y - size.h / 2 }, // left, below
+  ];
+  const fit = (s: { x: number; y: number }) => ({
+    x: Math.min(bounds.x1 - size.w, Math.max(bounds.x0, s.x)),
+    y: Math.min(bounds.y1 - size.h, Math.max(bounds.y0, s.y)),
+  });
+  let best = fit(spots[0]);
+  let least = Infinity;
+  for (const s of spots) {
+    const on = fit(s);
+    const box = { x0: on.x, y0: on.y, x1: on.x + size.w, y1: on.y + size.h };
+    // a spot pushed back onto the screen may land on the dot itself
+    const onDot = dot.x > box.x0 - 8 && dot.x < box.x1 + 8 && dot.y > box.y0 - 8 && dot.y < box.y1 + 8;
+    const covered = obstacles.reduce((a, o) => a + overlap(box, o), 0) + (onDot ? 1e6 : 0);
+    if (covered === 0 && on.x === s.x && on.y === s.y) return on;
+    if (covered < least) {
+      least = covered;
+      best = on;
+    }
+  }
+  return best;
+}

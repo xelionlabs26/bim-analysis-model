@@ -82,7 +82,7 @@ describe('install order', () => {
 
 describe('crane reach check', () => {
   it('keeps every pick inside the jib', () => {
-    for (const s of project.steps) if (s.lift) expect(s.lift.radius).toBeLessThanOrEqual(project.crane.jib);
+    for (const s of project.steps) if (s.lift) expect(s.lift.radius).toBeLessThanOrEqual(project.crane!.jib);
   });
 
   it('flags only the BMU gantry as over the load chart', () => {

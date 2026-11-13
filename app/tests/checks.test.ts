@@ -314,17 +314,29 @@ describe('the Duplex (Revit, IFC2x3)', () => {
     expect(titles.filter((t) => t.startsWith('Walls overlap at a junction'))).toHaveLength(2);
   });
 
-  it('needs edge protection at the stair voids and the rooflight openings', () => {
+  it('needs edge protection round the first floor and the rooflights, and finds the roof perimeter never guarded', () => {
     const edges = of(r, 'TEMP-EDGE');
-    expect(edges.map((i) => i.title)).toEqual(['Edge protection: 4 m at LEVEL 2 (+3.10 m)', 'Edge protection: 8 m at ROOF (+6.50 m)']);
+    expect(edges.map((i) => i.title)).toEqual(['Edge protection: 46 m at LEVEL 2 (+3.10 m)', 'Edge protection: 8 m at ROOF (+6.50 m)', '50 m of open edge never guarded at ROOF (+6.50 m)']);
+    // the first floor's perimeter is open until the walls and glazing above close it, the stair void until its rails
+    expect(edges[0].detail).toMatch(/walls/);
     expect(edges[0].detail).toMatch(/guard rails/);
     expect(edges[1].secondary.map((k) => p.parts[k].ref!.name)).toEqual(expect.arrayContaining([expect.stringContaining('M_Skylight')]));
+    // the top of the external wall under the roof edge is a 420 mm ledge with 6 m below it, not a landing;
+    // the 150 mm upstand that follows is no guard
+    expect(edges[2].value!).toBeGreaterThan(45);
   });
 
   it('builds in a supportable order, within reach, with headroom on both stairs', () => {
-    for (const rule of ['ORDER-SUPPORT', 'TEMP-PROPS', 'REACH-CRANE', 'REACH-PATH', 'CLASH-TEMP', 'ACCESS-HEADROOM', 'ACCESS-TRANSPORT'] as RuleId[]) {
+    for (const rule of ['ORDER-SUPPORT', 'TEMP-PROPS', 'REACH-CRANE', 'REACH-PATH', 'ACCESS-HEADROOM', 'ACCESS-TRANSPORT'] as RuleId[]) {
       expect(ruleStatus(result(r, rule)), rule).toBe('passed');
     }
+    // the steel beams and members are narrower than 300 mm, and are now tested at their own width
+    expect(result(r, 'REACH-PATH').checked).toBe(12);
+    // a two-storey house has no tower crane: its picks are read against a mobile crane's chart, and there is no mast to keep clear
+    expect(p.crane).toBeNull();
+    expect(ruleStatus(result(r, 'CLASH-TEMP'))).toBe('unverified');
+    expect(result(r, 'CLASH-TEMP').note).toMatch(/no tower crane/);
+    expect(result(r, 'REACH-CRANE').note).toMatch(/mobile crane.*no tower crane/);
     expect(result(r, 'ACCESS-HEADROOM').note).toMatch(/2 stairs, \d+ nosing points measured, least headroom 2\.\d\d m/);
   });
 
@@ -359,12 +371,19 @@ describe('Arbor House (generated)', () => {
     const paths = of(r, 'REACH-PATH').filter((i) => i.severity === 'critical');
     expect(paths).toHaveLength(2);
     for (const i of paths) expect(p.steps[i.step].member).toMatch(/^SKY GARDEN/);
+    // the 280 mm trunks are caught too, not only the canopies
+    for (const i of paths) expect(i.primary.some((k) => p.parts[k].size[0] < 0.3)).toBe(true);
+    // thin façade units are fitted from the slab edge, so they are counted as not tested rather than passed
+    expect(result(r, 'REACH-PATH').note).toMatch(/\d+ thin façade and wall pieces fitted from the slab edge, not tested/);
   });
 
   it('needs perimeter protection on every typical floor while the façade trails', () => {
-    const screens = of(r, 'TEMP-EDGE').find((i) => /^Edge protection on \d+ floors/.test(i.title))!;
-    expect(screens.title).toMatch(/on 31 floors/);
-    expect(screens.detail).toMatch(/façade units/);
+    const screens = of(r, 'TEMP-EDGE').filter((i) => /^Edge protection on \d+ floors/.test(i.title));
+    // L02 reads apart from the floors above: its slab meets the core top while the next core lift is still to come
+    expect(screens.map((i) => Number(i.title.match(/on (\d+) floors/)![1])).reduce((a, n) => a + n, 0)).toBe(30);
+    for (const i of screens) expect(i.detail).toMatch(/façade units/);
+    // the sky-garden tree canopies are not somewhere to land, so they close no floor edge
+    for (const i of screens) expect(i.detail).not.toMatch(/planters/);
   });
 
   it('builds every piece after what it bears on, and says clashes are not checked on massing', () => {
@@ -375,7 +394,8 @@ describe('Arbor House (generated)', () => {
   });
 
   it('books the CLT floor panels as wide loads', () => {
-    const clt = of(r, 'ACCESS-TRANSPORT').find((i) => i.title.includes('clt floor panels'))!;
+    // abbreviations keep their capitals in the title ("CLT", not "clt")
+    const clt = of(r, 'ACCESS-TRANSPORT').find((i) => i.title.includes('CLT floor panels'))!;
     expect(clt.primary.length).toBe(612);
     expect(clt.detail).toMatch(/3\.61 m wide laid flat/);
   });

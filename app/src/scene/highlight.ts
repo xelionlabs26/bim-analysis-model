@@ -11,6 +11,8 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import type { Project, Vec3 } from '../data/types';
+import { disposeTree } from './dispose';
+import { cutAwayGlsl, stageOnGlsl } from './shaders';
 
 const BOX_TRIS = [0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6, 0, 1, 5, 0, 5, 4, 2, 6, 7, 2, 7, 3, 0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5];
 
@@ -83,12 +85,7 @@ export class IssueHighlight {
   clear() {
     for (const child of [...this.group.children]) {
       this.group.remove(child);
-      child.traverse((o) => {
-        const any = o as Mesh;
-        any.geometry?.dispose();
-        const mat = any.material as { dispose?: () => void } | undefined;
-        mat?.dispose?.();
-      });
+      disposeTree(child);
     }
     this.lineMats = [];
   }
@@ -114,21 +111,32 @@ export class IssueHighlight {
   }
 }
 
+// A flag shows only where its part does: placed, on a stage left on in Layers, and not cut away by the section.
 const flagVertex = /* glsl */ `
   attribute float aT;
+  attribute float aStage;
   uniform float uTime;
+  uniform float uMask;
   varying float vOn;
+  varying vec3 vWorld;
+  ${stageOnGlsl}
   void main() {
-    vOn = step(aT, uTime);
-    gl_Position = vOn > 0.5 ? projectionMatrix * modelViewMatrix * vec4(position, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+    vOn = step(aT, uTime) * stageOn(aStage);
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    gl_Position = vOn > 0.5 ? projectionMatrix * viewMatrix * wp : vec4(2.0, 2.0, 2.0, 1.0);
   }
 `;
 const flagFragment = /* glsl */ `
   uniform vec3 uColor;
   uniform float uDpr;
+  uniform vec4 uCut;
+  uniform float uCutOn;
   varying float vOn;
+  varying vec3 vWorld;
+  ${cutAwayGlsl}
   void main() {
-    if (vOn < 0.5) discard;
+    if (vOn < 0.5 || cutAway()) discard;
     // diagonal hatch in screen space: the drawing-sheet convention for a flagged element
     float s = mod((gl_FragCoord.x - gl_FragCoord.y) / max(uDpr, 1.0), 9.0);
     if (s > 3.0) discard;
@@ -136,14 +144,23 @@ const flagFragment = /* glsl */ `
   }
 `;
 
+export interface FlagUniforms {
+  uTime: IUniform;
+  uDpr: IUniform;
+  uMask: IUniform;
+  uCut: IUniform;
+  uCutOn: IUniform;
+}
+
 /** FLAGGED: a hatch over the parts of open critical and major issues, shown once each is placed. */
 export class FlagLayer {
   readonly mesh: Mesh;
   private geo = new BufferGeometry();
 
-  constructor(uniforms: { uTime: IUniform; uDpr: IUniform }, color: Color) {
+  /** The uniforms are the viewer's own objects, so the flags follow its time, stage mask and section cut. */
+  constructor(uniforms: FlagUniforms, color: Color) {
     const mat = new ShaderMaterial({
-      uniforms: { uTime: uniforms.uTime, uDpr: uniforms.uDpr, uColor: { value: color } },
+      uniforms: { uTime: uniforms.uTime, uDpr: uniforms.uDpr, uMask: uniforms.uMask, uCut: uniforms.uCut, uCutOn: uniforms.uCutOn, uColor: { value: color } },
       vertexShader: flagVertex,
       fragmentShader: flagFragment,
       transparent: true,
@@ -161,10 +178,12 @@ export class FlagLayer {
   set(p: Project, parts: number[]) {
     const { pos, part } = partTriangles(p, parts, 4000);
     const t = part.map((i) => p.parts[i].t0 + p.parts[i].dur);
+    const stage = part.map((i) => p.parts[i].stage);
     this.geo.dispose();
     this.geo = new BufferGeometry();
     this.geo.setAttribute('position', new Float32BufferAttribute(pos, 3));
     this.geo.setAttribute('aT', new Float32BufferAttribute(t, 1));
+    this.geo.setAttribute('aStage', new Float32BufferAttribute(stage, 1));
     this.mesh.geometry = this.geo;
   }
 }

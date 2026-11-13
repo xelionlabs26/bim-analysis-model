@@ -63,6 +63,12 @@ export class StepFile {
   private byTypeIds = new Map<number, number[]>();
   private cache = new Map<number, Entity>();
   readonly complexIds: number[] = [];
+  /**
+   * True when the DATA section never reached its closing ENDSEC, or its last
+   * instance was cut off part-way: the file was truncated (a broken download
+   * or copy), so instances are missing.
+   */
+  truncated = false;
 
   private constructor(private readonly text: string) {
     this.header = parseHeader(text);
@@ -97,6 +103,7 @@ export class StepFile {
     if (i < 0) throw new Error('Not an IFC file: no DATA section');
     i += 5;
     let nextReport = i + 4_000_000;
+    let ended = false;
     while (i < n) {
       const c = s.charCodeAt(i);
       if (c === CH_HASH) {
@@ -114,6 +121,7 @@ export class StepFile {
         if (s.charCodeAt(j) === CH_LPAREN) {
           // complex instance: #id=(IFCA(...)IFCB(...)); — kept aside, rarely needed
           const end = this.skipBalanced(j);
+          if (end < 0) break; // cut off inside the instance: keep nothing of it
           this.complexIds.push(id);
           this.record(id, '(COMPLEX)', j + 1, end - 1);
           i = this.toSemicolon(end);
@@ -128,6 +136,7 @@ export class StepFile {
           continue;
         }
         const end = this.skipBalanced(j);
+        if (end < 0) break; // cut off inside the instance: keep nothing of it
         this.record(id, type, j + 1, end - 1);
         i = this.toSemicolon(end);
         if (onProgress && i > nextReport) {
@@ -141,9 +150,14 @@ export class StepFile {
         i = e < 0 ? n : e + 2;
         continue;
       }
-      if (c === 69 /* E */ && s.startsWith('ENDSEC;', i)) break;
+      if (c === 69 /* E */ && /^ENDSEC\s*;/.test(s.slice(i, i + 32))) {
+        ended = true;
+        break;
+      }
       i++;
     }
+    // the scan starts after DATA;, so the first ENDSEC it meets closes the data section
+    if (!ended) this.truncated = true;
     onProgress?.(1);
   }
 
@@ -157,7 +171,7 @@ export class StepFile {
     this.byTypeIds.get(t)!.push(id);
   }
 
-  /** From an opening '(' return the index just after its matching ')'. */
+  /** From an opening '(' return the index just after its matching ')', or −1 when the text ends first. */
   private skipBalanced(open: number): number {
     const s = this.text;
     const n = s.length;
@@ -180,7 +194,7 @@ export class StepFile {
       }
       i++;
     }
-    return n;
+    return -1;
   }
 
   private toSemicolon(i: number): number {

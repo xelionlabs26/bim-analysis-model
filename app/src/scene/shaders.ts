@@ -12,6 +12,11 @@
  * section plane show their inside faces, which are drawn as hatched poché.
  */
 
+/** Whether 1-based stage s is on in the uMask bitmask (9 = context). Shared by every layer that follows Layers. */
+export const stageOnGlsl = /* glsl */ `float stageOn(float s) { return mod(floor(uMask / exp2(s - 1.0)), 2.0); }`;
+/** Whether the world point vWorld lies on the removed side of the section plane. */
+export const cutAwayGlsl = /* glsl */ `bool cutAway() { return uCutOn > 0.5 && dot(vWorld, uCut.xyz) > uCut.w; }`;
+
 const common = /* glsl */ `
   attribute vec3 aTime;   // t0, dur, drop
   attribute vec3 aColor;  // material colour
@@ -30,7 +35,7 @@ const common = /* glsl */ `
   varying float vContext;
   varying float vPass;
 
-  float stageOn(float s) { return mod(floor(uMask / exp2(s - 1.0)), 2.0); }
+  ${stageOnGlsl}
 
   vec4 placeVertex(out float visibleBuilt) {
     float t0 = aTime.x, dur = aTime.y, drop = aTime.z;
@@ -75,7 +80,7 @@ const fragCommon = /* glsl */ `
     return 1.0 - smoothstep(fw * (widthPx - 0.5), fw * (widthPx + 0.5), m2);
   }
 
-  bool cutAway() { return uCutOn > 0.5 && dot(vWorld, uCut.xyz) > uCut.w; }
+  ${cutAwayGlsl}
 
   // value noise (hash by Inigo Quilez) for the uneven wash front
   float hash3(vec3 p) {
@@ -240,7 +245,7 @@ const meshCommon = /* glsl */ `
   varying float vOpen;
   varying float vBuilt;
 
-  float stageOn(float s) { return mod(floor(uMask / exp2(s - 1.0)), 2.0); }
+  ${stageOnGlsl}
   vec4 partTexel(int i) { return texelFetch(uParts, ivec2(i % 1024, i / 1024), 0); }
 
   vec3 placeMesh(out float stageVis) {
@@ -277,7 +282,7 @@ const meshFrag = /* glsl */ `
   varying float vBuilt;
   uniform vec4 uCut;
   uniform float uCutOn;
-  bool cutAway() { return uCutOn > 0.5 && dot(vWorld, uCut.xyz) > uCut.w; }
+  ${cutAwayGlsl}
   float hash3(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
     p *= 17.0;

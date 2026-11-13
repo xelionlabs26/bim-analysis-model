@@ -3,7 +3,7 @@
  * returns issues plus a count of what it evaluated, so that a rule with
  * nothing to check reads as unverified rather than passed.
  */
-import { MATERIAL_INFO, type Project, type Vec3 } from '../data/types';
+import { MATERIAL_INFO, MOBILE_CRANE, mobilePick, planBox, type Project, type Vec3 } from '../data/types';
 import { partMassKg } from '../data/assemble';
 import type { CheckScene, Obb } from './scene';
 import type { CheckSettings, Issue, RuleResult, Severity } from './types';
@@ -22,6 +22,20 @@ const fmtKg = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1)} t` : `${M
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** A readable name: the element's family and type and its id for imported parts, the step for generated ones. */
+/** Words a member name keeps in capitals in running text: codes with a digit (L05, TC-1, L12–L13) and abbreviations. */
+const KEEP_CAPS = /^(?:\S*\d\S*|RC|PT|CLT|BMU|PV|MEP)$/;
+
+/** A member name set in capitals ("SKY GARDEN · L12–L13") as running text: "sky garden · L12–L13". Each end of a range ("L32–ROOF") is a word of its own. */
+export function memberWords(s: string): string {
+  return s
+    .split(/(\s+|–)/)
+    .map((w) => (KEEP_CAPS.test(w) ? w : w.toLowerCase()))
+    .join('');
+}
+
+/** The first letter of a sentence in capitals; names and codes after it untouched. */
+export const sentenceStart = (s: string) => s.replace(/^(\s*)(\p{Ll})/u, (_, sp: string, c: string) => sp + c.toUpperCase());
+
 export function partLabel(p: Project, i: number): string {
   const part = p.parts[i];
   if (part.ref) {
@@ -34,7 +48,7 @@ export function partLabel(p: Project, i: number): string {
   const step = p.steps[part.step];
   const tail = step?.member.split(' · ').slice(1).join(' · ') || step?.member || 'part';
   const lvl = step?.member.split(' · ')[0] ?? '';
-  return `${MATERIAL_INFO[part.mat].label.split(' ·')[0]} · ${lvl ? `${lvl} ` : ''}${tail.toLowerCase()}`.replace(/\s+/g, ' ');
+  return `${MATERIAL_INFO[part.mat].label.split(' ·')[0]} · ${lvl ? `${memberWords(lvl)} ` : ''}${memberWords(tail)}`.replace(/\s+/g, ' ');
 }
 
 function unionBox(S: CheckScene, parts: number[], pad = 0.5): [Vec3, Vec3] {
@@ -49,6 +63,27 @@ function unionBox(S: CheckScene, parts: number[], pad = 0.5): [Vec3, Vec3] {
 
 const planOverlap = (S: CheckScene, i: number, j: number, tol: number) =>
   S.max[j * 3] >= S.min[i * 3] - tol && S.min[j * 3] <= S.max[i * 3] + tol && S.max[j * 3 + 2] >= S.min[i * 3 + 2] - tol && S.min[j * 3 + 2] <= S.max[i * 3 + 2] + tol;
+
+/**
+ * Least and greatest of f over a list, by a loop: spreading a large list into
+ * Math.min or Math.max overflows the call stack (about 125,000 arguments in V8).
+ */
+function minOf<T>(xs: readonly T[], f: (x: T) => number): number {
+  let m = Infinity;
+  for (const x of xs) {
+    const v = f(x);
+    if (v < m) m = v;
+  }
+  return m;
+}
+function maxOf<T>(xs: readonly T[], f: (x: T) => number): number {
+  let m = -Infinity;
+  for (const x of xs) {
+    const v = f(x);
+    if (v > m) m = v;
+  }
+  return m;
+}
 
 const bottomOf = (S: CheckScene, i: number) => S.min[i * 3 + 1];
 const topOf = (S: CheckScene, i: number) => S.max[i * 3 + 1];
@@ -81,7 +116,7 @@ function supportsOf(S: CheckScene, i: number): number[] {
   const structural = S.role[i] === 'structure';
   const lo: Vec3 = [S.min[i * 3] - 0.05, yb - 0.1, S.min[i * 3 + 2] - 0.05];
   const hi: Vec3 = [S.max[i * 3] + 0.05, yb + 0.05, S.max[i * 3 + 2] + 0.05];
-  const ground = yb <= 0.05;
+  const ground = yb <= S.ground + 0.05;
   const out: number[] = [];
   for (const j of S.query(lo, hi)) {
     if (j === i || NOT_CARRYING.has(S.cat[j])) continue;
@@ -111,12 +146,13 @@ export function checkSupport(S: CheckScene, st: CheckSettings): { order: RuleOut
     if (!sup.length) {
       // ceilings and soffits hang from the floor above
       if (S.cat[i] === 'covering') continue;
-      if (bottomOf(S, i) > 0.05 && role === 'structure') floating.push({ step: S.step[i], v: i });
+      if (bottomOf(S, i) > S.ground + 0.05 && role === 'structure') floating.push({ step: S.step[i], v: i });
       continue;
     }
     const before = sup.filter((j) => S.step[j] <= S.step[i]);
     if (!before.length) {
-      const first = sup.filter((j) => S.step[j] === Math.min(...sup.map((k) => S.step[k])));
+      const earliest = minOf(sup, (k) => S.step[k]);
+      const first = sup.filter((j) => S.step[j] === earliest);
       late.push({ step: S.step[i], v: { i, first } });
       continue;
     }
@@ -146,7 +182,7 @@ export function checkSupport(S: CheckScene, st: CheckSettings): { order: RuleOut
   for (const [s, list] of byStep(late)) {
     const parts = list.map((x) => x.i);
     const first = [...new Set(list.flatMap((x) => x.first))];
-    const firstStep = Math.min(...first.map((j) => S.step[j]));
+    const firstStep = minOf(first, (j) => S.step[j]);
     const names = parts.slice(0, 3).map((i) => partLabel(p, i)).join(', ') + (parts.length > 3 ? ` and ${parts.length - 3} more` : '');
     order.push({
       rule: 'ORDER-SUPPORT',
@@ -181,7 +217,7 @@ export function checkSupport(S: CheckScene, st: CheckSettings): { order: RuleOut
   for (const [s, list] of byStep(props)) {
     const parts = list.map((x) => x.i);
     const wait = [...new Set(list.flatMap((x) => x.wait))];
-    const until = Math.max(...wait.map((j) => S.step[j]));
+    const until = maxOf(wait, (j) => S.step[j]);
     propIssues.push({
       rule: 'TEMP-PROPS',
       severity: 'major',
@@ -209,9 +245,18 @@ function centreOf(S: CheckScene, parts: number[]): Vec3 {
 
 // ── REACH-CRANE ──────────────────────────────────────────────────────────────
 
+/**
+ * Imported projects get a crane the importer placed itself (off the west face,
+ * sized to reach everything); nobody chose that position, and nothing in the
+ * app moves it yet. Generated projects carry a planned crane.
+ */
+const craneAssumed = (p: Project) => !!p.crane?.assumed;
+
 export function checkCrane(S: CheckScene, st: CheckSettings): RuleOutput {
   const p = S.project;
   const c = p.crane;
+  // no tower crane: every pick goes in by a mobile crane set up beside the face nearest it
+  const box = c ? null : planBox(p.parts);
   let picks = 0;
   const issues: Draft[] = [];
   for (const s of p.steps) {
@@ -221,9 +266,16 @@ export function checkCrane(S: CheckScene, st: CheckSettings): RuleOutput {
       const part = p.parts[i];
       if (MATERIAL_INFO[part.mat].bulk) continue;
       picks++;
-      const r = Math.hypot(part.pos[0] - c.base[0], part.pos[2] - c.base[2]);
       const kg = partMassKg(part, p.density) + st.riggingKg;
-      const cap = r > c.jib ? 0 : c.capacityAt(r);
+      let r: number, cap: number;
+      if (c) {
+        r = Math.hypot(part.pos[0] - c.base[0], part.pos[2] - c.base[2]);
+        cap = r > c.jib ? 0 : c.capacityAt(r);
+      } else {
+        const m = mobilePick(box!, part.pos[0], part.pos[2], kg);
+        r = m.radius;
+        cap = m.capacityKg;
+      }
       const util = cap > 0 ? kg / cap : Infinity;
       if (!worst || util > worst.util) worst = { i, util, r, kg, cap };
     }
@@ -231,53 +283,92 @@ export function checkCrane(S: CheckScene, st: CheckSettings): RuleOutput {
     const over = worst.util > 1;
     const beyond = worst.cap <= 0;
     const tip: Vec3 = [p.parts[worst.i].pos[0], topOf(S, worst.i) + 0.5, p.parts[worst.i].pos[2]];
+    const rigging = st.riggingKg ? ` (incl. ${st.riggingKg} kg rigging)` : '';
     issues.push({
       rule: 'REACH-CRANE',
       severity: over ? 'critical' : 'major',
-      title: beyond ? `${partLabel(p, worst.i)} is beyond the jib` : `${partLabel(p, worst.i)} at ${Math.round(worst.util * 100)} % of the chart`,
-      detail: beyond
-        ? `At ${fmtM(worst.r)} from the mast it is past the ${c.jib} m jib of ${c.id}.`
-        : `${fmtKg(worst.kg)} at ${worst.r.toFixed(1)} m radius against ${fmtKg(worst.cap)} on ${c.id}'s indicative chart${st.riggingKg ? ` (incl. ${st.riggingKg} kg rigging)` : ''}.`,
-      action: over ? 'Split the piece, move the pick closer to the mast, or bring in a larger or mobile crane.' : 'Plan this lift: confirm weight, rigging and wind limits with the crane supplier.',
+      title: beyond ? `${partLabel(p, worst.i)} is beyond the ${c ? 'jib' : 'mobile crane\'s reach'}` : `${partLabel(p, worst.i)} at ${Math.round(worst.util * 100)} % of the ${c ? 'chart' : 'mobile crane\'s chart'}`,
+      detail: c
+        ? beyond
+          ? `At ${fmtM(worst.r)} from the mast it is past the ${c.jib} m jib of ${c.id}.`
+          : `${fmtKg(worst.kg)} at ${worst.r.toFixed(1)} m radius against ${fmtKg(worst.cap)} on ${c.id}'s indicative chart${rigging}.`
+        : beyond
+          ? `At ${fmtM(worst.r)} from a crane set up beside the nearest face it is past the ${MOBILE_CRANE.reach} m reach of ${MOBILE_CRANE.chart}.`
+          : `${fmtKg(worst.kg)} at ${worst.r.toFixed(1)} m radius from beside the nearest face against ${fmtKg(worst.cap)} on ${MOBILE_CRANE.chart}${rigging}.`,
+      action: c
+        ? over
+          ? 'Split the piece, move the pick closer to the mast, or bring in a larger or mobile crane.'
+          : 'Plan this lift: confirm weight, rigging and wind limits with the crane supplier.'
+        : over
+          ? 'Bring in a larger mobile crane or a tower crane, or split the piece.'
+          : 'Plan this lift: confirm the crane, its set-up position and ground bearing with the crane supplier.',
       primary: [worst.i],
       secondary: [],
       step: s.index,
       at: tip,
       box: unionBox(S, [worst.i], 2),
-      lines: [[[c.base[0], tip[1], c.base[2]], tip]],
+      lines: c ? [[[c.base[0], tip[1], c.base[2]], tip]] : [],
       value: worst.util,
       limit: 1,
       unit: 'utilisation',
     });
   }
-  return { issues, result: { checked: picks, applicable: picks > 0, note: picks ? `${picks} crane picks against ${c.id}'s chart` : 'no crane picks' } };
+  const note = !picks
+    ? c
+      ? 'no crane picks'
+      : 'no crane picks · no tower crane: lifted by mobile crane and by hand'
+    : c
+      ? `${picks} crane picks against ${c.id}'s chart${craneAssumed(p) ? ', from a mast position the importer assumed' : ''}`
+      : `${picks} crane picks against ${MOBILE_CRANE.chart}, set up beside the nearest face · no tower crane`;
+  return { issues, result: { checked: picks, applicable: picks > 0, note } };
 }
 
 // ── REACH-PATH ───────────────────────────────────────────────────────────────
+
+/**
+ * Pieces fitted at the slab edge and moved in sideways (façade units, glazing,
+ * panels, wall panels): a thin one is not lowered through the floor above, so
+ * only a broad overlap counts against it.
+ */
+const EDGE_FIT = new Set(['curtainwall', 'window', 'door', 'railing', 'plate', 'wall']);
 
 export function checkLiftPath(S: CheckScene, st: CheckSettings): RuleOutput {
   void st;
   const p = S.project;
   const blocked: { step: number; v: { i: number; by: number } }[] = [];
-  let picks = 0;
-  const topAll = Math.max(...Array.from({ length: S.n }, (_, i) => S.max[i * 3 + 1]));
+  let picks = 0, edgeFitted = 0, tooSmall = 0;
+  let topAll = -Infinity;
+  for (let i = 0; i < S.n; i++) if (S.max[i * 3 + 1] > topAll) topAll = S.max[i * 3 + 1];
   for (const s of p.steps) {
     if (s.method !== 'crane') continue;
     for (let i = s.partStart; i < s.partStart + s.partCount; i++) {
       if (MATERIAL_INFO[p.parts[i].mat].bulk) continue;
+      const wx = S.max[i * 3] - S.min[i * 3], wz = S.max[i * 3 + 2] - S.min[i * 3 + 2];
+      const edgeFit = EDGE_FIT.has(S.cat[i]);
+      // a thin edge-fitted piece could never show the broad overlap its test needs: not tested, and said so
+      if (edgeFit && Math.min(wx, wz) < 0.3) {
+        edgeFitted++;
+        continue;
+      }
+      if (Math.min(wx, wz) < 0.01) {
+        tooSmall++;
+        continue;
+      }
       picks++;
+      // a piece lowered into place is tested at its own width: a 240 mm beam under a deck is as stuck as a pod
+      const ix = edgeFit ? 0.05 : Math.min(0.05, wx / 4), iz = edgeFit ? 0.05 : Math.min(0.05, wz / 4);
+      const needX = edgeFit ? 0.3 : Math.min(0.3, wx / 2), needZ = edgeFit ? 0.3 : Math.min(0.3, wz / 2);
       const it = topOf(S, i);
-      const lo: Vec3 = [S.min[i * 3] + 0.05, it - 0.05, S.min[i * 3 + 2] + 0.05];
-      const hi: Vec3 = [S.max[i * 3] - 0.05, topAll + 1, S.max[i * 3 + 2] - 0.05];
-      if (lo[0] > hi[0] || lo[2] > hi[2]) continue;
-      const area = (S.max[i * 3] - S.min[i * 3]) * (S.max[i * 3 + 2] - S.min[i * 3 + 2]);
+      const lo: Vec3 = [S.min[i * 3] + ix, it - 0.05, S.min[i * 3 + 2] + iz];
+      const hi: Vec3 = [S.max[i * 3] - ix, topAll + 1, S.max[i * 3 + 2] - iz];
+      const area = wx * wz;
       let by = -1;
       for (const j of S.query(lo, hi)) {
         if (j === i || S.step[j] >= S.step[i] || S.role[j] === 'setout') continue;
         if (bottomOf(S, j) < it - 0.05) continue;
         const ox = Math.min(S.max[i * 3], S.max[j * 3]) - Math.max(S.min[i * 3], S.min[j * 3]);
         const oz = Math.min(S.max[i * 3 + 2], S.max[j * 3 + 2]) - Math.max(S.min[i * 3 + 2], S.min[j * 3 + 2]);
-        if (ox < 0.3 || oz < 0.3 || ox * oz < 0.1 * area) continue;
+        if (ox < needX || oz < needZ || ox * oz < 0.1 * area) continue;
         // confirm with vertical rays through the overlap: the blocker really is overhead
         const x0 = Math.max(S.min[i * 3], S.min[j * 3]), z0 = Math.max(S.min[i * 3 + 2], S.min[j * 3 + 2]);
         let hit = false;
@@ -297,14 +388,14 @@ export function checkLiftPath(S: CheckScene, st: CheckSettings): RuleOutput {
     const blockers = [...new Set(list.map((x) => x.by))];
     const first = list[0];
     const ci = S.centre(first.i);
-    const atGround = list.every((x) => bottomOf(S, x.i) <= 0.5);
+    const atGround = list.every((x) => bottomOf(S, x.i) <= S.ground + 0.5);
     issues.push({
       rule: 'REACH-PATH',
       severity: atGround ? 'major' : 'critical',
       title: `${plural(parts.length, 'crane pick')} under work already built`,
       detail: `${partLabel(p, first.i)}${parts.length > 1 ? ` and ${parts.length - 1} more` : ''} at ${stepName(p, sIdx)} must be lowered through ${partLabel(p, first.by)}${blockers.length > 1 ? ` and ${blockers.length - 1} more` : ''}, placed at ${stepName(p, S.step[first.by])}.`,
       action: atGround
-        ? 'Set these with ground plant (telehandler or forklift) instead of the tower crane, or before the work above is built.'
+        ? `Set these with ground plant (telehandler or forklift) instead of the ${p.crane ? 'tower' : 'mobile'} crane, or before the work above is built.`
         : 'Lift them before the work above is built, or land them on a loading platform at the edge and move them in horizontally.',
       primary: parts,
       secondary: blockers,
@@ -317,12 +408,37 @@ export function checkLiftPath(S: CheckScene, st: CheckSettings): RuleOutput {
       }),
     });
   }
-  return { issues, result: { checked: picks, applicable: picks > 0, note: picks ? `${picks} crane picks checked for a clear drop` : 'no crane picks' } };
+  const untested = [edgeFitted ? `${edgeFitted} thin façade and wall ${edgeFitted === 1 ? 'piece' : 'pieces'} fitted from the slab edge, not tested` : '', tooSmall ? `${tooSmall} too small to test` : ''].filter(Boolean).join(' · ');
+  const note = picks ? `${picks} crane picks checked for a clear drop${untested ? ` · ${untested}` : ''}` : untested ? `no crane picks that can be tested · ${untested}` : 'no crane picks';
+  return { issues, result: { checked: picks, applicable: picks > 0, note } };
 }
 
 // ── TEMP-EDGE ────────────────────────────────────────────────────────────────
 
-const GUARD_CATS = new Set(['wall', 'curtainwall', 'window', 'door', 'railing', 'plate', 'member', 'pod']);
+const GUARD_CATS = new Set(['wall', 'curtainwall', 'window', 'door', 'railing', 'plate', 'member', 'pod', 'column']);
+/** Things that close an edge only by standing in it (as guards), never as somewhere to land. */
+const NOT_LANDING = new Set(['railing']);
+/** How far past an edge a landing must reach, m: about a body length. */
+const LANDING_REACH = 1.0;
+/** How far past an edge a guard may stand when there is a ledge to stand on in front of it, m. */
+const GUARD_OVER_LEDGE = 0.6;
+
+/** Where a horizontal ray o + t·d first meets a part's bounds in plan (0 if it starts inside, Infinity if it misses). */
+function planEntry(S: CheckScene, j: number, o: Vec3, d: Vec3): number {
+  let t0 = 0, t1 = Infinity;
+  for (const k of [0, 2]) {
+    const a = S.min[j * 3 + k], b = S.max[j * 3 + k];
+    if (Math.abs(d[k]) < 1e-12) {
+      if (o[k] < a || o[k] > b) return Infinity;
+      continue;
+    }
+    let ta = (a - o[k]) / d[k], tb = (b - o[k]) / d[k];
+    if (ta > tb) [ta, tb] = [tb, ta];
+    t0 = Math.max(t0, ta);
+    t1 = Math.min(t1, tb);
+  }
+  return t0 <= t1 ? t0 : Infinity;
+}
 
 interface EdgeSample {
   p: Vec3; // on the edge
@@ -416,7 +532,7 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
     if (S.role[i] !== 'structure' || !(S.cat[i] === 'slab' || S.cat[i] === 'roof')) continue;
     const ey = S.max[i * 3 + 1] - S.min[i * 3 + 1];
     if (Math.max(S.max[i * 3] - S.min[i * 3], S.max[i * 3 + 2] - S.min[i * 3 + 2]) < 3 * ey) continue;
-    if (topOf(S, i) < st.fallHeight - 0.05) continue; // a ground-floor slab: the ground is right there
+    if (topOf(S, i) < S.ground + st.fallHeight - 0.05) continue; // a ground-floor slab: the ground is right there
     slabs++;
     const start = S.step[i];
     const samples = walkingEdges(S, i, 0.5);
@@ -424,34 +540,52 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
     let exposed = 0;
     let permanent = 0;
     let latest = start;
+    // the earliest thing within a fall height below (or standing beside) the edge at (x, z): looked for
+    // at three points 60 mm apart along the edge, so the joint between two floor panels is not a hole
+    const landing = (x: number, z: number, py: number, u: Vec3): { step: number; by: number } => {
+      let step = INF, by = -1;
+      const ex = -u[2] * 0.06, ez = u[0] * 0.06;
+      const origins: Vec3[] = [[x, py + 0.3, z], [x - ex, py + 0.3, z - ez], [x + ex, py + 0.3, z + ez]];
+      const r = Math.abs(ex) + 0.01, rz = Math.abs(ez) + 0.01;
+      for (const j of S.query([x - r, py - st.fallHeight, z - rz], [x + r, py + 0.3, z + rz])) {
+        if (j === i || S.step[j] >= step || NOT_LANDING.has(S.cat[j]) || S.role[j] === 'setout' || p.parts[j].mat === 'planting') continue;
+        let surface = -Infinity;
+        for (const o of origins) {
+          if (S.solid[j]) {
+            for (const [t0, t1] of S.inside(j, o, [0, -1, 0])) if (t1 >= 0) surface = Math.max(surface, o[1] - Math.max(0, t0));
+          } else {
+            const h = S.hits(j, o, [0, -1, 0], 0);
+            if (h.length) surface = Math.max(surface, o[1] - h[0]);
+          }
+        }
+        if (surface > py - st.fallHeight) {
+          step = S.step[j];
+          by = j;
+        }
+      }
+      return { step, by };
+    };
     for (const smp of samples) {
       edgeLen += smp.len;
       const [px, py, pz] = smp.p;
-      const q: Vec3 = [px + smp.u[0] * 0.3, py, pz + smp.u[2] * 0.3];
-      // what would you land on? the ground, or anything within a fall height below the edge
-      let fill = py < st.fallHeight ? -1 : INF;
+      // what would you land on? the ground, or something within a fall height below the edge that is
+      // there both just past it and a metre out: the top of the wall under a slab edge is a ledge, not a floor
+      let fill = -1;
       let fillBy = -1;
-      if (fill === INF) {
-        const o: Vec3 = [q[0], py + 0.3, q[2]];
-        for (const j of S.query([q[0] - 0.01, py - st.fallHeight, q[2] - 0.01], [q[0] + 0.01, py + 0.3, q[2] + 0.01])) {
-          if (j === i || S.role[j] === 'setout' || S.step[j] >= fill) continue;
-          let surface = -Infinity;
-          if (S.solid[j]) {
-            const iv = S.inside(j, o, [0, -1, 0]);
-            for (const [t0, t1] of iv) if (t1 >= 0) surface = Math.max(surface, o[1] - Math.max(0, t0));
-          } else {
-            const h = S.hits(j, o, [0, -1, 0], 0);
-            if (h.length) surface = o[1] - h[0];
-          }
-          if (surface > py - st.fallHeight) {
-            fill = S.step[j];
-            fillBy = j;
-          }
-        }
+      let ledge = INF; // something to stand on just past the edge (the top of the wall below)
+      if (py >= S.ground + st.fallHeight) {
+        const near = landing(px + smp.u[0] * 0.3, pz + smp.u[2] * 0.3, py, smp.u);
+        const far = landing(px + smp.u[0] * LANDING_REACH, pz + smp.u[2] * LANDING_REACH, py, smp.u);
+        const l = far.step > near.step ? far : near;
+        fill = l.step;
+        fillBy = l.by;
+        ledge = near.step;
       }
       if (fill <= start) continue; // no drop when the slab goes in
-      // what closes the edge: a guard crossing it at knee and at rail height
+      // what closes the edge: a guard crossing it at knee and at rail height, within 0.35 m of it, or
+      // further out over a ledge (glazing in the outer leaf of a cavity wall) once the ledge is there too
       const heights = [py + 0.5, py + Math.max(0.6, st.guardHeight - 0.05)];
+      const len = 0.35 + (ledge < INF ? GUARD_OVER_LEDGE : 0.35);
       let guard = 0;
       let guardBy = -1;
       for (const h of heights) {
@@ -459,16 +593,20 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
         let bestBy = -1;
         const o: Vec3 = [px - smp.u[0] * 0.35, h, pz - smp.u[2] * 0.35];
         const d: Vec3 = [smp.u[0], 0, smp.u[2]];
-        const lo: Vec3 = [Math.min(o[0], o[0] + d[0] * 0.7) - 0.01, h - 0.01, Math.min(o[2], o[2] + d[2] * 0.7) - 0.01];
-        const hi: Vec3 = [Math.max(o[0], o[0] + d[0] * 0.7) + 0.01, h + 0.01, Math.max(o[2], o[2] + d[2] * 0.7) + 0.01];
+        const lo: Vec3 = [Math.min(o[0], o[0] + d[0] * len) - 0.01, h - 0.01, Math.min(o[2], o[2] + d[2] * len) - 0.01];
+        const hi: Vec3 = [Math.max(o[0], o[0] + d[0] * len) + 0.01, h + 0.01, Math.max(o[2], o[2] + d[2] * len) + 0.01];
         for (const j of S.query(lo, hi)) {
           if (j === i || S.step[j] >= best) continue;
           if (!(GUARD_CATS.has(S.cat[j]) || S.role[j] === 'envelope')) continue;
-          let crosses = false;
-          if (S.solid[j]) crosses = S.inside(j, o, d).some(([t0, t1]) => t1 > 0 && t0 < 0.7);
-          else crosses = true; // open shells (railings): bounds already straddle the ray
-          if (crosses) {
-            best = S.step[j];
+          // how far along the ray the guard stands
+          let t = Infinity;
+          if (S.solid[j]) {
+            for (const [t0, t1] of S.inside(j, o, d)) if (t1 > 0 && t0 < len) t = Math.min(t, Math.max(0, t0));
+          } else t = planEntry(S, j, o, d); // open shells (railings): where the ray meets their bounds
+          if (t >= len) continue;
+          const at = t < 0.7 ? S.step[j] : Math.max(S.step[j], ledge);
+          if (at < best) {
+            best = at;
             bestBy = j;
           }
         }
@@ -504,7 +642,9 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
       else groups.set(k, [e]);
     }
   }
-  const levelName = (y: number) => {
+  // heights are given on the storeys' datum, so a model set out at a site datum still reads "LEVEL 2 (+3.10 m)"
+  const levelName = (yModel: number) => {
+    const y = yModel - S.levelShift;
     const lv = [...p.levels].filter((l) => l.code !== 'TOP').sort((a, b) => Math.abs(a.y - y) - Math.abs(b.y - y))[0];
     return lv && Math.abs(lv.y - y) < 0.6 ? `${lv.code} (${y >= 0 ? '+' : ''}${y.toFixed(2)} m)` : `${y >= 0 ? '+' : ''}${y.toFixed(2)} m`;
   };
@@ -525,8 +665,8 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
     const y = Number(yS);
     const slabsHere = list.map((e) => e.i);
     const runs = list.flatMap((e) => e.runs.filter((r) => (kind === 'perm' ? r.end >= INF : r.end < INF)));
-    const start = Math.min(...slabsHere.map((i) => S.step[i]));
-    const until = Math.max(...runs.map((r) => r.end));
+    const start = minOf(slabsHere, (i) => S.step[i]);
+    const until = maxOf(runs, (r) => r.end);
     const closers = new Set<number>();
     if (kind === 'temp') for (const r of runs) if (r.by >= 0) closers.add(r.by);
     levels.push({ kind, y, slabs: slabsHere, runs, len: runs.reduce((a, r) => a + r.len, 0), start, until, closers: [...closers], by: kind === 'temp' ? closerNames(S, [...closers]) : '' });
@@ -557,7 +697,7 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
     const per = total / group.length;
     const where = group.length === 1 ? `at ${levelName(first.y)}` : `on ${group.length} floors, ${levelName(first.y)} to ${levelName(last.y)}`;
     const spans = group.map((l) => l.until - l.start);
-    const minS = Math.min(...spans), maxS = Math.max(...spans);
+    const minS = minOf(spans, (x) => x), maxS = maxOf(spans, (x) => x);
     const mid = first.runs[Math.floor(first.runs.length / 2)];
     const title =
       kind === 'perm'
@@ -575,6 +715,7 @@ export async function checkEdges(S: CheckScene, st: CheckSettings, yieldNow: Yie
           : `About ${per.toFixed(0)} m of edge per floor (${total.toFixed(0)} m in all) with a fall of ${st.fallHeight} m or more is open for ${minS === maxS ? plural(minS, 'step') : `${minS}–${maxS} steps`} on each floor, from ${stepName(p, first.start)} to ${stepName(p, last.until)}, until ${by} close it.`;
     issues.push({
       rule: 'TEMP-EDGE',
+      key: kind === 'perm' ? 'never-guarded' : 'temporary',
       severity: 'major',
       title,
       detail,
@@ -639,6 +780,38 @@ function penetration(S: CheckScene, i: number, j: number, lo: Vec3, hi: Vec3, to
     if (depth <= tol) break;
   }
   return { depth, vol };
+}
+
+/** Where an element sits against the beam or floor it clashes with. */
+type Place = 'under' | 'through' | 'onTop' | 'inside';
+
+/**
+ * What to do about non-structural elements that clash with a beam or floor:
+ * one standing under it needs a deflection head, one running through it needs
+ * splitting at it, one starting inside it should start on top of it. A group
+ * that mixes these names the elements in each sentence.
+ */
+function overheadAction(p: Project, hub: string, others: number[], what: string, placeOf: (o: number) => Place): string {
+  const by = new Map<Place, number[]>();
+  for (const o of others) {
+    const k = placeOf(o);
+    const list = by.get(k);
+    if (list) list.push(o);
+    else by.set(k, [o]);
+  }
+  const subject = (list: number[]) =>
+    by.size === 1 ? what : list.slice(0, 2).map((o) => partLabel(p, o)).join(' and ') + (list.length > 2 ? ` and ${list.length - 2} more` : '');
+  const out: string[] = [];
+  for (const k of ['under', 'through', 'onTop', 'inside'] as const) {
+    const list = by.get(k);
+    if (!list) continue;
+    const s = subject(list);
+    if (k === 'under') out.push(`Stop ${s} under the ${hub} with a deflection gap (a deflection head), or lower ${list.length === 1 ? 'its head' : 'their heads'}.`);
+    else if (k === 'through') out.push(`Split ${s} at the ${hub}: stop the part below with a deflection head and start the part above on top of the ${hub}.`);
+    else if (k === 'onTop') out.push(`Start ${s} on top of the ${hub} instead of inside it.`);
+    else out.push(`Set ${s} back to the face of the ${hub}.`);
+  }
+  return out.join(' ');
 }
 
 export async function checkClashes(S: CheckScene, st: CheckSettings, yieldNow: Yield): Promise<RuleOutput> {
@@ -716,13 +889,18 @@ export async function checkClashes(S: CheckScene, st: CheckSettings, yieldNow: Y
     const vol = list.reduce((a, f) => a + f.vol, 0);
     const structuralHit = list.some((f) => S.role[f.i] === 'structure' || S.role[f.j] === 'structure');
     const overhead = S.role[hub] === 'structure' && ['beam', 'slab', 'roof'].includes(S.cat[hub]);
+    // where each element sits against a beam or floor: standing under it, running through it, starting on it, or within its depth
+    const placeOf = (o: number): Place => {
+      const below = bottomOf(S, o) < bottomOf(S, hub) - tol, above = topOf(S, o) > topOf(S, hub) + tol;
+      return below ? (above ? 'through' : 'under') : above ? 'onTop' : 'inside';
+    };
     // major: 50 mm or more into structure, or no deflection gap under a beam or floor
     let severity: Severity = 'minor';
     if (kind === 'clash' && structuralHit && deepest.depth >= 0.05) severity = 'major';
-    if (kind === 'clash' && overhead && others.some((o) => S.role[o] !== 'structure')) severity = 'major';
+    if (kind === 'clash' && overhead && others.some((o) => S.role[o] !== 'structure' && placeOf(o) === 'under')) severity = 'major';
     const a = kind === 'clash' ? hub : deepest.i, b = kind === 'clash' ? others[0] : deepest.j;
     const centre: Vec3 = [(deepest.lo[0] + deepest.hi[0]) / 2, (deepest.lo[1] + deepest.hi[1]) / 2, (deepest.lo[2] + deepest.hi[2]) / 2];
-    const step = Math.max(...list.map((f) => Math.max(S.step[f.i], S.step[f.j])));
+    const step = maxOf(list, (f) => Math.max(S.step[f.i], S.step[f.j]));
     const otherNames = others.slice(0, 2).map((o) => partLabel(p, o)).join(', ') + (others.length > 2 ? ` and ${others.length - 2} more` : '');
     const title =
       kind === 'duplicate'
@@ -743,7 +921,7 @@ export async function checkClashes(S: CheckScene, st: CheckSettings, yieldNow: Y
         : kind === 'junction'
           ? 'Clean up the wall join so the junction is modelled once.'
           : overhead && others.every((o) => S.role[o] !== 'structure')
-            ? `Stop ${what} under the ${S.cat[hub]} with a deflection gap (a deflection head), or lower ${others.length === 1 ? 'its' : 'their'} heads.`
+            ? overheadAction(p, S.cat[hub], others, what, placeOf)
             : S.role[hub] === 'structure' && others.every((o) => S.role[o] !== 'structure')
               ? `Set ${what} back to the face of the ${S.cat[hub]}.`
               : 'Coordinate the two elements: trim, move or re-detail one of them before fabrication.';
@@ -774,12 +952,15 @@ export function checkCraneClearance(S: CheckScene, st: CheckSettings): RuleOutpu
   void st;
   const p = S.project;
   const c = p.crane;
+  if (!c) return { issues: [], result: { checked: 0, applicable: false, note: 'no tower crane: lifted by mobile crane and by hand, so there is no mast to keep clear' } };
+  // the importer stands the mast 7 m clear of the building by construction: there is nothing to verify
+  if (craneAssumed(p)) return { issues: [], result: { checked: 0, applicable: false, note: `crane position assumed by the importer (7 m off the west face), clearance not checked` } };
   const mastHalf = 1.0; // a 2 m square mast section
   const clear = 1.0;
   const top = Math.max(c.mastStart, p.height + 4);
-  const lo: Vec3 = [c.base[0] - mastHalf - clear, 0.05, c.base[2] - mastHalf - clear];
+  const lo: Vec3 = [c.base[0] - mastHalf - clear, S.ground + 0.05, c.base[2] - mastHalf - clear];
   const hi: Vec3 = [c.base[0] + mastHalf + clear, top, c.base[2] + mastHalf + clear];
-  const hit = S.query(lo, hi).filter((j) => S.role[j] !== 'setout' && !(S.cat[j] === 'foundation' && topOf(S, j) <= 0.1));
+  const hit = S.query(lo, hi).filter((j) => S.role[j] !== 'setout' && !(S.cat[j] === 'foundation' && topOf(S, j) <= S.ground + 0.1));
   const issues: Draft[] = [];
   if (hit.length) {
     const inMast = hit.filter((j) => S.max[j * 3] > c.base[0] - mastHalf && S.min[j * 3] < c.base[0] + mastHalf && S.max[j * 3 + 2] > c.base[2] - mastHalf && S.min[j * 3 + 2] < c.base[2] + mastHalf);
@@ -791,7 +972,7 @@ export function checkCraneClearance(S: CheckScene, st: CheckSettings): RuleOutpu
       action: 'Move the crane, leave out and infill the affected elements after the crane is struck, or redesign around the mast.',
       primary: hit,
       secondary: [],
-      step: Math.min(...hit.map((j) => S.step[j])),
+      step: minOf(hit, (j) => S.step[j]),
       at: [c.base[0], Math.min(top, p.height), c.base[2]],
       box: [lo, hi],
       lines: [[[c.base[0], 0, c.base[2]], [c.base[0], top, c.base[2]]]],
@@ -952,8 +1133,8 @@ export function checkHandling(S: CheckScene, st: CheckSettings): RuleOutput {
     list.sort((a, b) => b.kg - a.kg);
     const parts = list.map((x) => x.i);
     const [one, many] = KIND[k] ?? [k, `${k}s`];
-    const first = Math.min(...list.map((x) => x.step));
-    const last = Math.max(...list.map((x) => x.step));
+    const first = minOf(list, (x) => x.step);
+    const last = maxOf(list, (x) => x.step);
     const glass = k === 'window' || k === 'curtainwall';
     issues.push({
       rule: 'ACCESS-HANDLING',
@@ -1072,6 +1253,9 @@ function hull2(pts: [number, number][]): [number, number][] {
 export function checkTransport(S: CheckScene, st: CheckSettings): RuleOutput {
   const p = S.project;
   const [L, W, H] = st.truck;
+  // the load's cross-section, whichever way round the settings give it: a piece fits if its two
+  // smaller sides fit the narrower and the wider bound
+  const lo = Math.min(W, H), hi = Math.max(W, H);
   let checked = 0;
   const big: { step: number; v: { i: number; size: [number, number, number]; why: string } }[] = [];
   for (const s of p.steps) {
@@ -1084,8 +1268,8 @@ export function checkTransport(S: CheckScene, st: CheckSettings): RuleOutput {
       const [a, b, c] = pieceSize(S, i);
       const why: string[] = [];
       if (c > L) why.push(`${c.toFixed(1)} m long`);
-      if (a > W) why.push(`at least ${a.toFixed(2)} m wide whichever way it lies`);
-      else if (b > H && b > W) why.push(`${b.toFixed(2)} m wide laid flat, as high on edge`);
+      if (a > lo) why.push(`at least ${a.toFixed(2)} m across whichever way it lies`);
+      else if (b > hi) why.push(`${b.toFixed(2)} m wide laid flat, as high on edge`);
       if (why.length) big.push({ step: s.index, v: { i, size: [a, b, c], why: why.join(', ') } });
     }
   }
@@ -1104,7 +1288,7 @@ export function checkTransport(S: CheckScene, st: CheckSettings): RuleOutput {
     list.sort((a, b) => (reason === 'long' ? b.size[2] - a.size[2] : Math.max(b.size[0], b.size[1]) - Math.max(a.size[0], a.size[1])));
     const parts = list.map((x) => x.i);
     const x = list[0];
-    const first = Math.min(...list.map((y) => y.step)), last = Math.max(...list.map((y) => y.step));
+    const first = minOf(list, (y) => y.step), last = maxOf(list, (y) => y.step);
     issues.push({
       rule: 'ACCESS-TRANSPORT',
       severity: 'major',
@@ -1117,7 +1301,7 @@ export function checkTransport(S: CheckScene, st: CheckSettings): RuleOutput {
       at: centreOf(S, parts.slice(0, 1)),
       box: unionBox(S, parts.slice(0, 24), 0.6),
       lines: [],
-      value: Math.max(x.size[2] / L, x.size[0] / W),
+      value: Math.max(x.size[2] / L, x.size[0] / lo, x.size[1] / hi),
       unit: 'size',
     });
   }
@@ -1130,7 +1314,7 @@ function kindOf(p: Project, i: number): string {
   if (part.ref) return partLabel(p, i).replace(/ #\d+$/, '');
   const member = p.steps[part.step]?.member ?? '';
   const tail = member.includes(' · ') ? member.split(' · ').slice(1).join(' · ') : member;
-  return `${MATERIAL_INFO[part.mat].label.split(' ·')[0]} · ${tail.toLowerCase()}`;
+  return `${MATERIAL_INFO[part.mat].label.split(' ·')[0]} · ${memberWords(tail)}`;
 }
 
 // ── MODEL-DATA ───────────────────────────────────────────────────────────────
@@ -1142,20 +1326,20 @@ export function checkModelData(S: CheckScene, st: CheckSettings): RuleOutput {
   const r = (p.report ?? {}) as Record<string, unknown>;
   const issues: Draft[] = [];
   const all = [...Array(S.n).keys()];
-  const add = (severity: Severity, title: string, detail: string, action: string, parts: number[]) =>
-    issues.push({ rule: 'MODEL-DATA', severity, title, detail, action, primary: parts, secondary: [], step: parts.length ? Math.min(...parts.map((i) => S.step[i])) : 0, at: parts.length ? centreOf(S, parts) : [0, 0, 0], box: unionBox(S, parts.length ? parts : all, 0.5), lines: [] });
+  const add = (key: string, severity: Severity, title: string, detail: string, action: string, parts: number[]) =>
+    issues.push({ rule: 'MODEL-DATA', key, severity, title, detail, action, primary: parts, secondary: [], step: parts.length ? minOf(parts, (i) => S.step[i]) : 0, at: parts.length ? centreOf(S, parts) : [0, 0, 0], box: unionBox(S, parts.length ? parts : all, 0.5), lines: [] });
   const outside = Number(r.openingsOutside ?? 0);
   const hosts = new Set((r.openingsOutsideHosts as string[] | undefined) ?? []);
-  if (outside) add('minor', `${plural(outside, 'opening')} placed clear of ${outside === 1 ? 'its host' : 'their hosts'}`, `The file relates ${plural(outside, 'opening')} to elements ${outside === 1 ? 'it does' : 'they do'} not touch (placed a storey away or mirrored), so nothing was cut.`, 'Re-host the openings in the authoring model and re-export.', all.filter((i) => hosts.has(p.parts[i].ref?.guid ?? '')));
+  if (outside) add('openings-outside', 'minor', `${plural(outside, 'opening')} placed clear of ${outside === 1 ? 'its host' : 'their hosts'}`, `The file relates ${plural(outside, 'opening')} to elements ${outside === 1 ? 'it does' : 'they do'} not touch (placed a storey away or mirrored), so nothing was cut.`, 'Re-host the openings in the authoring model and re-export.', all.filter((i) => hosts.has(p.parts[i].ref?.guid ?? '')));
   const defaulted = all.filter((i) => p.parts[i].ref?.defaulted);
   const nDefault = Number(r.defaultedMaterials ?? 0);
-  if (nDefault) add('note', `${plural(nDefault, 'element')} without a material`, `Mass, carbon and handling for ${plural(nDefault, 'element')} use a default material for their type.`, 'Assign materials in the authoring model so quantities and lift weights are real.', defaulted);
+  if (nDefault) add('defaulted-materials', 'note', `${plural(nDefault, 'element')} without a material`, `Mass, carbon and handling for ${plural(nDefault, 'element')} use a default material for their type.`, 'Assign materials in the authoring model so quantities and lift weights are real.', defaulted);
   const openShells = all.filter((i) => !S.solid[i] && S.role[i] !== 'setout');
-  if (openShells.length) add('note', `${plural(openShells.length, 'element')} modelled as open surfaces`, `${plural(openShells.length, 'element')} (${[...new Set(openShells.map((i) => S.cat[i]))].join(', ')}) are not closed solids: their volumes are estimated and clash and handling checks skip them.`, 'Export these as solids, or accept the estimates.', openShells);
+  if (openShells.length) add('open-shells', 'note', `${plural(openShells.length, 'element')} modelled as open surfaces`, `${plural(openShells.length, 'element')} (${[...new Set(openShells.map((i) => S.cat[i]))].join(', ')}) are not closed solids: their volumes are estimated and clash and handling checks skip them.`, 'Export these as solids, or accept the estimates.', openShells);
   const skipped = Object.entries((r.skippedItems ?? {}) as Record<string, number>);
-  if (skipped.length) add('minor', `${skipped.reduce((a, [, n]) => a + n, 0)} geometry items not drawn`, `Unsupported representation items: ${skipped.map(([k, n]) => `${k} × ${n}`).join(', ')}.`, 'Export with faceted (Brep or tessellated) geometry where possible.', []);
+  if (skipped.length) add('skipped-geometry', 'minor', `${skipped.reduce((a, [, n]) => a + n, 0)} geometry items not drawn`, `Unsupported representation items: ${skipped.map(([k, n]) => `${k} × ${n}`).join(', ')}.`, 'Export with faceted (Brep or tessellated) geometry where possible.', []);
   const approx = Number(r.booleansApproximated ?? 0);
-  if (approx) add('note', `${plural(approx, 'boolean')} approximated`, `${plural(approx, 'boolean operation')} could not be applied exactly; affected elements keep part of their volume.`, 'Check the elements in the authoring tool; export them as faceted solids.', []);
+  if (approx) add('booleans-approximated', 'note', `${plural(approx, 'boolean')} approximated`, `${plural(approx, 'boolean operation')} could not be applied exactly; affected elements keep part of their volume.`, 'Check the elements in the authoring tool; export them as faceted solids.', []);
   return { issues, result: { checked: 4, applicable: true, note: issues.length ? `${plural(issues.length, 'gap')} in the model data` : 'no gaps found' } };
 }
 

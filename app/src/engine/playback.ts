@@ -10,18 +10,21 @@ export class Playback {
 
   setDuration(d: number) {
     this.duration = d;
-    this.t = Math.min(this.t, d);
+    this.t = Number.isFinite(this.t) ? Math.min(this.t, d) : 0;
   }
 
   /** Advance by wall-clock dt (seconds). */
   tick(dt: number) {
     if (!this.playing) return;
-    let t = this.t + dt * this.speed;
+    if (!Number.isFinite(this.t)) this.t = 0;
+    let t = this.t + (Number.isFinite(dt) ? dt : 0) * this.speed;
     if (t >= this.duration) t = this.loop ? 0 : this.duration;
     this.t = t;
   }
 
+  /** Jump to time t, clamped to the sequence. A non-finite time (say from a bad ?t= link) is ignored. */
   seek(t: number) {
+    if (!Number.isFinite(t)) return;
     this.t = Math.min(Math.max(t, 0), this.duration);
     this.emit();
   }

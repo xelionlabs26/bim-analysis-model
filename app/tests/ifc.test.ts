@@ -201,7 +201,8 @@ describe('Duplex Apartment (Revit, IFC2x3) against IfcOpenShell', () => {
   });
 
   it('cuts every opening that meets its host, including sinks across worktops, and applies every clip', () => {
-    expect(model.report.openingsCut).toBe(39);
+    // 39 cut into their hosts, plus the 2 rooflight openings of the IfcRoof, which its slab already carries
+    expect(model.report.openingsCut).toBe(41);
     expect(model.report.openingsSkipped).toBe(0);
     // Revit placed these clear of their hosts (one storey down, or mirrored): there is nothing to cut
     expect(model.report.openingsOutside).toBe(9);
@@ -286,6 +287,33 @@ describe('material keywords', () => {
     expect(classifyMaterial('Misc. Air Layers - Air Space')).toBeNull();
     expect(classifyMaterial('Unobtainium')).toBeUndefined();
   });
+
+  it('settles names that mention two materials', () => {
+    const cases: [string, string | null][] = [
+      ['Glass wool insulation', 'insulation'],
+      ['Insulation - Glass Wool', 'insulation'],
+      ['Fibreglass batt', 'insulation'],
+      ['Glass fibre reinforced concrete', 'concrete'],
+      ['Cavity insulation', 'insulation'],
+      ['Cavity fill - mineral fibre', 'insulation'],
+      ['Steel joist', 'steel'],
+      ['Open web steel joist', 'steel'],
+      ['Gypsum sheathing board', 'gypsum'],
+      ['Concrete without reinforcement', 'concrete'],
+      ['Brick without mortar', 'masonry'],
+      ['Aluminium-faced PIR insulation', 'insulation'],
+      // and what must not move
+      ['Insulated glass unit', 'glass'],
+      ['Thermally broken aluminium', 'aluminium'],
+      ['Air barrier membrane', 'membrane'],
+      ['Misc. Air Layers - Air Space', null],
+      ['Cavity', null],
+      ['Wood - Dimensional Lumber', 'timber'],
+      ['Floor joist', 'timber'],
+      ['Wood - Sheathing - plywood', 'timber'],
+    ];
+    for (const [name, mat] of cases) expect(classifyMaterial(name), name).toBe(mat);
+  });
 });
 
 describe('build order for the imported Duplex', () => {
@@ -306,12 +334,12 @@ describe('build order for the imported Duplex', () => {
     expect(project.parts.length).toBe(model.elements.length);
   });
 
-  it('starts with the foundations and erects the crane before the first lift', () => {
+  it('starts with the foundations and puts up no tower crane for a two-storey house', () => {
     expect(project.steps[0].code.startsWith('FD')).toBe(true);
-    const erect = project.steps.findIndex((s) => s.code === 'TC-02');
-    const firstLift = project.steps.findIndex((s) => s.method === 'crane');
-    expect(erect).toBeGreaterThan(0);
-    expect(erect).toBeLessThan(firstLift);
+    // under 12 m with light picks: lifted by mobile crane and by hand (the tower-crane path is in crane-lifting.test.ts)
+    expect(project.crane).toBeNull();
+    expect(project.steps.some((s) => s.code === 'TC-02')).toBe(false);
+    expect(project.report!.lifting).toMatch(/^mobile crane \/ by hand/);
   });
 
   it('builds every wall and column before the slab, beam or roof that bears on it', () => {
@@ -342,13 +370,27 @@ describe('build order for the imported Duplex', () => {
     expect(checked).toBeGreaterThan(20);
   });
 
-  it('keeps every crane pick inside the jib and under the chart', () => {
-    const lifts = project.steps.filter((s) => s.lift);
-    expect(lifts.length).toBeGreaterThan(2);
-    for (const s of lifts) {
-      expect(s.lift!.radius).toBeLessThanOrEqual(project.crane.jib);
-      expect(s.lift!.util).toBeLessThan(1);
-    }
+  it('still lifts its steel by crane, but reads no tower-crane chart for it', () => {
+    const picks = project.steps.filter((s) => s.method === 'crane' && s.partCount > 0);
+    expect(picks.length).toBeGreaterThan(2);
+    for (const s of picks) expect(s.lift).toBeNull();
+  });
+
+  it('measures the floor area from the floor slabs only (no finishes, roof or patios)', () => {
+    // two 127 mm slabs on grade (≈ 64.8 m² each) and two wood joist floors (≈ 59.2 m² each)
+    expect(project.gifa).toBeGreaterThan(230);
+    expect(project.gifa).toBeLessThan(270);
+  });
+
+  it('lists the elements whose material was defaulted', () => {
+    const r = projectFromIfc(model, 'Duplex_A_20110907.ifc');
+    const list = project.report!.defaultedElements as { guid: string; name: string; ifcType: string }[];
+    expect(list.length).toBe(r.defaultedMaterials);
+    expect(r.defaultedElements.length).toBe(r.defaultedMaterials);
+    expect(list.length).toBeGreaterThan(0);
+    const flagged = new Set(project.parts.filter((p) => p.ref?.defaulted).map((p) => p.ref!.guid));
+    expect(new Set(list.map((d) => d.guid))).toEqual(flagged);
+    for (const d of list) expect(byGuid.has(d.guid)).toBe(true);
   });
 
   it('gives plausible totals and a full schedule', () => {

@@ -139,7 +139,7 @@ export class Presentation {
     const m = this.material;
     const s0 = this.section.start;
     const { crane } = this.project;
-    ev.push({ t: this.strikeT, kind: 'CRANE', text: `STRIKE ${crane.id} · crane dismantled · mobile crane at street level` });
+    if (crane) ev.push({ t: this.strikeT, kind: 'CRANE', text: `STRIKE ${crane.id} · crane dismantled · mobile crane at street level` });
     const names = [1, 2].map((pass) => this.passTotals(pass as 1 | 2).materials.slice(0, 3).join(' · ') || '—');
     for (const pass of [0, 1] as const) {
       const [a, b] = this.windows[pass];

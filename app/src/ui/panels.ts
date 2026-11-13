@@ -1,5 +1,6 @@
 import { fmtCarbon, fmtInt, fmtMass, pad2, type SequenceState, type Timeline } from '../engine/timeline';
-import { liftLevel, reviewedLift, type Project, type Step } from '../data/types';
+import { liftingLabel, liftLevel, reviewedLift, type Project, type Step } from '../data/types';
+import { stripScroll } from './layout';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -11,10 +12,16 @@ export interface PerfSample {
   res: number;
 }
 
-export function liftText(step: Step | null, craneId = 'TC-1', warnAt = 0.85, riggingKg = 0): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
+/**
+ * The operation panel's lift line for a step. `craneId` is the tower crane's,
+ * or null on a project without one, where crane picks go in by mobile crane
+ * (the checks read those against the mobile crane's chart).
+ */
+export function liftText(step: Step | null, craneId: string | null = 'TC-1', warnAt = 0.85, riggingKg = 0): { text: string; level: 'ok' | 'warn' | 'over' | 'none' } {
   if (!step) return { text: '—', level: 'none' };
   if (step.method === 'cast') return { text: step.motion === 'bore' ? 'bored in situ · piling rig' : 'cast in place · pump + formwork', level: 'none' };
   if (step.method === 'manual') return { text: 'by hand · site team', level: 'none' };
+  if (craneId === null) return { text: 'mobile crane · set up beside the building', level: 'none' };
   const l = step.lift;
   if (!l) return { text: `${craneId} · bulk bags`, level: 'none' };
   const { kg, util } = reviewedLift(l.pieceKg, l.capacityKg, riggingKg);
@@ -23,6 +30,19 @@ export function liftText(step: Step | null, craneId = 'TC-1', warnAt = 0.85, rig
   const tail = level === 'over' ? ' ✗ over chart' : level === 'warn' ? ' ⚠' : '';
   if (l.capacityKg <= 0) return { text: `${craneId} · R ${l.radius.toFixed(1)} m · beyond the jib ✗`, level: 'over' };
   return { text: `${craneId} · R ${l.radius.toFixed(1)} m · ${fmtTonnes(kg)} of ${fmtTonnes(l.capacityKg)} · ${pct} %${tail}`, level };
+}
+
+/**
+ * The build log's lines: the last `limit` events, without the frame-rate lines
+ * unless the performance overlay is on (non-experts read them as errors).
+ */
+export function visibleLog<E extends { kind: string }>(events: E[], showPerf: boolean, limit: number): E[] {
+  return (showPerf ? events : events.filter((e) => e.kind !== 'PERF')).slice(-limit);
+}
+
+/** What the scrubber (a slider) reads out: the step and the time. */
+export function scrubberText(t: number, duration: number, stepsDone: number, steps: number): string {
+  return `Step ${stepsDone} of ${steps} · ${t.toFixed(1)} s of ${duration.toFixed(1)} s`;
 }
 
 const fmtTonnes = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1)} t` : `${Math.round(kg / 10) * 10} kg`);
@@ -38,6 +58,11 @@ export class SequenceUI {
   private lastMemberUpdate = -1;
   private passTotals: ReturnType<Timeline['presentation']['passTotals']>[] = [];
   perf: PerfSample = { fps: 60, draws: 3, tris: 0, res: 1.5 };
+  /** Whether the log shows the frame-rate lines (the performance overlay is on). */
+  private showPerf = false;
+  /** Last values given to the scrubber's ARIA attributes, so they are only written when they change. */
+  private lastScrub = '';
+  private lastCard = -1;
   /** Utilisation that needs a lift plan review; follows the checks' threshold. */
   liftWarn = 0.85;
   /** Rigging added to each pick (the checks' allowance). */
@@ -125,6 +150,27 @@ export class SequenceUI {
     }
   }
 
+  /**
+   * Scroll a narrow screen's stage strip (it scrolls sideways) so the current
+   * card shows. The strip itself scrolls, never the page: scrollIntoView would
+   * also move the page under a reader.
+   */
+  private showCard(card: HTMLElement) {
+    const wrap = card.parentElement;
+    if (!wrap) return;
+    const c = card.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+    const left = stripScroll({ left: c.left, width: c.width }, { left: w.left, width: wrap.clientWidth, scrollLeft: wrap.scrollLeft, scrollWidth: wrap.scrollWidth });
+    if (left === null) return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    wrap.scrollTo({ left, behavior: reduce ? 'auto' : 'smooth' });
+  }
+
+  /** Show or hide the frame-rate lines in the log (redrawn on the next update). */
+  setShowPerf(on: boolean) {
+    this.showPerf = on;
+    this.lastLogKey = '';
+  }
+
   setThumbnail(stageIndex: number, url: string) {
     const img = this.cards[stageIndex].querySelector('img')!;
     img.src = url;
@@ -135,7 +181,9 @@ export class SequenceUI {
     const list = $('memberList');
     list.innerHTML = '';
     for (const s of this.p.steps) {
-      const r = document.createElement('div');
+      // a button: the row seeks to its step from the keyboard too
+      const r = document.createElement('button');
+      r.type = 'button';
       r.className = 'm-row ghost';
       r.dataset.search = `${s.id} ${s.member} ${s.code} ${s.material} ${s.zone}`.toLowerCase();
       r.innerHTML = `<span>${s.id}</span><span class="nm" title="${esc(s.member)}">${esc(s.member)}</span><span>${s.partCount} pcs</span><span class="st">GHOST</span>`;
@@ -155,6 +203,8 @@ export class SequenceUI {
     const ticks = $('scrubTicks');
     const track = $('scrubTrack');
     const D = this.p.duration;
+    track.setAttribute('aria-valuemax', D.toFixed(1));
+    this.lastScrub = '';
     ticks.innerHTML = '';
     track.querySelectorAll('.scrub-tick').forEach((t) => t.remove());
     for (const st of this.p.stages) {
@@ -194,7 +244,7 @@ export class SequenceUI {
       $('opStatus').textContent = w.active ? 'WASH' : 'COLOURED ✓';
       $('opQty').textContent = `${fmtInt(tot.pcs)} pcs · pass ${pass}`;
       $('opMat').textContent = tot.materials.join(' · ');
-      liftEl.textContent = s.crane.visible ? `${p.crane.id} being struck · mobile crane at street level` : `${p.crane.id} struck · no lifts`;
+      liftEl.textContent = !p.crane ? 'no tower crane · no lifts' : s.crane.visible ? `${p.crane.id} being struck · mobile crane at street level` : `${p.crane.id} struck · no lifts`;
       $('opXYZ').textContent = w.active ? `wash front +${Math.max(0, w.front[k]).toFixed(1)} m` : 'all surfaces coloured';
       $('opMass').textContent = `${fmtMass(tot.kg)} · ${fmtCarbon(tot.co2).replace('≈ ', '')}`;
     } else {
@@ -203,7 +253,7 @@ export class SequenceUI {
       $('opStatus').textContent = c.on ? 'CUT · FLY-THROUGH' : 'CLOSED ✓';
       $('opQty').textContent = `${fmtInt(this.tl.presentation.cutParts)} parts in section`;
       $('opMat').textContent = 'poché · cut faces hatched';
-      liftEl.textContent = `${p.crane.id} struck · no lifts`;
+      liftEl.textContent = p.crane ? `${p.crane.id} struck · no lifts` : 'no tower crane · no lifts';
       $('opXYZ').textContent = c.on ? `plane x = ${c.d.toFixed(1)} m` : 'plane open';
       $('opMass').textContent = `${fmtMass(p.totalMassKg)} · ${fmtCarbon(p.totalCarbonKg).replace('≈ ', '')}`;
     }
@@ -235,6 +285,13 @@ export class SequenceUI {
     $('timecode').innerHTML = `${fmt(s.t)} /<br>${pad2(Math.floor(D / 60))}:${pad2(Math.round(D % 60))}`;
     $('scrubFill').style.width = `${(s.t / D) * 100}%`;
     $('scrubKnob').style.left = `${(s.t / D) * 100}%`;
+    const now = s.t.toFixed(1);
+    if (now !== this.lastScrub) {
+      this.lastScrub = now;
+      const track = $('scrubTrack');
+      track.setAttribute('aria-valuenow', now);
+      track.setAttribute('aria-valuetext', scrubberText(s.t, D, s.stepsDone, p.steps.length));
+    }
     $('ganttTime').textContent = `${s.t.toFixed(1)} / ${D.toFixed(1)} s`;
 
     // gantt
@@ -257,12 +314,12 @@ export class SequenceUI {
     $('opMat').textContent = step?.material ?? '—';
     $('opXYZ').textContent = step ? step.centroid.map((v) => v.toFixed(1)).join(' · ') : '—';
     $('opMass').textContent = step ? `${fmtMass(step.massKg)} · ${step.carbonKg >= 1 ? fmtCarbon(step.carbonKg).replace('≈ ', '') : '—'}` : '—';
-    const lift = liftText(step, p.crane.id, this.liftWarn, this.liftRigKg);
+    const lift = liftText(step, p.crane?.id ?? null, this.liftWarn, this.liftRigKg);
     const liftEl = $('opLift');
     liftEl.textContent = lift.text;
     liftEl.dataset.level = lift.level;
     const liftLabel = liftEl.previousElementSibling as HTMLElement;
-    const labelText = `LIFT · TOWER CRANE ${p.crane.id}${this.liftRigKg > 0 ? ` · INCL. ${Math.round(this.liftRigKg)} KG RIGGING` : ''}`;
+    const labelText = `LIFT · ${liftingLabel(p.crane).toUpperCase()}${p.crane && this.liftRigKg > 0 ? ` · INCL. ${Math.round(this.liftRigKg)} KG RIGGING` : ''}`;
     if (liftLabel.textContent !== labelText) liftLabel.textContent = labelText;
     if (pres.kind) this.updatePresentation(s);
 
@@ -283,6 +340,13 @@ export class SequenceUI {
     $('carbonIntensity').textContent = s.complete ? `≈ ${Math.round(p.totalCarbonKg / p.gifa)} kg/m²` : `${Math.round((s.carbonPlacedKg / p.totalCarbonKg) * 100)} % of total`;
 
     // stage cards
+    const current = p.stages[s.stage - 1]?.available ? s.stage - 1 : -1;
+    if (current !== this.lastCard) {
+      this.lastCard = current;
+      this.cards.forEach((c, i) => (i === current ? c.setAttribute('aria-current', 'step') : c.removeAttribute('aria-current')));
+      // only when the stage changes, so a hand swiping the strip during playback is not overruled every frame
+      if (current >= 0) this.showCard(this.cards[current]);
+    }
     this.cards.forEach((c, i) => {
       const stg = p.stages[i];
       c.classList.toggle('on', i === s.stage - 1 && stg.available);
@@ -291,7 +355,8 @@ export class SequenceUI {
     });
 
     // log
-    const events = this.tl.logAt(s.t, 9);
+    // a frame-rate line every 2 s: look back far enough to fill the log without them
+    const events = visibleLog(this.tl.logAt(s.t, this.showPerf ? 9 : 24), this.showPerf, 9);
     const key = `${events.length}:${events.at(-1)?.t}:${events.at(-1)?.kind}`;
     if (key !== this.lastLogKey || events.some((e) => e.kind === 'PERF')) {
       this.lastLogKey = key;

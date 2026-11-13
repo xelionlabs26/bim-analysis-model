@@ -81,9 +81,12 @@ const TYPE_CATEGORY: Record<string, Category> = {
 };
 const SERVICES = /^IFC(FLOW|DISTRIBUTION|ENERGYCONVERSION|DUCT|PIPE|CABLE|AIRTERMINAL|AIRTOAIR|SANITARY|LIGHTFIXTURE|LAMP|OUTLET|VALVE|PUMP|FAN|BOILER|CHILLER|UNITARY|TANK|ELECTRIC|SPACEHEATER|FIRESUPPRESSION|WASTETERMINAL|STACKTERMINAL|DAMPER|SWITCHINGDEVICE|PROTECTIVEDEVICE|JUNCTIONBOX|SENSOR|ALARM|ACTUATOR|CONTROLLER|COMMUNICATIONSAPPLIANCE|AUDIOVISUAL|MEDICALDEVICE|COIL|COOLEDBEAM|COOLINGTOWER|HEATEXCHANGER|HUMIDIFIER|EVAPORAT|COMPRESSOR|CONDENSER|ENGINE|MOTOR|TRANSFORMER|BURNER|COGENERATION|SOLARDEVICE|TUBEBUNDLE|INTERCEPTOR|FILTER|FLOWMETER|FLOWINSTRUMENT)/;
 
+/** Type objects, styles, ports, systems and property entities share the services prefixes but are not physical elements. */
+const NOT_ELEMENT = /(TYPE|STYLE|PORT|SYSTEM|CIRCUIT|PROPERTIES)$/;
+
 export function categoryOf(type: string): Category | null {
   if (type in TYPE_CATEGORY) return TYPE_CATEGORY[type];
-  return SERVICES.test(type) ? 'services' : null;
+  return SERVICES.test(type) && !NOT_ELEMENT.test(type) ? 'services' : null;
 }
 
 export interface Layer {
@@ -138,6 +141,8 @@ export interface ImportReport {
   clipsApplied: number;
   booleansApproximated: number;
   lengthUnit: string;
+  /** The file ends before its data section closes (a cut-off download or copy). */
+  truncated: boolean;
   warnings: string[];
 }
 
@@ -160,6 +165,11 @@ export type Progress = (phase: 'parse' | 'geometry' | 'finish', share: number) =
 const PREFIX: Record<string, number> = { EXA: 1e18, PETA: 1e15, TERA: 1e12, GIGA: 1e9, MEGA: 1e6, KILO: 1e3, HECTO: 1e2, DECA: 1e1, DECI: 1e-1, CENTI: 1e-2, MILLI: 1e-3, MICRO: 1e-6, NANO: 1e-9, PICO: 1e-12 };
 
 const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const PLACEMENT_NAME: Record<string, string> = { IFCGRIDPLACEMENT: 'IfcGridPlacement', IFCLINEARPLACEMENT: 'IfcLinearPlacement', IFCAXIS2PLACEMENTLINEAR: 'IfcAxis2PlacementLinear' };
+
+/** Storey names below ground level: not taken as the ground storey when rebasing heights. */
+const BELOW_GROUND = /basement|cellar|keller|kelder|sous[- ]?sol|souterrain|foundation|\bfdn\b|footing|substructure|lower ground|\b(ug|lg|b\d+)\b/i;
 
 export async function readIfc(text: string, onProgress: Progress = () => {}, fileName = 'model.ifc'): Promise<IfcModel> {
   const f = StepFile.parse(text, (s) => onProgress('parse', s));
@@ -232,37 +242,45 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
     const m = r.args[5] instanceof Ref ? r.args[5].id : null;
     if (m !== null) for (const c of refs(r.args[4])) materialOf.set(c, m);
   }
-  const props = new Map<number, { isExternal: boolean | null; loadBearing: boolean | null }>();
+  // IsExternal / LoadBearing: on the occurrence, else on its type, field by field
+  const props = new Map<number, CommonProps>();
+  const merge = (into: Map<number, CommonProps>, id: number, p: CommonProps) => {
+    const cur = into.get(id) ?? { isExternal: null, loadBearing: null };
+    if (p.isExternal !== null) cur.isExternal = p.isExternal;
+    if (p.loadBearing !== null) cur.loadBearing = p.loadBearing;
+    into.set(id, cur);
+  };
   for (const id of f.idsOfType('IFCRELDEFINESBYPROPERTIES')) {
     const r = f.get(id)!;
-    const ps = f.deref(r.args[5]);
-    if (!ps || ps.type !== 'IFCPROPERTYSET' || !/^PSET_.*COMMON$/i.test(str(ps.args[2]))) continue;
-    let ext: boolean | null = null;
-    let lb: boolean | null = null;
-    for (const pid of refs(ps.args[4])) {
-      const p = f.get(pid);
-      if (!p || p.type !== 'IFCPROPERTYSINGLEVALUE') continue;
-      const name = str(p.args[0]).toLowerCase();
-      if (name === 'isexternal') ext = bool(p.args[2]);
-      else if (name === 'loadbearing') lb = bool(p.args[2]);
-    }
-    if (ext === null && lb === null) continue;
-    for (const c of refs(r.args[4])) {
-      const cur = props.get(c) ?? { isExternal: null, loadBearing: null };
-      if (ext !== null) cur.isExternal = ext;
-      if (lb !== null) cur.loadBearing = lb;
-      props.set(c, cur);
+    const p = readCommonPset(f, r.args[5]);
+    if (p) for (const c of refs(r.args[4])) merge(props, c, p);
+  }
+  // a type carries its sets in HasPropertySets (IFC4 forbids relating a type through
+  // IfcRelDefinesByProperties, though some IFC2x3 exporters do; both are read)
+  const typeProps = new Map<number, CommonProps>();
+  for (const t of new Set(typeOf.values())) {
+    const fromRel = props.get(t);
+    if (fromRel) merge(typeProps, t, fromRel);
+    const te = f.get(t);
+    for (const ps of te ? refs(te.args[5]) : []) {
+      const p = readCommonPset(f, new Ref(ps));
+      if (p) merge(typeProps, t, p);
     }
   }
+  const propsOf = (id: number): CommonProps => {
+    const own = props.get(id);
+    const tp = typeOf.has(id) ? typeProps.get(typeOf.get(id)!) : undefined;
+    return { isExternal: own?.isExternal ?? tp?.isExternal ?? null, loadBearing: own?.loadBearing ?? tp?.loadBearing ?? null };
+  };
 
   // ── storeys ──
   const storeyIds = f.idsOfType('IFCBUILDINGSTOREY');
+  const building = f.idsOfType('IFCBUILDING').map((id) => f.get(id)!)[0];
+  const heights = storeyHeights(f, g, storeyIds.map((id) => f.get(id)!), building);
   const storeys: Storey[] = storeyIds
-    .map((id) => {
+    .map((id, i) => {
       const s = f.get(id)!;
-      const pm = g.placement(s.args[5]);
-      const elev = typeof s.args[9] === 'number' ? s.args[9] : pm[14];
-      return { id, name: str(s.args[2]) || str(s.args[7]) || `Storey ${id}`, elevation: elev * L };
+      return { id, name: str(s.args[2]) || str(s.args[7]) || `Storey ${id}`, elevation: heights[i] * L };
     })
     .sort((a, b) => a.elevation - b.elevation);
   const storeyIndex = new Map(storeys.map((s, i) => [s.id, i]));
@@ -292,6 +310,16 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
       if (p !== undefined) hasGeomChild.add(p);
     }
   }
+  const candidateOf = new Map(candidates.map((c) => [c.id, c]));
+  /** The element drawn through its parts that this one is a part of (not a site). */
+  const skippedHostOf = (id: number) => {
+    const p = parentOf.get(id);
+    const host = p !== undefined && hasGeomChild.has(p) ? candidateOf.get(p) : undefined;
+    return host && host.category !== 'site' ? host : undefined;
+  };
+  // openings of a host drawn through its parts are offered to every part, once each
+  const hostOpenings = new Map<number, Mesh[]>();
+  const hostPartMeshes = new Map<number, Mesh[]>();
 
   const raw: { el: Omit<ImportedElement, 'positions' | 'indices' | 'edges' | 'min' | 'max' | 'volume' | 'closed'>; mesh: Mesh }[] = [];
   const openingMisses = new Map<string, number>(); // host category → openings left uncut
@@ -310,12 +338,19 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
     }
     const m = g.placement(e.args[5]);
     const allOps = (openingsOf.get(id) ?? []).map((oid) => openingMesh(f, g, oid));
-    const ops = allOps.filter((o) => o.pos.length);
+    const host = skippedHostOf(id);
+    let fromHost: Mesh[] = [];
+    if (host && openingsOf.has(host.id)) {
+      if (!hostOpenings.has(host.id)) hostOpenings.set(host.id, openingsOf.get(host.id)!.map((oid) => openingMesh(f, g, oid)));
+      fromHost = hostOpenings.get(host.id)!;
+    }
+    const ops = [...allOps, ...fromHost].filter((o) => o.pos.length);
     const mesh = new Mesh();
     for (const it of refs(rep.args[3])) {
       mesh.beginShell();
       g.item(new Ref(it), m, mesh, ops);
     }
+    if (host && fromHost.length) hostPartMeshes.set(host.id, [...(hostPartMeshes.get(host.id) ?? []), mesh]);
     // every opening of this element is cut by one of its items, lies clear of it, or is reported as not cut
     for (const o of allOps) {
       if (g.opened.has(o)) g.report.openingsCut++;
@@ -332,26 +367,33 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
       noGeometry++;
       continue;
     }
-    const pr = props.get(id) ?? (typeOf.has(id) ? props.get(typeOf.get(id)!) : undefined);
     const op = fillsOpening.get(id);
-    raw.push({
-      el: {
-        id,
-        guid: str(e.args[0]),
-        type,
-        category,
-        name: str(e.args[2]),
-        objectType: str(e.args[4]),
-        predefined: enumOf(e.args[8]),
-        storey: storeyFor(id),
-        parent: parentOf.get(id) ?? null,
-        fills: op !== undefined ? openingHost.get(op) ?? null : null,
-        layers: layersFor(f, materialOf.get(id) ?? (typeOf.has(id) ? materialOf.get(typeOf.get(id)!) : undefined), L),
-        isExternal: pr?.isExternal ?? null,
-        loadBearing: pr?.loadBearing ?? null,
-      },
-      mesh,
-    });
+    const layersOf = (x: number) => layersFor(f, materialOf.get(x) ?? (typeOf.has(x) ? materialOf.get(typeOf.get(x)!) : undefined), L);
+    const el = {
+      id,
+      guid: str(e.args[0]),
+      type,
+      category,
+      name: str(e.args[2]),
+      objectType: str(e.args[4]),
+      predefined: enumOf(e.args[8]),
+      storey: storeyFor(id),
+      parent: parentOf.get(id) ?? null,
+      fills: op !== undefined ? openingHost.get(op) ?? null : null,
+      layers: layersOf(id),
+      ...propsOf(id),
+    };
+    // a part of a wall or slab (Revit Parts) is built as that wall or slab: it takes the
+    // host's category and, where it has none of its own, the host's properties and layers
+    if (host && type === 'IFCBUILDINGELEMENTPART' && host.category !== 'proxy') {
+      const hp = propsOf(host.id);
+      el.category = host.category;
+      el.predefined ||= enumOf(f.get(host.id)!.args[8]);
+      el.isExternal ??= hp.isExternal;
+      el.loadBearing ??= hp.loadBearing;
+      if (!el.layers.length) el.layers = layersOf(host.id);
+    }
+    raw.push({ el, mesh });
     if (performance.now() - last > 40) {
       onProgress('geometry', (k + 1) / candidates.length);
       await yieldToUi();
@@ -359,6 +401,23 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
     }
   }
   onProgress('geometry', 1);
+  // a host's opening is cut if a part cut it; when it meets the parts but no part's material
+  // fills it, the parts were exported with the void already in them
+  for (const [hostId, ops] of hostOpenings) {
+    const parts = hostPartMeshes.get(hostId) ?? [];
+    const hostCategory = candidateOf.get(hostId)!.category;
+    for (const o of ops) {
+      if (g.opened.has(o)) g.report.openingsCut++;
+      else if (o.pos.length && !parts.some((p) => boxesTouch(o.pos, p.pos))) {
+        openingsOutside++;
+        outsideHosts.add(str(f.get(hostId)!.args[0]));
+      } else if (o.pos.length && !parts.some((p) => materialInBox(o.pos, p))) g.report.openingsCut++;
+      else {
+        g.report.openingsSkipped++;
+        openingMisses.set(hostCategory, (openingMisses.get(hostCategory) ?? 0) + 1);
+      }
+    }
+  }
 
   // inherit storey from the parent / filled element when the element has none
   const byId = new Map(raw.map((r) => [r.el.id, r.el]));
@@ -382,8 +441,19 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   if (!Number.isFinite(lo[0])) throw new Error('No building elements with supported geometry were found in this file.');
   const cx = ((lo[0] + hi[0]) / 2) * L;
   const cy = ((lo[1] + hi[1]) / 2) * L;
-  // keep the file's height datum unless it is far from zero (georeferenced heights)
-  const groundZ = Math.abs(lo[2] * L) > 500 ? (storeys.find((s) => s.elevation >= lo[2] * L)?.elevation ?? lo[2] * L) : 0;
+  // Keep the file's height datum while the model starts near it (basements and footings below
+  // 0 included). A model wholly above it, or far from it, has heights from a site datum (shared
+  // or survey coordinates): bring its ground storey to 0, i.e. the lowest storey at or just above
+  // the lowest geometry, passing over basement and foundation levels when a higher one is there.
+  const loZ = lo[2] * L;
+  let groundZ = 0;
+  if (loZ > 1 || Math.abs(loZ) > 500) {
+    const above = storeys.filter((s) => s.elevation >= loZ - 0.05);
+    const ground = above.find((s) => !BELOW_GROUND.test(s.name)) ?? above[0];
+    groundZ = ground?.elevation ?? loZ;
+    const at = `${groundZ < 0 ? '−' : '+'}${Math.abs(groundZ).toFixed(2)} m`;
+    warnings.push(`Heights in the file are measured from a site datum: ${ground ? ground.name : 'the lowest element'} is at ${at} there and is shown at 0.`);
+  }
   if (groundZ) for (const s of storeys) s.elevation -= groundZ;
   if (Math.abs(cx) > 1e5 || Math.abs(cy) > 1e5) warnings.push('Model coordinates are georeferenced far from the origin; it has been recentred.');
   const toApp = (x: number, y: number, z: number): V3 => [x * L - cx, z * L - groundZ, -(y * L - cy)];
@@ -405,8 +475,16 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
   const byCategory: Record<string, number> = {};
   for (const e of elements) byCategory[e.category] = (byCategory[e.category] ?? 0) + 1;
   const projectName = project ? str(project.args[7]) || str(project.args[2]) : '';
-  const building = f.idsOfType('IFCBUILDING').map((id) => f.get(id)!)[0];
   const buildingName = building ? str(building.args[7]) || str(building.args[2]) : '';
+  if (f.truncated) warnings.unshift('The file ends early (its data section is not closed): it looks truncated or partly downloaded, so elements are probably missing.');
+  if (g.report.placementCycles) {
+    const n = g.report.placementCycles;
+    warnings.push(`${n} placement${n === 1 ? ' refers' : 's refer'} back to ${n === 1 ? 'itself' : 'themselves'} in a loop; the loop was broken and those elements may be out of place.`);
+  }
+  for (const [t, n] of g.report.unsupportedPlacements) {
+    const kind = PLACEMENT_NAME[t] ?? t;
+    warnings.push(`${n} placement${n === 1 ? '' : 's'} of type ${kind} could not be read; elements placed by ${n === 1 ? 'it' : 'them'} are drawn at the model origin.`);
+  }
   if (!storeys.length) warnings.push('No storeys in the file: build order uses element heights only.');
   if (openingMisses.size) {
     const n = g.report.openingsSkipped;
@@ -440,9 +518,51 @@ export async function readIfc(text: string, onProgress: Progress = () => {}, fil
       clipsApplied: g.report.clipsApplied,
       booleansApproximated: g.report.booleansApproximated,
       lengthUnit: lengthName,
+      truncated: f.truncated,
       warnings,
     },
   };
+}
+
+interface CommonProps {
+  isExternal: boolean | null;
+  loadBearing: boolean | null;
+}
+
+/** IsExternal and LoadBearing from a Pset_*Common property set, or null when it holds neither. */
+function readCommonPset(f: StepFile, v: StepValue): CommonProps | null {
+  const ps = f.deref(v);
+  if (!ps || ps.type !== 'IFCPROPERTYSET' || !/^PSET_.*COMMON$/i.test(str(ps.args[2]))) return null;
+  const out: CommonProps = { isExternal: null, loadBearing: null };
+  for (const pid of refs(ps.args[4])) {
+    const p = f.get(pid);
+    if (!p || p.type !== 'IFCPROPERTYSINGLEVALUE') continue;
+    const name = str(p.args[0]).toLowerCase();
+    if (name === 'isexternal') out.isExternal = bool(p.args[2]);
+    else if (name === 'loadbearing') out.loadBearing = bool(p.args[2]);
+  }
+  return out.isExternal === null && out.loadBearing === null ? null : out;
+}
+
+/**
+ * Storey heights in the frame the geometry is placed in (world placements, file
+ * units). When any storey placement sits at a height of its own above its parent,
+ * the placements carry the levels and the elements hang from them: their world
+ * heights are used. When every storey placement is left at its parent's height,
+ * the level is only in Elevation, which is measured from the building, so it is
+ * lifted by the height of that parent.
+ */
+function storeyHeights(f: StepFile, g: IfcGeometry, list: Entity[], building: Entity | undefined): number[] {
+  const bz = building ? g.placement(building.args[5])[14] : 0;
+  const rows = list.map((s) => {
+    const ez = typeof s.args[9] === 'number' ? s.args[9] : null;
+    const lp = f.deref(s.args[5]);
+    if (!lp) return { ez, pz: null, parentZ: bz };
+    const parentZ = lp.type === 'IFCLOCALPLACEMENT' && lp.args[0] instanceof Ref ? g.placement(lp.args[0])[14] : 0;
+    return { ez, pz: g.placement(s.args[5])[14], parentZ };
+  });
+  const placed = rows.some((r) => r.pz !== null && Math.abs(r.pz - r.parentZ) > 1e-6 * (1 + Math.abs(r.ez ?? 0)));
+  return rows.map(({ ez, pz, parentZ }) => (pz !== null && (placed || ez === null) ? pz : parentZ + (ez ?? 0)));
 }
 
 function appOf(f: StepFile): string {
@@ -590,6 +710,44 @@ function findVoids(indices: number[], P: V3[], comp: Int32Array, triShell: numbe
     isVoid[c] = depth % 2;
   }
   return isVoid;
+}
+
+/**
+ * Does solid material of a closed mesh lie inside the bounding box of a point list?
+ * Samples a 3 × 3 × 3 grid of points inside the box and tests each against the mesh
+ * by ray parity.
+ */
+function materialInBox(box: number[], mesh: Mesh): boolean {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < box.length; i += 3)
+    for (let k = 0; k < 3; k++) {
+      lo[k] = Math.min(lo[k], box[i + k]);
+      hi[k] = Math.max(hi[k], box[i + k]);
+    }
+  const P = mesh.pos, I = mesh.idx;
+  const dir: V3 = [0.8017, 0.4523, 0.3906]; // an arbitrary direction, unlikely to graze an edge
+  const inside = (p: V3) => {
+    let n = 0;
+    for (let t = 0; t < I.length; t += 3) {
+      const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
+      const e1: V3 = [P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]], e2: V3 = [P[c] - P[a], P[c + 1] - P[a + 1], P[c + 2] - P[a + 2]];
+      const h: V3 = [dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0]];
+      const det = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+      if (Math.abs(det) < 1e-14) continue;
+      const sv: V3 = [p[0] - P[a], p[1] - P[a + 1], p[2] - P[a + 2]];
+      const u = (sv[0] * h[0] + sv[1] * h[1] + sv[2] * h[2]) / det;
+      if (u < 0 || u > 1) continue;
+      const qv: V3 = [sv[1] * e1[2] - sv[2] * e1[1], sv[2] * e1[0] - sv[0] * e1[2], sv[0] * e1[1] - sv[1] * e1[0]];
+      const w = (dir[0] * qv[0] + dir[1] * qv[1] + dir[2] * qv[2]) / det;
+      if (w < 0 || u + w > 1) continue;
+      if ((e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) / det > 1e-9) n++;
+    }
+    return n % 2 === 1;
+  };
+  for (const fx of [0.25, 0.5, 0.75])
+    for (const fy of [0.25, 0.5, 0.75])
+      for (const fz of [0.25, 0.5, 0.75]) if (inside([lo[0] + (hi[0] - lo[0]) * fx, lo[1] + (hi[1] - lo[1]) * fy, lo[2] + (hi[2] - lo[2]) * fz])) return true;
+  return false;
 }
 
 /** Do the bounding boxes of two point lists overlap? */

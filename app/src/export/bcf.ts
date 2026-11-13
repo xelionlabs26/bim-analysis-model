@@ -42,15 +42,38 @@ function guidsOf(p: Project, parts: number[]): string[] {
   return [...new Set(parts.map((i) => p.parts[i]?.ref?.guid).filter((g): g is string => !!g && /^[0-9A-Za-z_$]{22}$/.test(g)))];
 }
 
+/**
+ * A topic's GUID, from what the issue is about and never from what was measured:
+ * the model file, the rule, the issue's key and its elements (GlobalIds, or the
+ * step and part indices on a generated model). Titles carry measured values
+ * ("at 116 % of the chart"), so a changed threshold would otherwise open a second
+ * topic in the BCF tool instead of updating the first.
+ */
 export function topicGuid(p: Project, issue: Issue): string {
   const guids = guidsOf(p, [...issue.primary, ...issue.secondary]).sort().join(',');
   // without GlobalIds (generated models) the step and the parts tell two look-alike issues apart
   const parts = guids || `${issue.step}|${issue.primary.slice(0, 50).join(',')}`;
-  return stableGuid(`${p.id}|${p.meta.fileName ?? ''}|${issue.rule}|${issue.title}|${parts}`);
+  return stableGuid(`${p.id}|${p.meta.fileName ?? ''}|${issue.rule}|${issue.key ?? ''}|${parts}`);
 }
 
-export function markupXml(p: Project, issue: Issue, index: number, when: Date, snapshot: boolean, settings: CheckReport['settings']): string {
-  const guid = topicGuid(p, issue);
+/**
+ * Topic GUIDs for a whole register, one per issue. Two issues that share their
+ * identity get the second a derived GUID, so no two topics share a folder.
+ */
+export function topicGuids(p: Project, issues: Issue[]): Map<Issue, string> {
+  const out = new Map<Issue, string>();
+  const used = new Set<string>();
+  for (const issue of issues) {
+    const base = topicGuid(p, issue);
+    let guid = base;
+    for (let n = 2; used.has(guid); n++) guid = stableGuid(`${base}|${n}`);
+    used.add(guid);
+    out.set(issue, guid);
+  }
+  return out;
+}
+
+export function markupXml(p: Project, issue: Issue, index: number, when: Date, snapshot: boolean, settings: CheckReport['settings'], guid = topicGuid(p, issue)): string {
   const vp = stableGuid(`${guid}|viewpoint`);
   const rule = RULE_BY_ID[issue.rule];
   const date = when.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -80,8 +103,8 @@ export function markupXml(p: Project, issue: Issue, index: number, when: Date, s
 `;
 }
 
-export function viewpointXml(p: Project, issue: Issue, bounds: ModelBounds = modelBounds(p)): string {
-  const guid = stableGuid(`${topicGuid(p, issue)}|viewpoint`);
+export function viewpointXml(p: Project, issue: Issue, bounds: ModelBounds = modelBounds(p), topic = topicGuid(p, issue)): string {
+  const guid = stableGuid(`${topic}|viewpoint`);
   const off = p.meta.ifcOffset ?? [0, 0, 0];
   const view = issueView(issue, 1.6, bounds);
   const pos = toIfc(view.position, off);
@@ -137,11 +160,12 @@ const projectXml = (p: Project) => `<?xml version="1.0" encoding="UTF-8"?>
 export function bcfZip(p: Project, report: CheckReport, snapshots: Map<string, Uint8Array> = new Map(), when = new Date()): Uint8Array {
   const entries: ZipEntry[] = [{ name: 'bcf.version', data: VERSION }, { name: 'project.bcfp', data: projectXml(p) }];
   const bounds = modelBounds(p);
+  const guids = topicGuids(p, report.issues);
   report.issues.forEach((issue, k) => {
-    const dir = topicGuid(p, issue);
+    const dir = guids.get(issue)!;
     const snap = snapshots.get(issue.id);
-    entries.push({ name: `${dir}/markup.bcf`, data: markupXml(p, issue, k + 1, when, !!snap, report.settings) });
-    entries.push({ name: `${dir}/viewpoint.bcfv`, data: viewpointXml(p, issue, bounds) });
+    entries.push({ name: `${dir}/markup.bcf`, data: markupXml(p, issue, k + 1, when, !!snap, report.settings, dir) });
+    entries.push({ name: `${dir}/viewpoint.bcfv`, data: viewpointXml(p, issue, bounds, dir) });
     if (snap) entries.push({ name: `${dir}/snapshot.png`, data: snap });
   });
   return zip(entries, when);

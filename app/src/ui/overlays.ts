@@ -1,6 +1,7 @@
 import type { Callout, CraneState, SequenceState, Timeline } from '../engine/timeline';
 import { chartKnee, liftLevel, reviewedLift, type Project } from '../data/types';
 import type { Viewer } from '../scene/viewer';
+import type { ReachMode } from '../scene/reach';
 import { modelBounds } from '../checks/view';
 import { placeOnRing, type Obstacle, type RingPoint } from './place';
 
@@ -33,9 +34,11 @@ export class Overlays {
   private rulerLine: SVGLineElement;
   private hbox: HTMLDivElement;
   private frameNo = 0;
-  private reachEl: HTMLDivElement;
-  private pickEl: HTMLDivElement;
-  private knee: number;
+  /** The reach labels; null on a project with no tower crane. */
+  private reachEl: HTMLDivElement | null = null;
+  private pickEl: HTMLDivElement | null = null;
+  /** Emphasised for the crane plan; hidden while an issue outside the crane checks is explained. */
+  reachMode: ReachMode = 'normal';
   /** Utilisation from which a pick reads amber (the checks' review threshold). */
   liftWarn = 0.85;
   /** Rigging added to each pick (the checks' allowance). */
@@ -71,17 +74,19 @@ export class Overlays {
     html.append(this.hbox);
     // the crane's reach (the slew circle) and the current pick's radius
     const c = project.crane;
-    this.knee = chartKnee(c);
-    const t = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1).replace(/\.0$/, '')} t` : `${Math.round(kg)} kg`);
-    this.reachEl = document.createElement('div');
-    this.reachEl.className = 'reach-label';
-    this.reachEl.innerHTML = '<b></b><span></span>';
-    this.reachEl.firstElementChild!.textContent = `${c.id} · REACH ${c.jib} m`;
-    this.reachEl.lastElementChild!.textContent = `${t(c.maxKg)} to ${this.knee.toFixed(0)} m · ${t(c.tipKg)} at the tip · tail ${c.counterJib} m`;
-    this.pickEl = document.createElement('div');
-    this.pickEl.className = 'reach-label pick';
-    this.pickEl.innerHTML = '<b></b><span></span>';
-    html.append(this.reachEl, this.pickEl);
+    if (c) {
+      const knee = chartKnee(c);
+      const t = (kg: number) => (kg >= 1000 ? `${(kg / 1000).toFixed(1).replace(/\.0$/, '')} t` : `${Math.round(kg)} kg`);
+      this.reachEl = document.createElement('div');
+      this.reachEl.className = 'reach-label';
+      this.reachEl.innerHTML = '<b></b><span></span>';
+      this.reachEl.firstElementChild!.textContent = `${c.id} · REACH ${c.jib} m`;
+      this.reachEl.lastElementChild!.textContent = `${t(c.maxKg)} to ${knee.toFixed(0)} m · ${t(c.tipKg)} at the tip · tail ${c.counterJib} m`;
+      this.pickEl = document.createElement('div');
+      this.pickEl.className = 'reach-label pick';
+      this.pickEl.innerHTML = '<b></b><span></span>';
+      html.append(this.reachEl, this.pickEl);
+    }
     this.project = project;
     this.bounds = modelBounds(project);
   }
@@ -94,13 +99,29 @@ export class Overlays {
     this.controlsFrame = this.frameNo;
     const out: Obstacle[] = [];
     const root = this.html.parentElement ?? document;
-    for (const el of root.querySelectorAll<HTMLElement>('.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading')) {
+    for (const el of root.querySelectorAll<HTMLElement>('.toolbar, #caption, #titleBlock, #scaleBar, #scrubber, #transport, #drawer, #loading, #liftBanner')) {
       if (el.hidden || el.style.visibility === 'hidden') continue;
       const r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       out.push({ x0: r.left - host.left - 6, y0: r.top - host.top - 6, x1: r.right - host.left + 6, y1: r.bottom - host.top + 6, weight: Infinity });
     }
     return (this.controlBoxes = out);
+  }
+
+  /**
+   * The selected issue's pin and tag (drawn by the Issues pane on its own
+   * layer): the subject being explained, so the crane's labels must not
+   * cover any of it.
+   */
+  private issuePin(host: DOMRect): Obstacle[] {
+    const root = this.html.parentElement ?? document;
+    const out: Obstacle[] = [];
+    for (const el of root.querySelectorAll<SVGGraphicsElement>('#issueSvg .pin circle, #issueSvg .pin rect')) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      out.push({ x0: r.left - host.left - 8, y0: r.top - host.top - 8, x1: r.right - host.left + 8, y1: r.bottom - host.top + 8, weight: Infinity });
+    }
+    return out;
   }
 
   /** Annotation already drawn: level datums and member callouts (by how strongly they show), and the building as built so far. */
@@ -133,18 +154,24 @@ export class Overlays {
    */
   private updateReach(s: CraneState, shown: boolean, w: number, h: number, builtTop: number) {
     const c = this.project.crane;
-    const visible = shown && s.visible && s.headVisible;
-    this.reachEl.hidden = !visible;
-    this.pickEl.hidden = !visible || !s.pick;
+    const reachEl = this.reachEl, pickEl = this.pickEl;
+    if (!c || !reachEl || !pickEl) return;
+    const visible = shown && s.visible && s.headVisible && this.reachMode !== 'hidden';
+    reachEl.hidden = !visible;
+    pickEl.hidden = !visible || !s.pick;
+    const emph = this.reachMode === 'emph';
+    reachEl.classList.toggle('emph', emph);
+    pickEl.classList.toggle('emph', emph);
     if (!visible) return;
     const host = this.html.getBoundingClientRect();
-    const obstacles = [...this.controls(host), ...this.annotation(host, builtTop)];
+    const obstacles = [...this.controls(host), ...this.issuePin(host), ...this.annotation(host, builtTop)];
     const screen = { x0: 8, y0: 8, x1: w - 8, y1: h - 8 };
-    const ring = (r: number): RingPoint[] => {
+    // the slew circle lies on the ground; the pick's ring at the piece's own level, or on the ground in the crane plan (as the reach overlay draws them)
+    const ring = (r: number, y = 0.05): RingPoint[] => {
       const out: RingPoint[] = [];
       for (let k = 0; k < 120; k++) {
         const a = (k / 120) * Math.PI * 2;
-        const q = this.viewer.project([c.base[0] + Math.cos(a) * r, 0.05, c.base[2] + Math.sin(a) * r]);
+        const q = this.viewer.project([c.base[0] + Math.cos(a) * r, y, c.base[2] + Math.sin(a) * r]);
         out.push({ x: q.x, y: q.y, a, behind: q.behind });
       }
       return out;
@@ -157,24 +184,26 @@ export class Overlays {
     if (pick) {
       const lift = reviewedLift(pick.kg, pick.capKg, this.liftRigKg);
       const level = liftLevel(lift.util, this.liftWarn);
-      this.pickEl.dataset.level = level;
-      this.pickEl.classList.toggle('idle', !pick.active);
+      pickEl.dataset.level = level;
+      pickEl.classList.toggle('idle', !pick.active);
       const kg = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v / 10) * 10} kg`);
-      this.pickEl.firstElementChild!.textContent = `R ${pick.radius.toFixed(1)} m${level === 'over' ? ' ✗' : level === 'warn' ? ' ⚠' : ''}`;
-      this.pickEl.lastElementChild!.textContent = pick.capKg > 0 ? `${kg(lift.kg)} of ${kg(pick.capKg)} · ${Math.round(lift.util * 100)} %` : 'beyond the jib';
+      // the ring eases with the jib as it slews; the label reads the active pick's own radius, next to its own load
+      const trueR = Math.hypot(pick.at[0] - c.base[0], pick.at[2] - c.base[2]);
+      pickEl.firstElementChild!.textContent = `R ${trueR.toFixed(1)} m${level === 'over' ? ' ✗' : level === 'warn' ? ' ⚠' : ''}`;
+      pickEl.lastElementChild!.textContent = pick.capKg > 0 ? `${kg(lift.kg)} of ${kg(pick.capKg)} · ${Math.round(lift.util * 100)} %` : 'beyond the jib';
       const bearing = Math.atan2(pick.at[2] - c.base[2], pick.at[0] - c.base[0]);
-      const size = { w: this.pickEl.offsetWidth, h: this.pickEl.offsetHeight };
-      const at = placeOnRing(ring(Math.max(0.5, pick.radius)), size, screen, obstacles, bearing, this.pickAt);
+      const size = { w: pickEl.offsetWidth, h: pickEl.offsetHeight };
+      const at = placeOnRing(ring(Math.max(0.5, pick.radius), emph ? 0.05 : Math.max(0.05, pick.at[1])), size, screen, obstacles, bearing, this.pickAt);
       this.pickAt = at;
-      hang(this.pickEl, at);
+      hang(pickEl, at);
       // the reach label keeps off the pick's
       if (at) obstacles.push({ x0: at.x - 6, y0: at.y - 6, x1: at.x + size.w + 6, y1: at.y + size.h + 6, weight: 2 });
     } else this.pickAt = null;
     const cam = this.viewer.camera.position;
     const towardViewer = Math.atan2(cam.z - c.base[2], cam.x - c.base[0]);
-    const at = placeOnRing(ring(c.jib), { w: this.reachEl.offsetWidth, h: this.reachEl.offsetHeight }, screen, obstacles, towardViewer, this.reachAt);
+    const at = placeOnRing(ring(c.jib), { w: reachEl.offsetWidth, h: reachEl.offsetHeight }, screen, obstacles, towardViewer, this.reachAt);
     this.reachAt = at;
-    hang(this.reachEl, at);
+    hang(reachEl, at);
   }
 
   private svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string>): SVGElementTagNameMap[K] {

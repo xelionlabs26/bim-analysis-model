@@ -17,6 +17,7 @@ export const ICONS: Record<string, string> = {
   render: s('<circle cx="12" cy="12" r="8.5"/><path d="M6 18 18 6"/>'),
   settings: s('<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/><path d="M4 12h2M10 12h10"/><circle cx="8" cy="12" r="2"/>'),
   language: s('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.6 2.4 3.8 5.2 3.8 8.5S14.6 18.1 12 20.5C9.4 18.1 8.2 15.3 8.2 12S9.4 5.9 12 3.5Z"/>'),
+  reach: s('<circle cx="12" cy="12" r="8.5" stroke-dasharray="2.4 2"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 12l5.2-4.6"/><circle cx="17.6" cy="7" r="1.3"/>'),
   menu: s('<path d="M4 7h16M4 12h16M4 17h16"/>'),
   upload: s('<path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>'),
   prev: s('<path d="M6 5v14"/><path d="M18 5 9 12l9 7V5Z" fill="currentColor"/>'),
@@ -27,6 +28,8 @@ export const ICONS: Record<string, string> = {
   close: s('<path d="M6 6l12 12M18 6 6 18"/>', '0 0 24 24', 2.2),
   chevL: s('<path d="m15 5-7 7 7 7"/>', '0 0 24 24', 2.2),
   chevR: s('<path d="m9 5 7 7-7 7"/>', '0 0 24 24', 2.2),
+  chevU: s('<path d="m5 15 7-7 7 7"/>', '0 0 24 24', 2.2),
+  chevD: s('<path d="m5 9 7 7 7-7"/>', '0 0 24 24', 2.2),
 };
 
 export function hydrateIcons(root: ParentNode = document) {

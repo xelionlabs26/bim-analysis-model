@@ -17,7 +17,7 @@ npm run build            # typecheck + production bundle in dist/
 npm run build:artifact   # one-page build for the claude.ai host → dist-artifact/arbor-build.html
 ```
 
-URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`, plus `?sample=duplex` to open the IFC sample. The Arbor House sequence runs about 29 s: assembly to 18.1 s, material pass to 22.1 s, then the section.
+URL parameters for reproducible stills: `?t=12.8&paused=1&rotate=0&az=28&el=16`, plus `?sample=duplex` to open the IFC sample (the Arbor House demo is then not built unless the sample fails to load). The Arbor House sequence runs about 29 s: assembly to 18.1 s, material pass to 22.1 s, then the section.
 
 ## The building
 
@@ -51,8 +51,8 @@ sample: the buildingSMART *Duplex Apartment* (Revit 2011, IFC2x3, CC BY 4.0, see
    - openings, cut three ways: holes through slabs, strip-and-band cuts through walls, and cuts across extrusions (a sink through a worktop, a hole through a beam web).
 
    Winding is repaired shell by shell. The T-junctions earcut leaves at collinear profile points are repaired too.
-3. **Sequence.** Elements are banded by storey and ordered by what bears on what: footings first, then the crane, foundation walls and ground slab. Then, level by level, heavy walls and columns go in before the slabs, beams and roofs they carry. Envelope and fit-out trail two bands behind, and doors and windows follow their host wall. A wall counts as structural when something bears on it, because Revit often exports masonry with LoadBearing = false.
-4. **Plan the crane.** A tower crane is placed beside the footprint, with its jib sized to reach every lifted piece. Every pick is checked against an indicative load chart at its real radius.
+3. **Sequence.** Elements are banded by storey and ordered by what bears on what: footings first, then the tower crane (if there is one), foundation walls and ground slab. Then, level by level, heavy walls and columns go in before the slabs, beams and roofs they carry. Envelope and fit-out trail two bands behind, and doors and windows follow their host wall. A wall counts as structural when something bears on it, because Revit often exports masonry with LoadBearing = false.
+4. **Plan the lifting.** A building under 12 m whose every crane pick stays within 85 % of an indicative mobile crane chart (12 t to 6 m, 1.5 t at 30 m, set up beside the face nearest the pick) gets no tower crane: it is lifted by mobile crane and by hand, and the import report says why. The Duplex is one. Otherwise a tower crane is placed beside the footprint, with its jib sized to reach every lifted piece. Either way, every pick is checked against the indicative chart at its real radius.
 5. **Quantify.** Mass and indicative A1–A3 carbon come from the material layers. Stud and joist layers use framing fill factors, and air gaps carry no material. Biogenic storage is reported too, and intensity uses the slab area.
 6. **Present.** The same timeline, panels, material pass and Section A–A as Arbor House, generated from the model's own bounds and storeys.
 
@@ -98,8 +98,9 @@ checks after its first frame and keeps drawing). Open the **Issues** tab.
 | ACCESS-TRANSPORT | Prefabricated pieces fit a standard 13.6 × 2.55 × 3.0 m road load. |
 | MODEL-DATA | Gaps in the model that limit the checks go back to the design team. |
 
-Each rule reports how much it evaluated. A rule with nothing to act on reads **unverified**,
-never "passed". You can change every threshold under **Rules and thresholds** in the Issues tab
+Each rule reports how much it evaluated. A rule with nothing to act on reads **nothing to check**
+(unverified in the exports), never "passed". The family chips say the same in words, for example
+**Clashes 1 of 2 passed** when one clash rule had nothing to check. You can change every threshold under **Rules and thresholds** in the Issues tab
 and run the checks again.
 
 **On the Duplex (24 issues):**
@@ -117,7 +118,7 @@ and run the checks again.
   - 9 openings are placed clear of their hosts.
   - 114 elements have no material.
   - 50 elements are open surfaces.
-- **What passes:** both stairs, with at least 2.41 m headroom over 421 nosing points; support order, propping, crane reach, lift paths, crane clearance and transport.
+- **What passes:** both stairs, with at least 2.41 m headroom over 421 nosing points; support order, propping, crane reach (against the mobile crane), lift paths and transport. Crane clearance has nothing to check, as there is no tower crane.
 
 **On Arbor House (21 issues):**
 - **Crane capacity:** the BMU gantry is at 116 % of the chart and the entrance canopy at 87 %.
@@ -134,9 +135,9 @@ and run the checks again.
 
 **Selecting an issue:**
 - The timeline seeks to the step where the issue arises.
-- The camera looks at it from outside the building.
+- The camera looks at it from outside the building, framed in the part of the viewport the caption, title block and controls leave clear. On a small screen the caption steps aside while the issue is framed.
 - Its elements show in x-ray: red at fault, blue what they conflict with or wait for. Its lines (open edges, clearances, lift paths) and a pin are drawn too.
-- `[` and `]` step through the issues, and `Esc` clears the selection.
+- The ‹ › buttons above the list, or `[` and `]`, step through the issues shown, and `Esc` clears the selection. Turning off a filter that hides the selected issue clears it, and running the checks again keeps the filters.
 
 Elements in critical and major issues are hatched **FLAGGED** once they are placed (toggle with **Flags**). Scrubber markers, stage-card counts, Gantt pills and the **CHECKS** row of the active operation show where issues arise.
 
@@ -152,9 +153,9 @@ Elements in critical and major issues are hatched **FLAGGED** once they are plac
   - IfcOpenShell's BCF library reads all the topics.
   - Every camera was checked to aim at its elements, using IfcOpenShell geometry.
 
-  Topic GUIDs are stable, so a re-export updates topics instead of duplicating them.
-- **CSV:** the issue register, one row per issue: ID, severity, rule, title, detail, action, step, measurement, elements with their GlobalIds, and location.
-- **JSON:** the sequence JSON carries the check verdict and the issues. Without them the run is marked unverified.
+  Topic GUIDs come from the model, the rule and the elements, never from measured values, so a re-export after a threshold change updates topics instead of duplicating them.
+- **CSV:** the issue register, one row per issue: ID, severity, rule, title, detail, action, step number, measurement, elements with their GlobalIds, and location in IFC world coordinates. The step number is the padded step id as a number (step `016` is 16), since spreadsheets drop the padding anyway. Text that a spreadsheet would read as a formula (a name starting with `=`, `+`, `-` or `@`) is written with a leading apostrophe.
+- **JSON:** the sequence JSON carries the check verdict and the issues. Without them the run is marked unverified. Step centroids, issue locations and the crane base are in the same frame as the CSV and BCF: IFC world coordinates (metres, Z up) for an imported model, as `project.coordinates` states.
 
 **Limits of the checks:**
 - Support uses element bounds in plan. It catches missing and late supports, not structural adequacy.
@@ -164,11 +165,14 @@ Elements in critical and major issues are hatched **FLAGGED** once they are plac
 - Not modelled yet: MEWP and scaffold access, laydown and delivery routes, and 4D clashes with temporary works other than the crane mast.
 
 ## Crane reach overlay
-The crane's reach is drawn on the ground, as on a site logistics plan, while the crane stands. `K` hides it along with the crane.
+The crane's reach is drawn on the ground, as on a site logistics plan, while the tower crane stands. `K` hides it along with the crane. A project without a tower crane has neither, and the operation panel reads its lifts as mobile crane or by hand.
 - **Slew circle** (dashed) at the jib's length. A dotted circle marks where full chart capacity ends (20 m on Arbor House; a third of the jib on imported models). A fine dashed circle marks the counter-jib's tail swing.
-- **Pick ring** at the radius of the current lift's critical piece, with a line from the mast to a marker on that piece. It follows the active operation and eases to the next radius as the jib slews. Between lifts it fades.
+- **Pick ring** at the radius of the current lift's critical piece, drawn at that piece's level, with a line from the mast to a marker on the piece. It follows the active operation and eases to the next radius as the jib slews. Between lifts it fades.
 - **Colour** shows the pick's utilisation against the chart at that radius: green within the chart, amber from the lift-plan review threshold, red over the chart. The ring, its label, the operation panel and the REACH-CRANE check all read a pick the same way: the same threshold (85 % by default) and the same rigging allowance (0 kg by default). Both are set under Issues ▸ Rules and thresholds.
-- **Labels** hang from the circles. The reach label (jib, chart, tail) sits on the side nearest the viewer. The pick label (radius, piece mass against capacity, utilisation) sits at the piece's bearing. Each slides round its circle to stay clear of the toolbar, caption, title block, scale bar, scrubber and transport, and to cover as little of the other annotation as it can.
+- **Labels** hang from the circles. The reach label (jib, chart, tail) sits on the side nearest the viewer. The pick label (the piece's own radius, its mass against capacity, utilisation) sits at the piece's bearing. Each slides round its circle to stay clear of the toolbar, caption, title block, scale bar, scrubber, transport and the selected issue's pin, and to cover as little of the other annotation as it can.
+- **Issues come first.** While an issue outside the crane checks is selected, the reach overlay and its labels are hidden.
+- **Crane plan** (`L`, or the reach button in the toolbar) looks down on the whole slew circle with the reach drawn heavier and the pick ring on the ground, so the pick's radius reads against the full-capacity circle. `L` again, or `V`, goes back to the view before.
+- **The first pick over the chart** stops playback, once per playthrough, with a banner naming the piece, its reviewed mass, the capacity at its radius and the utilisation, and a button to open its issue. Seeking back before it arms it again; seeking or scrubbing past it never stops.
 
 ## What is computed (not authored)
 - **Install order rules** are checked in tests: core lead, frame → pods → slab, façade trailing, sky gardens after their façades, crane erected before the first lift.
@@ -183,7 +187,10 @@ The crane's reach is drawn on the ground, as on a site logistics plan, while the
 
 ## Controls
 `Space` play/pause · `←/→` step · `Home` start · `R` rebuild · `A` auto-rotate · `C` material colours ·
-`X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `S` section · `1–7` rail · `I` import IFC · `[` / `]` previous / next issue · `Esc` clear the issue, then close the drawer.
+`X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `L` crane plan · `S` section · `1–7` rail · `I` import IFC · `[` / `]` previous / next issue · `Shift+D` performance overlay · `Esc` dismiss the over-chart banner, then clear the issue, then close the drawer.
+`Space` plays only from the page, the model or the scrubber. On a focused button, checkbox, tab or disclosure, `Space` and `Enter` press that control, so the Layers checkboxes and the toolbar work from the keyboard. The panel tabs move with the arrow keys. The scrubber is a slider: arrows step, `Page Up` / `Page Down` jump a stage, `Home` / `End` go to either end. A drawer opened from the rail with the keyboard takes the focus, and `Esc` hands it back.
+The view toggles and the check thresholds are kept in this browser between visits; Settings (`6`) has **Reset to defaults**. Paused with a still camera, the viewer stops drawing until something changes.
+The frame rate, draw calls and triangle count stay hidden unless `?debug` is in the address, the Settings drawer turns on **Performance overlay**, or `Shift+D` is pressed. The status card shows the project's sheet, height and floor area. The build log starts collapsed. The product name in the header comes from `DEFAULT_BRAND` in `src/ui/brand.ts`, or from `?brand=Name` for a white-label demo.
 "Save the sequence as JSON" exports steps, lifts, mass and carbon (with each element's IFC GlobalId for imported models). In the hosted page this goes through the
 viewer's save prompt.
 

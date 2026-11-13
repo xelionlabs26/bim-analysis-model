@@ -1,4 +1,5 @@
 import type { Project } from '../data/types';
+import { fmtInt } from '../engine/timeline';
 
 /** Header drawing strip: mini elevation, height dimension, section marker, north point, register. */
 export function renderHeaderDrawing(el: HTMLElement, p: Project, sheet: string) {
@@ -57,12 +58,17 @@ export function renderHeaderDrawing(el: HTMLElement, p: Project, sheet: string) 
     </svg>`;
 }
 
-export function startClock(dateEl: HTMLElement, timeEl: HTMLElement) {
-  const tick = () => {
-    const d = new Date();
-    dateEl.textContent = d.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }).toUpperCase();
-    timeEl.textContent = d.toLocaleTimeString('en-GB', { hour12: false });
+/** What the status card says about the project in place of a clock: its sheet number, height and floor area. */
+export function projectFacts(p: Pick<Project, 'id' | 'name' | 'rev' | 'height' | 'storeys' | 'gifa' | 'parts'>): { head: string; main: string; sub: string; label: string } {
+  const height = `${p.height.toFixed(1)} m`;
+  const parts = `${fmtInt(p.parts.length)} parts`;
+  const area = Number.isFinite(p.gifa) && p.gifa > 0 ? `${fmtInt(p.gifa)} m² GIA` : '';
+  const storeys = `${p.storeys} ${p.storeys === 1 ? 'storey' : 'storeys'}`;
+  return {
+    // an imported model has no revision of its own ('—')
+    head: `${p.id}${/[A-Za-z0-9]/.test(p.rev) ? ` · REV ${p.rev}` : ''}`,
+    main: height,
+    sub: area || parts,
+    label: [p.name, storeys, `${height} high`, area, parts].filter(Boolean).join(' · '),
   };
-  tick();
-  setInterval(tick, 1000);
 }

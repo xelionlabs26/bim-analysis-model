@@ -11,34 +11,34 @@
       <!-- HEADER ─────────────────────────────────────────────────────────── -->
       <header class="header">
         <div class="brand">
-          <span class="logo" data-icon="logo"></span>
+          <span class="logo" data-icon="logo" aria-hidden="true"></span>
           <div>
-            <h1 class="wordmark">ARBOR <em>BUILD</em></h1>
+            <h1 class="wordmark" id="wordmark">ARBOR <em>BUILD</em></h1>
             <p class="tagline" id="tagline">HYBRID MASS TIMBER · 32 STOREYS · INSTALL ORDER</p>
           </div>
         </div>
-        <div class="header-drawing" id="headerDrawing"></div>
+        <div class="header-drawing" id="headerDrawing" aria-hidden="true"></div>
         <div class="status card">
-          <span class="status-icon" data-icon="crane"></span>
+          <span class="status-icon" data-icon="crane" aria-hidden="true"></span>
           <div class="status-main">
             <div class="status-phase" id="statusPhase">GROUNDWORKS</div>
             <div class="status-step mono" id="statusStep">STEP 000/000 · 0 PCS</div>
             <div class="bar"><i id="statusBar"></i></div>
           </div>
           <div class="status-stage"><b id="statusStage">1</b>/<span id="statusStageTotal">8</span></div>
-          <div class="status-clock">
-            <div class="mono date" id="clockDate">—</div>
-            <div class="mono time" id="clockTime">--:--:--</div>
-            <div class="mono live"><i></i> LIVE · <span id="liveFps">60</span> FPS</div>
+          <div class="status-facts" id="statusFacts">
+            <div class="mono head" id="factHead">—</div>
+            <div class="mono main" id="factMain">—</div>
+            <div class="mono sub" id="factSub">—</div>
           </div>
-          <button class="stamp" title="Project AR-32">AR</button>
         </div>
       </header>
 
       <!-- RAIL ───────────────────────────────────────────────────────────── -->
       <nav class="rail" id="rail" aria-label="Workspace">
         <div class="rail-items" id="railItems"></div>
-        <div class="gpu card">
+        <!-- performance overlay: hidden unless ?debug, Settings or Shift+D turns it on -->
+        <div class="gpu card" id="gpuCard" hidden>
           <div class="gpu-head mono"><span>GPU</span><b>LIVE</b></div>
           <div class="gpu-fps"><b id="gpuFps">60</b><span>FPS</span></div>
           <canvas id="gpuSpark" width="160" height="40"></canvas>
@@ -57,9 +57,9 @@
         <div class="overlay" id="overlayHtml"></div>
         <svg class="overlay issue-svg" id="issueSvg" aria-hidden="true"></svg>
 
-        <div class="toolbar">
-          <button class="chip icon-only" id="btnMenu" title="Render style" data-icon="menu"></button>
-          <button class="chip" id="btnOrbit"><i class="dot"></i> Orbit Cam</button>
+        <div class="toolbar" role="group" aria-label="View">
+          <button class="chip icon-only" id="btnMenu" title="Render style" aria-label="Render style" aria-expanded="false" aria-controls="drawer" data-icon="menu"></button>
+          <button class="chip" id="btnOrbit" aria-pressed="true"><i class="dot" aria-hidden="true"></i> Orbit Cam</button>
           <label class="chip select">
             <select id="selStyle" aria-label="Render style">
               <option value="ink+paint">Ink + Paint</option>
@@ -67,9 +67,10 @@
               <option value="paint">Paint</option>
             </select>
           </label>
-          <button class="chip toggle on" id="btnGhost">Ghost</button>
-          <button class="chip toggle on" id="btnCrane">Crane</button>
-          <button class="chip toggle on" id="btnFlags" title="Hatch elements with critical or major issues (FLAGGED)">Flags</button>
+          <button class="chip toggle on" id="btnGhost" aria-pressed="true">Ghost</button>
+          <button class="chip toggle on" id="btnCrane" aria-pressed="true">Crane</button>
+          <button class="chip toggle icon-only" id="btnCranePlan" title="Crane plan: the reach from above (L)" aria-label="Crane plan" aria-pressed="false" data-icon="reach"></button>
+          <button class="chip toggle on" id="btnFlags" title="Hatch elements with critical or major issues (FLAGGED)" aria-pressed="true">Flags</button>
         </div>
 
         <section class="caption" id="caption">
@@ -81,11 +82,11 @@
         </section>
 
         <section class="titleblock" id="titleBlock">
-          <div class="tb-row full"><label>DRAWING</label><b id="tbName">ARBOR HOUSE</b></div>
+          <div class="tb-row full tb-name"><label>DRAWING</label><b id="tbName">ARBOR HOUSE</b></div>
           <div class="tb-row"><label>DWG NO.</label><span class="mono" id="tbDwg">AR-32 / A-201</span></div>
-          <div class="tb-row"><label>SCALE</label><span class="mono" id="tbScale">1:500</span></div>
+          <div class="tb-row tb-scale"><label>SCALE</label><span class="mono" id="tbScale">1:500</span></div>
           <div class="tb-row"><label>PHASE</label><span class="mono red" id="tbPhase">GROUNDWORKS</span></div>
-          <div class="tb-row"><label>SHEET</label><span class="mono" id="tbSheet">1 / 8</span></div>
+          <div class="tb-row tb-sheet"><label>SHEET</label><span class="mono" id="tbSheet">1 / 8</span></div>
           <div class="tb-row full"><label>CAMERA</label><span class="mono" id="tbCamera">AZ 28° · EL +16° · 52 mm</span></div>
         </section>
 
@@ -95,27 +96,36 @@
           <div class="mono red sb-scale" id="sbScale">SCALE · 1:500</div>
         </div>
 
-        <div class="scrubber" id="scrubber">
-          <div class="scrub-ticks mono" id="scrubTicks"></div>
-          <div class="scrub-track" id="scrubTrack"><i id="scrubFill"></i><b id="scrubKnob"></b></div>
+        <!-- play bar: over the model on a wide screen, pinned to the bottom of the screen on a narrow one -->
+        <div class="playbar" id="playbar">
+          <div class="scrubber" id="scrubber">
+            <div class="scrub-ticks mono" id="scrubTicks"></div>
+            <div class="scrub-track" id="scrubTrack" role="slider" tabindex="0" aria-label="Sequence time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><i id="scrubFill"></i><b id="scrubKnob"></b></div>
+          </div>
+
+          <div class="transport card" id="transport" role="group" aria-label="Playback">
+            <button class="tbtn icon" id="btnPrev" title="Previous stage" aria-label="Previous stage" data-icon="prev"></button>
+            <button class="tbtn icon" id="btnPlay" title="Pause (Space)" aria-label="Pause" aria-keyshortcuts="Space" data-icon="pause"></button>
+            <button class="tbtn icon" id="btnNext" title="Next stage" aria-label="Next stage" data-icon="next"></button>
+            <div class="timecode mono" id="timecode">00:00.0 /<br />00:00</div>
+            <span class="sep" aria-hidden="true"></span>
+            <button class="tkey" id="btnRebuild" title="Rebuild from the start (R)" aria-keyshortcuts="R">REBUILD<small aria-hidden="true">R</small></button>
+            <button class="tkey on" id="btnRotate" title="Auto-rotate (A)" aria-label="Auto-rotate" aria-pressed="true" aria-keyshortcuts="A">AUTO-<br />ROTATE<small aria-hidden="true">A</small></button>
+            <button class="tkey" id="btnColour" title="Material colours (C)" aria-label="Colour" aria-pressed="false" aria-keyshortcuts="C">COLOUR<small aria-hidden="true">C</small></button>
+            <button class="tkey" id="btnFrame" title="Keep the model framed (X)" aria-label="Frame" aria-pressed="false" aria-keyshortcuts="X">FRAME<small aria-hidden="true">X</small></button>
+            <button class="tkey" id="btnSection" title="Cut the model (S) · settings under Section in the rail" aria-label="Section" aria-pressed="false" aria-keyshortcuts="S">SECTION<small aria-hidden="true">S</small></button>
+            <button class="tkey" id="btnSpeed" title="Playback speed (F)" aria-label="Speed ×1" aria-keyshortcuts="F">SPEED<br /><span id="speedVal">×1</span><small aria-hidden="true">F</small></button>
+            <button class="tkey" id="btnView" title="Next view (V)" aria-label="View" aria-keyshortcuts="V">VIEW<small aria-hidden="true">V</small></button>
+          </div>
         </div>
 
-        <div class="transport card" id="transport">
-          <button class="tbtn icon" id="btnPrev" title="Previous stage" data-icon="prev"></button>
-          <button class="tbtn icon" id="btnPlay" title="Play / pause (Space)" data-icon="pause"></button>
-          <button class="tbtn icon" id="btnNext" title="Next stage" data-icon="next"></button>
-          <div class="timecode mono" id="timecode">00:00.0 /<br />00:00</div>
-          <span class="sep"></span>
-          <button class="tkey" id="btnRebuild">REBUILD<small>R</small></button>
-          <button class="tkey on" id="btnRotate">AUTO-<br />ROTATE<small>A</small></button>
-          <button class="tkey" id="btnColour">COLOUR<small>C</small></button>
-          <button class="tkey" id="btnFrame">FRAME<small>X</small></button>
-          <button class="tkey" id="btnSection" title="Cut the model (S) · settings under Section in the rail">SECTION<small>S</small></button>
-          <button class="tkey" id="btnSpeed">SPEED<br /><span id="speedVal">×1</span><small>F</small></button>
-          <button class="tkey" id="btnView">VIEW<small>V</small></button>
+        <div class="lift-banner card" id="liftBanner" role="alert" hidden>
+          <div class="lb-text"><b id="liftBannerHead">Pick over the crane's chart</b><span id="liftBannerBody"></span></div>
+          <button class="xbtn" id="liftBannerIssue" hidden>Open the issue</button>
+          <button class="lb-close" id="liftBannerClose" title="Dismiss (Esc)" aria-label="Dismiss" data-icon="close"></button>
         </div>
 
-        <div class="drawer card" id="drawer" hidden></div>
+        <div class="drawer card" id="drawer" role="region" aria-label="Settings" hidden></div>
         <input type="file" id="fileIfc" accept=".ifc,.ifc.txt" hidden />
         <div class="drop-hint" id="dropHint" hidden><b>Drop the IFC file</b><span>It is read in your browser · nothing is uploaded</span></div>
         <div class="loading card" id="loading" role="status" hidden>
@@ -128,18 +138,17 @@
       <aside class="panel card" id="panel">
         <div class="panel-head">
           <h3>BUILD SEQUENCE</h3>
-          <div class="seg" role="tablist">
-            <button role="tab" class="on" id="tabSeq">Sequence</button>
-            <button role="tab" id="tabMembers">Members</button>
-            <button role="tab" id="tabIssues">Issues <span class="tab-badge" id="issBadge">…</span></button>
+          <div class="seg" role="tablist" aria-label="Panel">
+            <button role="tab" class="on" id="tabSeq" aria-selected="true" aria-controls="paneSeq">Sequence</button>
+            <button role="tab" id="tabMembers" aria-selected="false" aria-controls="paneMembers" tabindex="-1">Members</button>
+            <button role="tab" id="tabIssues" aria-selected="false" aria-controls="paneIssues" tabindex="-1">Issues <span class="tab-badge" id="issBadge">…</span></button>
           </div>
-          <button class="sq" id="btnDownload" title="Save the sequence as JSON" data-icon="download"></button>
-          <button class="sq red" id="btnPlay2" title="Play / pause" data-icon="pause"></button>
+          <button class="sq" id="btnDownload" title="Save the sequence as JSON" aria-label="Save the sequence as JSON" data-icon="download"></button>
+          <button class="sq red" id="btnPlay2" title="Pause (Space)" aria-label="Pause" data-icon="pause"></button>
         </div>
-        <div class="toast mono" id="toast" role="status" hidden></div>
         <p class="crumb mono" id="crumb">AR-32 ▸ <b>Assembly</b></p>
 
-        <div class="tabpane" id="paneSeq">
+        <div class="tabpane" id="paneSeq" role="tabpanel" aria-labelledby="tabSeq">
           <div class="sec-head"><h4>STAGE TIMELINE</h4><span class="mono" id="ganttTime">0.0 / 0.0 s</span></div>
           <div class="gantt" id="gantt"></div>
 
@@ -169,12 +178,12 @@
           </div>
         </div>
 
-        <div class="tabpane" id="paneMembers" hidden>
-          <input class="search mono" id="memberSearch" placeholder="Filter members, codes, materials…" />
+        <div class="tabpane" id="paneMembers" role="tabpanel" aria-labelledby="tabMembers" hidden>
+          <input class="search mono" id="memberSearch" type="search" aria-label="Filter members" placeholder="Filter members, codes, materials…" />
           <div class="members" id="memberList"></div>
         </div>
 
-        <div class="tabpane" id="paneIssues" hidden>
+        <div class="tabpane" id="paneIssues" role="tabpanel" aria-labelledby="tabIssues" hidden>
           <div class="iss-top">
             <p class="iss-verdict" id="issVerdict">Checking the sequence…</p>
             <div class="iss-exports">
@@ -184,18 +193,24 @@
           </div>
           <div class="iss-progress" id="issProgress"><i></i></div>
           <div class="iss-families mono" id="issFamilies"></div>
-          <details class="iss-rules"><summary class="mono">RULES AND THRESHOLDS</summary><div id="issRulesBody"></div></details>
+          <details class="iss-rules"><summary class="mono">Rules and thresholds</summary><div id="issRulesBody"></div></details>
           <div class="iss-sev mono" id="issSev"></div>
+          <div class="iss-nav" id="issNav">
+            <button class="iss-step" id="issPrev" aria-label="Previous issue" title="Previous issue ( [ )" aria-keyshortcuts="[" disabled>‹</button>
+            <span class="mono" id="issPos" aria-live="polite"></span>
+            <button class="iss-step" id="issNext" aria-label="Next issue" title="Next issue ( ] )" aria-keyshortcuts="]" disabled>›</button>
+            <span class="iss-keys mono" aria-hidden="true"><kbd>[</kbd> <kbd>]</kbd> step · <kbd>Esc</kbd> clear</span>
+          </div>
           <ol class="iss-list" id="issList"></ol>
         </div>
 
-        <div class="log">
+        <div class="log collapsed" id="log">
           <div class="log-head">
             <h4>BUILD LOG</h4><span class="badge" id="logBadge">ASSEMBLING</span>
-            <canvas id="logSpark" width="300" height="24"></canvas>
-            <button class="sq" id="btnLogClose" title="Collapse log" data-icon="close"></button>
+            <canvas id="logSpark" width="300" height="24" aria-hidden="true"></canvas>
+            <button class="sq" id="btnLog" title="Show the build log" aria-label="Build log" aria-expanded="false" aria-controls="logLines" data-icon="chevU"></button>
           </div>
-          <ol class="log-lines mono" id="logLines"></ol>
+          <ol class="log-lines mono" id="logLines" aria-label="Build log"></ol>
         </div>
       </aside>
 
@@ -207,11 +222,30 @@
           <span class="legend mono"><i class="l-placed"></i>PLACED <i class="l-active"></i>ACTIVE <i class="l-ghost"></i>GHOST <i class="l-flag"></i>FLAGGED</span>
         </div>
         <div class="stages-row">
-          <button class="round" id="stagePrev" data-icon="chevL" title="Previous stage"></button>
+          <button class="round" id="stagePrev" data-icon="chevL" title="Previous stage" aria-label="Previous stage"></button>
           <div class="cards" id="stageCards"></div>
-          <button class="round" id="stageNext" data-icon="chevR" title="Next stage"></button>
+          <button class="round" id="stageNext" data-icon="chevR" title="Next stage" aria-label="Next stage"></button>
         </div>
       </footer>
+
+      <!-- the selected issue, on a narrow screen: a sheet above the play bar -->
+      <section class="issue-sheet card" id="issueSheet" aria-labelledby="sheetTitle" hidden>
+        <div class="sheet-head">
+          <button class="sheet-grip" id="sheetToggle" aria-expanded="true" aria-controls="sheetBody" title="Fold the issue away" aria-label="Fold the issue detail"></button>
+          <i class="dot" aria-hidden="true"></i>
+          <h4 id="sheetTitle"><b class="mono" id="sheetId"></b> <span id="sheetText"></span></h4>
+          <button class="iss-step" id="sheetPrev" aria-label="Previous issue" title="Previous issue">‹</button>
+          <button class="iss-step" id="sheetNext" aria-label="Next issue" title="Next issue">›</button>
+          <button class="sheet-close" id="sheetClose" aria-label="Close the issue" title="Close (Esc)" data-icon="close"></button>
+        </div>
+        <div class="sheet-body" id="sheetBody"></div>
+      </section>
+
+      <!-- messages: imports, saves, exports -->
+      <div class="toast" id="toast" hidden>
+        <span class="toast-msg mono" id="toastText" role="status"></span>
+        <button class="toast-x" id="toastClose" aria-label="Dismiss the message" title="Dismiss" data-icon="close"></button>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -35,13 +35,17 @@ export function modelBounds(p: Project): ModelBounds {
 /**
  * Look at an issue from outside the building: from the side it is on, a little
  * oblique, far enough out to clear the façade, close enough to fill the frame.
+ * `share` is the part of the view the issue may fill (width and height, 0–1):
+ * less than all of it when cards over the viewport cover the rest.
  */
-export function issueView(issue: Issue, aspect = 1.6, bounds?: ModelBounds): IssueView {
+export function issueView(issue: Issue, aspect = 1.6, bounds?: ModelBounds, share: { w: number; h: number } = { w: 1, h: 1 }): IssueView {
   const [lo, hi] = issue.box;
   const target: Vec3 = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
   const r = Math.max(2.5, Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2);
   const half = ((ISSUE_FOV * Math.PI) / 180) / 2;
-  const fit = Math.min(Math.tan(half), Math.tan(half) * aspect);
+  const part = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0.05, v)) : 1);
+  const sw = part(share.w), sh = part(share.h);
+  const fit = Math.min(Math.tan(half) * sh, Math.tan(half) * aspect * sw);
   let dist = (r / fit) * 1.05;
   let az = 35;
   const el = 24;

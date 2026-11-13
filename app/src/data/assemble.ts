@@ -56,7 +56,8 @@ export interface AssembleInput {
   meshes?: MeshData[];
   context?: Part[];
   contextMeshes?: MeshData[];
-  crane: Crane;
+  /** The tower crane; null for a project lifted by mobile crane and by hand. */
+  crane: Crane | null;
   density?: Partial<Record<MaterialId, number>>;
   secondsPerStep: number;
   meta: ProjectMeta;
@@ -134,7 +135,8 @@ export function assembleProject(input: AssembleInput): Project {
     const interval = (dur - 0.3) / mine.length;
     mine.forEach((def, i) => {
       const t0 = stage.start + 0.05 + i * interval;
-      const spread = Math.min(interval * 1.6, 0.45);
+      // a step's parts go in one after another; the last step's spread is cut so it lands before the stage ends
+      const spread = Math.max(0, Math.min(interval * 1.6, 0.45, stage.end - 0.05 - PART_ANIM - t0));
       const partStart = parts.length;
       let mass = 0;
       let carbon = 0;
@@ -176,11 +178,12 @@ export function assembleProject(input: AssembleInput): Project {
         massKg: mass,
         carbonKg: carbon,
         biogenicKg: biogenic,
-        centroid: def.parts.length ? [c[0] / cnt, c[1] / cnt, c[2] / cnt] : [...crane.base],
+        centroid: def.parts.length ? [c[0] / cnt, c[1] / cnt, c[2] / cnt] : crane ? [...crane.base] : [0, 0, 0],
         top: Number.isFinite(top) ? top : 0,
         bottom: Number.isFinite(bottom) ? bottom : 0,
         halfExtent: half,
-        lift: def.method === 'crane' && def.parts.length ? liftCheck(def.parts, crane, density) : null,
+        // only a tower crane has a chart and a mast to read picks against; mobile picks are checked by the rules
+        lift: crane && def.method === 'crane' && def.parts.length ? liftCheck(def.parts, crane, density) : null,
       });
     });
   });

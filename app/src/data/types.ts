@@ -133,7 +133,10 @@ export interface ZoneDef {
   y1: number;
 }
 
-/** How a step's parts arrive: lowered by the tower crane, cast in place, or set by hand. */
+/**
+ * How a step's parts arrive: lifted by crane (the tower crane, or a mobile crane
+ * on a project that has none), cast in place, or set by hand.
+ */
 export type Method = 'crane' | 'cast' | 'manual';
 /** How a part animates in: lowered from above, poured upward, or bored downward. */
 export type Motion = 'lower' | 'pour' | 'bore';
@@ -228,7 +231,7 @@ export interface Step extends Omit<StepDef, 'parts'> {
   top: number; // highest point of this step's parts
   bottom: number; // lowest point of this step's parts
   halfExtent: number; // max |x| / |z|
-  lift: LiftCheck | null; // null unless method === 'crane'
+  lift: LiftCheck | null; // null unless method === 'crane' and the project has a tower crane
 }
 
 export interface ScheduledPart extends Part {
@@ -253,7 +256,61 @@ export interface Crane {
   tieX: number;
   /** Mast height when erected, m. */
   mastStart: number;
+  /** Placed by the importer (off the west face, sized to reach everything), not chosen by anyone. */
+  assumed?: boolean;
 }
+
+/**
+ * An indicative all-terrain mobile crane (about 40 t class), set up on its
+ * outriggers beside whichever face of the building is nearest the pick. Like
+ * the tower crane's chart it is order-of-magnitude only: a real lift is
+ * planned on the supplier's chart for the crane and the ground on the day.
+ */
+export const MOBILE_CRANE = {
+  label: 'mobile crane',
+  /** Full capacity, kg, out to `kneeM`. */
+  maxKg: 12000,
+  kneeM: 6,
+  /** Furthest radius on the chart, m. */
+  reach: 30,
+  /** From the face of the building to the slew centre: outriggers, mats and clearance, m. */
+  standoff: 4,
+  capacityAt: (r: number) => (r > 30 ? 0 : Math.min(12000, 12000 * Math.pow(6 / Math.max(r, 1), 1.3))),
+  /** The chart in words, for notes and reports. */
+  chart: 'an indicative mobile crane chart (12 t to 6 m, 1.5 t at 30 m)',
+} as const;
+
+/** The building's extent in plan (app axes: x east, z south), m. */
+export interface PlanBox {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+}
+
+/** Plan bounds of a set of parts (their axis-aligned boxes). */
+export function planBox(parts: readonly Part[]): PlanBox {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of parts) {
+    x0 = Math.min(x0, p.pos[0] - p.size[0] / 2); x1 = Math.max(x1, p.pos[0] + p.size[0] / 2);
+    z0 = Math.min(z0, p.pos[2] - p.size[2] / 2); z1 = Math.max(z1, p.pos[2] + p.size[2] / 2);
+  }
+  return Number.isFinite(x0) ? { x0, x1, z0, z1 } : { x0: 0, x1: 0, z0: 0, z1: 0 };
+}
+
+/**
+ * A pick by mobile crane: the crane stands beside the face nearest the piece,
+ * so the radius is the piece's distance in from that face plus the standoff.
+ */
+export function mobilePick(box: PlanBox, x: number, z: number, kg: number): { radius: number; capacityKg: number; util: number } {
+  const inside = Math.max(0, Math.min(x - box.x0, box.x1 - x, z - box.z0, box.z1 - z));
+  const radius = inside + MOBILE_CRANE.standoff;
+  const capacityKg = MOBILE_CRANE.capacityAt(radius);
+  return { radius, capacityKg, util: capacityKg > 0 ? kg / capacityKg : Infinity };
+}
+
+/** How a project's pieces are lifted, in words for the panels and exports. */
+export const liftingLabel = (crane: Crane | null) => (crane ? `tower crane ${crane.id}` : 'mobile crane / by hand');
 
 /** Camera key for the section fly-through, t relative to the section stage start. */
 export interface CameraKey {
@@ -312,7 +369,11 @@ export interface Project {
   meshes: MeshData[];
   context: Part[];
   contextMeshes: MeshData[];
-  crane: Crane;
+  /**
+   * The tower crane, or null when the project has none: a low-rise building
+   * whose picks all fit a mobile crane is lifted by mobile crane and by hand.
+   */
+  crane: Crane | null;
   duration: number;
   totalMassKg: number;
   totalCarbonKg: number;

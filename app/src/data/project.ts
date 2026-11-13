@@ -8,13 +8,17 @@ import type { PresentationSpec, Project, ZoneDef } from './types';
 
 export { ACTIVE_HOLD, PART_ANIM } from './assemble';
 
-/** Stage table. Assembly windows are sized from their step counts. */
+/**
+ * Stage table. Assembly windows are sized from their step counts. Façades trail the
+ * frame by two floors and go in with the frame level being erected (generator.ts tower()),
+ * so each tower stage builds the façades, sky garden and terrace of the floors below it.
+ */
 const STAGES: StageConfig[] = [
   { code: 'SITE', tick: 'SITE', title: 'GROUNDWORKS', zones: ['SITE'], kind: 'assembly', sheet: 'A-201', subtitle: (n) => `piles · raft · crane · ${n} steps` },
   { code: 'PODIUM', tick: 'PODIUM', title: 'PODIUM & CORE', zones: ['PODIUM'], kind: 'assembly', sheet: 'A-202', subtitle: (n) => `RC frame · transfer deck · ${n} steps` },
-  { code: 'LOWER', tick: 'L03', title: 'LOWER TOWER', zones: ['LOWER'], kind: 'assembly', sheet: 'A-203', subtitle: (n) => `L03–L12 · sky garden · ${n} steps` },
-  { code: 'MIDDLE', tick: 'L13', title: 'MID TOWER', zones: ['MIDDLE'], kind: 'assembly', sheet: 'A-204', subtitle: (n) => `L13–L22 · sky garden · ${n} steps` },
-  { code: 'UPPER', tick: 'L23', title: 'UPPER TOWER', zones: ['UPPER'], kind: 'assembly', sheet: 'A-205', subtitle: (n) => `L23–L31 · roof deck · ${n} steps` },
+  { code: 'LOWER', tick: 'L03', title: 'LOWER TOWER', zones: ['LOWER'], kind: 'assembly', sheet: 'A-203', subtitle: (n) => `L03–L12 · façades to L10 · ${n} steps` },
+  { code: 'MIDDLE', tick: 'L13', title: 'MID TOWER', zones: ['MIDDLE'], kind: 'assembly', sheet: 'A-204', subtitle: (n) => `L13–L22 · L12 sky garden · ${n} steps` },
+  { code: 'UPPER', tick: 'L23', title: 'UPPER TOWER', zones: ['UPPER'], kind: 'assembly', sheet: 'A-205', subtitle: (n) => `L23–L31 · L22 sky garden · L24 terrace · ${n} steps` },
   { code: 'CROWN', tick: 'CROWN', title: 'CROWN & GARDENS', zones: ['CROWN'], kind: 'assembly', sheet: 'A-206', subtitle: (n) => `PV canopy · trees · ${n} steps` },
   { code: 'MATERIAL', tick: 'MAT', title: 'MATERIAL PASS', zones: [], kind: 'material', sheet: 'A-207', seconds: 4.0, subtitle: () => 'timber · envelope · 2 passes · 4.0 s' },
   { code: 'SECTION', tick: 'SECT', title: 'SECTION A–A', zones: [], kind: 'section', sheet: 'A-208', seconds: 6.8, subtitle: () => 'sky gardens · fly-through · 6.8 s' },

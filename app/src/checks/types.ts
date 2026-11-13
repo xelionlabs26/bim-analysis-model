@@ -67,6 +67,12 @@ export interface Issue {
   /** e.g. "CLH-03" */
   id: string;
   rule: RuleId;
+  /**
+   * What tells this issue apart from others of its rule on the same elements
+   * ("skipped-geometry", "never-guarded"). It holds no measured values, so the
+   * BCF topic keeps its GUID when a threshold moves a number in the title.
+   */
+  key?: string;
   severity: Severity;
   title: string;
   /** What was measured, against which limit. */

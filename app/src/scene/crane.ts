@@ -2,12 +2,40 @@ import { BoxGeometry, BufferGeometry, Color, EdgesGeometry, Float32BufferAttribu
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Crane } from '../data/types';
 import type { CraneState } from '../engine/timeline';
+import { disposeTree } from './dispose';
 import { lineFragment, lineVertex } from './shaders';
 
-const MAX_MAST = 160;
+const MIN_MAST = 160;
+const MAST_HEADROOM = 30; // the mast stands at most a climb (16 m) plus the jib clearance (14 m) above the structure
+const GROW = 64; // the lattice is built in whole 64 m lengths, so a climb rarely rebuilds it
 const W = 1.0; // half-width of a 2.0 m mast
 const SECTION = 4;
 const TIE_EVERY = 32;
+
+/** Height to build the mast lattice and tie collars to, so that a mast top or tie at `need` is drawn. */
+export function mastExtent(need: number): number {
+  return Math.max(MIN_MAST, Math.ceil((need + SECTION) / GROW) * GROW);
+}
+
+/** Mast lattice up to `top`: four chords, a ring and alternating diagonals every 4 m. */
+function mastLines(top: number): number[] {
+  const v: number[] = [];
+  for (const [x, z] of [[-W, -W], [W, -W], [W, W], [-W, W]]) v.push(x, 0, z, x, top, z);
+  for (let y = 0; y < top; y += SECTION) {
+    const y2 = y + SECTION;
+    v.push(-W, y, -W, W, y, -W, W, y, -W, W, y, W, W, y, W, -W, y, W, -W, y, W, -W, y, -W);
+    if ((y / SECTION) % 2 === 0) v.push(-W, y, -W, W, y2, -W, W, y, -W, W, y2, W, W, y, W, -W, y2, W, -W, y, W, -W, y2, -W);
+    else v.push(W, y, -W, -W, y2, -W, W, y, W, W, y2, -W, -W, y, W, W, y2, W, -W, y, -W, -W, y2, W);
+  }
+  return v;
+}
+
+/** Tie collars from the mast to the slab edge (`ex` from the mast), from +30 m every 32 m below `top`. */
+function tieLines(top: number, ex: number): number[] {
+  const tv: number[] = [];
+  for (let h = 30; h < top; h += TIE_EVERY) tv.push(W, h, -W, ex, h, -3, W, h, W, ex, h, 3, W, h, -W, ex, h, 3, -W, h, -W, W, h, -W, -W, h, W, W, h, W);
+  return tv;
+}
 
 function lineMat(color: Color) {
   return new ShaderMaterial({
@@ -35,6 +63,11 @@ export class CraneRig {
   private head = new Group();
   private mastMat: ShaderMaterial;
   private tieMat: ShaderMaterial;
+  private mast: LineSegments;
+  private tie: LineSegments;
+  private tieX: number;
+  /** Height the mast lattice and tie collars are built to. */
+  builtTop = 0;
   private hoistMat: ShaderMaterial;
   private hoistGeo: BufferGeometry;
   private trolley: LineSegments;
@@ -42,30 +75,21 @@ export class CraneRig {
   private ink: Color;
   private accent: Color;
 
-  constructor(crane: Crane, ink: Color, paper: Color, accent: Color) {
+  /** `height` is the structure's height: the mast and ties are built tall enough for it, and grow if the climb goes higher. */
+  constructor(crane: Crane, ink: Color, paper: Color, accent: Color, height = 0) {
     this.ink = ink.clone();
     this.accent = accent.clone();
     this.group.position.set(crane.base[0], 0, crane.base[2]);
 
-    // mast lattice: four chords, a ring and alternating diagonals every 4 m
-    const v: number[] = [];
-    for (const [x, z] of [[-W, -W], [W, -W], [W, W], [-W, W]]) v.push(x, 0, z, x, MAX_MAST, z);
-    for (let y = 0; y < MAX_MAST; y += SECTION) {
-      const y2 = y + SECTION;
-      v.push(-W, y, -W, W, y, -W, W, y, -W, W, y, W, W, y, W, -W, y, W, -W, y, W, -W, y, -W);
-      if ((y / SECTION) % 2 === 0) v.push(-W, y, -W, W, y2, -W, W, y, -W, W, y2, W, W, y, W, -W, y2, W, -W, y, W, -W, y2, -W);
-      else v.push(W, y, -W, -W, y2, -W, W, y, W, W, y2, -W, -W, y, W, W, y2, W, -W, y, -W, -W, y2, W);
-    }
+    // mast lattice, and tie collars from the mast to the slab edge; both are clipped to the live mast top and ties
+    this.tieX = crane.tieX - crane.base[0];
     this.mastMat = lineMat(ink);
-    this.group.add(new LineSegments(segments(v), this.mastMat));
-
-    // tie collars from the mast to the slab edge (world x = −14.2)
-    const ex = crane.tieX - crane.base[0];
-    const tv: number[] = [];
-    for (let h = 30; h < MAX_MAST; h += TIE_EVERY) tv.push(W, h, -W, ex, h, -3, W, h, W, ex, h, 3, W, h, -W, ex, h, 3, -W, h, -W, W, h, -W, -W, h, W, W, h, W);
+    this.mast = new LineSegments(new BufferGeometry(), this.mastMat);
     this.tieMat = lineMat(ink);
     this.tieMat.uniforms.uTop.value = -1;
-    this.group.add(new LineSegments(segments(tv), this.tieMat));
+    this.tie = new LineSegments(new BufferGeometry(), this.tieMat);
+    this.group.add(this.mast, this.tie);
+    this.build(Math.max(crane.mastStart, height + MAST_HEADROOM));
 
     // jib (triangular lattice, 60 m) and counter-jib (18 m)
     const j: number[] = [];
@@ -100,9 +124,26 @@ export class CraneRig {
     this.group.visible = false;
   }
 
+  /** Build the mast and tie geometry up to at least `need` (it only ever grows). */
+  private build(need: number) {
+    const top = mastExtent(need);
+    if (top <= this.builtTop) return;
+    this.builtTop = top;
+    this.mast.geometry.dispose();
+    this.mast.geometry = segments(mastLines(top));
+    this.tie.geometry.dispose();
+    this.tie.geometry = segments(tieLines(top, this.tieX));
+  }
+
+  /** Release the rig's geometries and materials. */
+  dispose() {
+    disposeTree(this.group);
+  }
+
   update(s: CraneState) {
     this.group.visible = s.visible;
     if (!s.visible) return;
+    this.build(Math.max(s.mastTop, ...s.ties));
     this.mastMat.uniforms.uTop.value = s.mastTop;
     this.tieMat.uniforms.uTop.value = s.ties.length ? Math.max(...s.ties) + 0.5 : -1;
     this.head.visible = s.headVisible;

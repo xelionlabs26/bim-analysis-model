@@ -27,7 +27,7 @@ describe('lift levels and the load chart', () => {
 
   it('finds where full capacity ends on the chart', () => {
     const arbor = buildProject();
-    expect(chartKnee(arbor.crane)).toBeCloseTo(20, 3); // 12 t to 20 m
+    expect(chartKnee(arbor.crane!)).toBeCloseTo(20, 3); // 12 t to 20 m
   });
 });
 
@@ -44,7 +44,7 @@ describe('crane reach on Arbor House', () => {
     const s = bmu();
     const pieces = p.parts.slice(s.partStart, s.partStart + s.partCount);
     expect(pieces.some((x) => x.pos.every((v, k) => Math.abs(v - s.lift!.at[k]) < 1e-9))).toBe(true);
-    expect(Math.hypot(s.lift!.at[0] - p.crane.base[0], s.lift!.at[2] - p.crane.base[2])).toBeCloseTo(s.lift!.radius, 9);
+    expect(Math.hypot(s.lift!.at[0] - p.crane!.base[0], s.lift!.at[2] - p.crane!.base[2])).toBeCloseTo(s.lift!.radius, 9);
   });
 
   it('puts the pick ring at the critical piece during the lift and eases it across the slew', () => {
@@ -81,7 +81,7 @@ describe('crane reach on Arbor House', () => {
   });
 
   it('draws the BMU lift in red at its radius, and the canopy in amber', () => {
-    const reach = new CraneReach(p.crane, colours);
+    const reach = new CraneReach(p.crane!, colours);
     expect(reach.knee).toBeCloseTo(20, 3);
     const s = bmu();
     reach.update(tl.stateAt(s.t0 + 0.02).crane, 0.85);
@@ -110,7 +110,7 @@ describe('crane reach on Arbor House', () => {
     expect(util).toBeGreaterThan(1);
     expect(reviewedLift(l.pieceKg, l.capacityKg).util).toBeCloseTo(l.util, 12);
     expect(reviewedLift(l.pieceKg, 0).util).toBe(Infinity);
-    const reach = new CraneReach(p.crane, colours);
+    const reach = new CraneReach(p.crane!, colours);
     reach.update(tl.stateAt(canopy.t0 + 0.02).crane, 0.85, rig);
     expect(reach.level).toBe('over');
     const text = liftText(canopy, 'TC-1', 0.85, rig);
@@ -119,18 +119,21 @@ describe('crane reach on Arbor House', () => {
   });
 });
 
-describe('crane reach on the Duplex', () => {
-  it('sizes the slew circle to the jib that reaches every element and keeps picks green', async () => {
+describe('the Duplex has no tower crane', () => {
+  it('shows no crane, no reach and no pick at any time, and reads its lifts as mobile crane or by hand', async () => {
     const model = await readIfc(readFileSync(join(here, '../public/samples/duplex-apartment.ifc.txt'), 'latin1'), () => {}, 'Duplex_A_20110907.ifc');
     const p = projectFromIfc(model, 'Duplex_A_20110907.ifc').project;
-    expect(chartKnee(p.crane)).toBeCloseTo(p.crane.jib / 3, 3);
+    expect(p.crane).toBeNull();
     const tl = new Timeline(p);
-    const reach = new CraneReach(p.crane, colours);
-    for (const s of p.steps.filter((x) => x.lift)) {
-      reach.update(tl.stateAt(s.t0 + 0.01).crane, 0.85);
-      expect(reach.level).toBe('ok');
-      expect(reach.ring.scale.x).toBeLessThanOrEqual(p.crane.jib);
+    for (let t = 0; t <= p.duration; t += p.duration / 97) {
+      const c = tl.stateAt(t).crane;
+      expect(c.visible).toBe(false);
+      expect(c.pick).toBeNull();
     }
+    expect(tl.events.some((e) => e.kind === 'CRANE')).toBe(false);
+    const pick = p.steps.find((s) => s.method === 'crane' && s.partCount > 0)!;
+    expect(liftText(pick, null)).toEqual({ text: 'mobile crane · set up beside the building', level: 'none' });
+    expect(liftText(p.steps.find((s) => s.method === 'manual' && s.partCount > 0)!, null).text).toBe('by hand · site team');
   });
 });
 

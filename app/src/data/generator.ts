@@ -529,6 +529,14 @@ function tower(): StepDef[] {
 
 // ─── Crown & public realm ─────────────────────────────────────────────────
 
+/** Street trees on a ring round the tower, less any that would stand on the crane pad. */
+const streetTrees = Array.from({ length: 12 }, (_, i) => {
+  const a = (i / 12) * Math.PI * 2 + 0.26;
+  const r = 21 + (i % 3) * 1.4;
+  return { x: Math.cos(a) * r, z: Math.sin(a) * r, h: 6 + (i % 4) * 0.6, a };
+}).filter((t) => !(t.x < -18 && Math.abs(t.z) < 6)); // keep the crane pad clear
+const BENCHES = 6;
+
 function crown(): StepDef[] {
   const Z: ZoneId = 'CROWN';
   const out: StepDef[] = [];
@@ -602,17 +610,10 @@ function crown(): StepDef[] {
     }),
   );
   out.push(
-    step({ zone: Z, member: 'PUBLIC REALM · TREES & BENCHES', spec: '12 street trees · timber benches · permeable paving', code: 'PR-01', method: 'crane', drop: 2.0 }, (s) => {
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2 + 0.26;
-        const r = 21 + (i % 3) * 1.4;
-        const x = Math.cos(a) * r;
-        const z = Math.sin(a) * r;
-        if (x < -18 && Math.abs(z) < 6) continue; // keep the crane pad clear
-        s.tree(x, 0, z, 6 + (i % 4) * 0.6, a);
-      }
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
+    step({ zone: Z, member: 'PUBLIC REALM · TREES & BENCHES', spec: `${streetTrees.length} street trees · ${BENCHES} glulam benches`, code: 'PR-01', method: 'crane', drop: 2.0 }, (s) => {
+      for (const t of streetTrees) s.tree(t.x, 0, t.z, t.h, t.a);
+      for (let i = 0; i < BENCHES; i++) {
+        const a = (i / BENCHES) * Math.PI * 2;
         s.box([Math.cos(a) * 18, 0.22, Math.sin(a) * 18], [2.4, 0.44, 0.6], 'glulam', -a + Math.PI / 2);
       }
     }),
@@ -651,5 +652,15 @@ export const LEVELS = [
   { code: 'TOP', y: ROOF + 4.6 },
 ];
 
-/** Gross internal floor area used for carbon intensity, m² (L25–L31 lose the south bay). */
-export const GIFA = STOREYS * ((2 * EDGE) ** 2 - (2 * CORE) ** 2) - (ROOF_LEVEL - SETBACK_FROM - 1) * (2 * EDGE) * (EDGE - SET_EDGE);
+/** One sky-garden corner bay, from the x, z = 7 grid lines out to the slab edge (as `inSkyCorner`). */
+const SKY_BAY = (EDGE - GRID) ** 2;
+
+/**
+ * Gross internal floor area used for carbon intensity, m². L24–L31 lose the south bay
+ * (the L24 one is the open sky terrace); each sky garden's open loggia and the void
+ * above it are external, so both corner bays are left out.
+ */
+export const GIFA =
+  STOREYS * ((2 * EDGE) ** 2 - (2 * CORE) ** 2) -
+  (ROOF_LEVEL - SETBACK_FROM) * (2 * EDGE) * (EDGE - SET_EDGE) -
+  SKY_GARDENS.length * 2 * SKY_BAY;

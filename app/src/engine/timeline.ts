@@ -82,7 +82,8 @@ const fmtInt = (n: number) => Math.round(n).toLocaleString('en-GB').replace(/,/g
 const MAST_CLEAR = 14; // climb when the structure comes within this of the jib
 const MAST_CLIMB = 16; // four 4 m sections per climb
 const TIE_EVERY = 32; // tie collars from +30 m, every 32 m
-const SLEW_LEAD = 0.09;
+/** How long before a lift starts the jib begins to slew to it, s. */
+export const SLEW_LEAD = 0.09;
 
 interface Lift {
   step: Step;
@@ -117,9 +118,9 @@ export class Timeline {
     const { steps, crane } = project;
     this.stepT0 = steps.map((s) => s.t0);
     this.zoneIds = project.zones.map((z) => z.id);
-    this.mastStart = crane.mastStart;
+    this.mastStart = crane?.mastStart ?? 0;
     this.tieHeights = [];
-    for (let h = 30; h < project.height; h += TIE_EVERY) this.tieHeights.push(h);
+    if (crane) for (let h = 30; h < project.height; h += TIE_EVERY) this.tieHeights.push(h);
     const topCore = Math.max(0, ...steps.filter((s) => s.kind === 'core' && s.level !== undefined).map((s) => s.level!));
     let p = 0;
     let m = 0;
@@ -127,9 +128,9 @@ export class Timeline {
     let b = 0;
     let top = 0;
     let half = 0;
-    let mast = crane.mastStart;
-    // a crane sized for the whole building never climbs; a tower crane keeps 14 m over the work
-    const clear = crane.mastStart >= project.height + 4 ? crane.mastStart - project.height - 0.01 : MAST_CLEAR;
+    let mast = this.mastStart;
+    // a crane sized for the whole building never climbs; a tower crane keeps 14 m over the work; no tower crane, no climbs
+    const clear = !crane ? -Infinity : crane.mastStart >= project.height + 4 ? crane.mastStart - project.height - 0.01 : MAST_CLEAR;
     let coreLevel = 0;
     for (const s of steps) {
       p += s.partCount;
@@ -152,13 +153,16 @@ export class Timeline {
       }
     }
     this.erectT = steps.find((s) => s.code === 'TC-02')?.t0 ?? 0;
-    this.lifts = steps
-      .filter((s) => s.method === 'crane' && s.partCount > 0)
-      .map((s) => {
-        const dx = s.centroid[0] - crane.base[0];
-        const dz = s.centroid[2] - crane.base[2];
-        return { step: s, angle: Math.atan2(-dz, dx), radius: Math.min(crane.jib - 1, Math.max(4, Math.hypot(dx, dz))) };
-      });
+    // a project without a tower crane has no jib to slew: its crane picks go in by mobile crane
+    this.lifts = crane
+      ? steps
+          .filter((s) => s.method === 'crane' && s.partCount > 0)
+          .map((s) => {
+            const dx = s.centroid[0] - crane.base[0];
+            const dz = s.centroid[2] - crane.base[2];
+            return { step: s, angle: Math.atan2(-dz, dx), radius: Math.min(crane.jib - 1, Math.max(4, Math.hypot(dx, dz))) };
+          })
+      : [];
     this.liftT0 = this.lifts.map((l) => l.step.t0);
     this.lifts.forEach((l, k) => this.liftOfStep.set(l.step.index, k));
     this.zoneTotal = Object.fromEntries(this.zoneIds.map((z) => [z, steps.filter((s) => s.zone === z).length])) as Record<ZoneId, number>;
@@ -175,7 +179,7 @@ export class Timeline {
       ev.push({ t: st.start, kind: 'STAGE', text: `STAGE ${pad2(st.n)}/${pad2(project.stages.length)} · ${st.title} — ${head}` });
     }
     let lastMast = this.mastStart;
-    const cid = project.crane.id;
+    const cid = project.crane?.id ?? '';
     project.steps.forEach((s, i) => {
       if (s.log) ev.push({ t: s.t0, kind: 'CRANE', text: s.log });
       if (s.partCount > 0) {
@@ -238,6 +242,7 @@ export class Timeline {
   }
 
   craneAt(t: number, i: number): CraneState {
+    if (!this.project.crane) return { visible: false, mastTop: 0, slew: 0, radius: 0, hookY: 0, lifting: false, ties: [], headVisible: false, pick: null };
     let mastTop = i >= 0 ? this.mastAfter[i] : this.mastStart;
     const parked = mastTop - 5;
     const builtTop = i >= 0 ? this.cumTop[i] : 0;
@@ -261,30 +266,37 @@ export class Timeline {
     da = Math.atan2(Math.sin(da), Math.cos(da)); // shortest way round
     const slew = prev.angle + da * p;
     const radius = prev.radius + (cur.radius - prev.radius) * p;
-    const target = s.top + 1.2;
-    let hookY = parked;
     const lifting = t >= s.t0 && t <= s.t1;
-    if (lifting) hookY = parked + (target - parked) * easeOut((t - s.t0) / Math.max(1e-3, s.t1 - s.t0));
-    else if (t > s.t1) hookY = target + (parked - target) * smoothstep(s.t1, s.t1 + 0.18, t);
+    // lifts overlap, so the last one may still be lowering when the jib starts to slew to this
+    // one: the hook leaves that lift's height and is back up at the head by this lift's start
+    const hookY = k > 0 && t < s.t0 ? lerp(hookOf(this.lifts[k - 1].step, t, parked), parked, p) : hookOf(s, t, parked);
     return { visible, mastTop, slew, radius, hookY, lifting, ties, headVisible: true, pick: this.pickAt(t, i, s) };
   }
 
   /**
    * The pick the reach ring shows: the active operation's when it is a crane lift
    * (steps overlap, so the jib may already be slewing to the next one), otherwise
-   * the crane's current or last lift. The ring eases from the previous pick's
-   * radius over the slew.
+   * the crane's current or last lift. The ring's radius follows the jib: over each
+   * slew it eases from the previous pick's radius to the next one's, so it never
+   * jumps, while the piece, load and utilisation switch with the active operation.
+   * `crane` is the lift the jib is on or slewing to.
    */
   private pickAt(t: number, i: number, crane: Step): CranePick | null {
     const cur = i >= 0 ? this.project.steps[i] : null;
     const s = cur && cur.method === 'crane' && cur.lift ? cur : crane.lift ? crane : null;
     if (!s || !s.lift) return null;
-    let k = (this.liftOfStep.get(s.index) ?? 0) - 1;
-    while (k >= 0 && !this.lifts[k].step.lift) k--;
-    const from = k >= 0 ? this.lifts[k].step.lift!.radius : s.lift.radius;
-    const p = smoothstep(s.t0 - SLEW_LEAD, s.t0, t);
+    let radius: number;
+    if (crane !== s && crane.lift && crane.t0 > s.t0) {
+      // the active lift is still being placed while the jib already slews to the next pick
+      radius = lerp(s.lift.radius, crane.lift.radius, smoothstep(crane.t0 - SLEW_LEAD, crane.t0, t));
+    } else {
+      let k = (this.liftOfStep.get(s.index) ?? 0) - 1;
+      while (k >= 0 && !this.lifts[k].step.lift) k--;
+      const from = k >= 0 ? this.lifts[k].step.lift!.radius : s.lift.radius;
+      radius = lerp(from, s.lift.radius, smoothstep(s.t0 - SLEW_LEAD, s.t0, t));
+    }
     return {
-      radius: from + (s.lift.radius - from) * p,
+      radius,
       at: s.lift.at,
       util: s.lift.util,
       kg: s.lift.pieceKg,
@@ -296,7 +308,8 @@ export class Timeline {
 
   stateAt(tIn: number): SequenceState {
     const { project } = this;
-    const t = Math.min(Math.max(tIn, 0), project.duration);
+    // a non-finite time would poison every eased value downstream (camera included), so read it as the start
+    const t = Number.isFinite(tIn) ? Math.min(Math.max(tIn, 0), project.duration) : 0;
     const i = this.stepIndexAt(t);
     const step = i >= 0 ? project.steps[i] : null;
     const zoneDone = Object.fromEntries(this.zoneIds.map((x) => [x, 0])) as Record<ZoneId, number>;
@@ -354,6 +367,21 @@ export class Timeline {
     if (t < step.t0) return 'ghost';
     return t < step.t1 + ACTIVE_HOLD ? 'active' : 'placed';
   }
+}
+
+/**
+ * Hook height for one lift on its own: parked at the head until the lift starts, lowered to
+ * just over the piece's top while it is placed, then raised back to the head.
+ */
+function hookOf(s: Step, t: number, parked: number): number {
+  const target = s.top + 1.2;
+  if (t < s.t0) return parked;
+  if (t <= s.t1) return lerp(parked, target, easeOut((t - s.t0) / Math.max(1e-3, s.t1 - s.t0)));
+  return lerp(target, parked, smoothstep(s.t1, s.t1 + 0.18, t));
+}
+
+function lerp(a: number, b: number, p: number) {
+  return a + (b - a) * p;
 }
 
 function smoothstep(a: number, b: number, x: number) {

@@ -72,3 +72,41 @@ export function projectFacts(p: Pick<Project, 'id' | 'name' | 'rev' | 'height' |
     label: [p.name, storeys, `${height} high`, area, parts].filter(Boolean).join(' · '),
   };
 }
+
+/** A carbon figure as a number and its unit: kgCO₂e under a tonne, one decimal under 10 t. */
+function carbonParts(kg: number): { n: string; unit: string } {
+  if (!Number.isFinite(kg) || kg < 1) return { n: '—', unit: '' };
+  if (kg < 1000) return { n: String(Math.round(kg)), unit: 'kgCO₂e' };
+  const t = kg / 1000;
+  return { n: t < 10 ? t.toFixed(1) : fmtInt(t), unit: 'tCO₂e' };
+}
+
+/**
+ * What the status card says about carbon, always in view with its caveat: the
+ * indicative A1–A3 total for the whole build, its intensity per m² of floor
+ * area, and in `label` the basis in full. `assumed` is how many elements had
+ * their material assumed (an imported model's defaulted materials).
+ */
+export function carbonFacts(
+  p: Pick<Project, 'totalCarbonKg' | 'totalBiogenicKg' | 'gifa'>,
+  assumed = 0,
+): { head: string; main: string; unit: string; sub: string; label: string } {
+  const total = carbonParts(p.totalCarbonKg);
+  const area = Number.isFinite(p.gifa) && p.gifa > 0 ? p.gifa : 0;
+  const perM2 = area && total.unit ? Math.round(p.totalCarbonKg / area) : null;
+  const stored = carbonParts(p.totalBiogenicKg);
+  const label = [
+    total.unit ? `Indicative A1–A3 embodied carbon: about ${total.n} ${total.unit}` : 'Indicative A1–A3 embodied carbon: none counted',
+    perM2 !== null ? `, ${fmtInt(perM2)} kgCO₂e per m² over ${fmtInt(area)} m² GIA` : '',
+    '. Worked out from generic factors per material, not from product EPDs; transport, construction, use and end of life (A4 onwards) are not included.',
+    stored.unit ? ` Carbon stored in timber, about ${stored.n} ${stored.unit}, is reported separately.` : '',
+    assumed > 0 ? ` ${fmtInt(assumed)} ${assumed === 1 ? 'element has' : 'elements have'} an assumed material (see Import).` : '',
+  ].join('');
+  return {
+    head: 'INDICATIVE A1–A3',
+    main: total.n,
+    unit: total.unit,
+    sub: perM2 !== null ? `${fmtInt(perM2)} kg/m² GIA` : 'no floor area',
+    label,
+  };
+}

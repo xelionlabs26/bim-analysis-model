@@ -96,7 +96,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .tagline { margin: 7px 0 0; font: 600 11.5px var(--sans); letter-spacing: 0.3em; color: var(--ink-2); }
 .header-drawing { height: 86px; display: flex; align-items: center; justify-content: flex-end; gap: 16px; color: var(--ink); overflow: hidden; min-width: 0; container: hd / inline-size; }
 .header-drawing svg { height: 62px; width: auto; flex: none; }
-.status { display: flex; align-items: center; gap: 16px; padding: 12px 16px 12px 18px; height: 88px; min-width: 0; }
+.status { display: flex; align-items: center; gap: 14px; padding: 12px 16px 12px 18px; height: 88px; min-width: 0; container: status / inline-size; }
 .status-main { flex: 1 1 auto; min-width: 0; }
 .status-icon, .status-stage, .status-facts { flex: none; }
 .status-phase, .status-step { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -113,6 +113,15 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .status-facts .head { font-size: 12px; letter-spacing: 0.08em; color: var(--ink-2); }
 .status-facts .main { font-size: 21px; font-weight: 500; letter-spacing: 0.02em; }
 .status-facts .sub { font-size: 11px; color: var(--brand); letter-spacing: 0.06em; }
+/* carbon: the indicative total, its intensity and the caveat, set off from the project facts by a rule */
+.status-carbon { border-left: 1px solid var(--line); padding-left: 12px; }
+.status-carbon .head { font-size: 11px; letter-spacing: 0.05em; }
+.status-carbon .main small { font-size: 11px; letter-spacing: 0.02em; color: var(--ink-2); margin-left: 3px; }
+/* the card makes room for carbon: the decorative icon, then the stage count (the stage strip and the
+   title block's sheet carry it too), then the parts count go as it narrows (widths of the card's content box) */
+@container status (max-width: 600px) { .status-icon { display: none; } }
+@container status (max-width: 490px) { .status-stage { display: none; } }
+@container status (max-width: 430px) { .status-pcs { display: none; } .status-phase { font-size: 18px; } }
 
 /* ── Rail ─────────────────────────────────────────────────────────────── */
 /* thin, not hidden: a list cut off at the bottom has to show that it scrolls */
@@ -377,13 +386,16 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .app > * { min-width: 0; }
   .status { flex-wrap: wrap; height: auto; row-gap: 6px; }
   .status-facts { flex-basis: 100%; display: flex; gap: 12px; align-items: baseline; }
+  .status-carbon { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 4px; }
   .toolbar { right: 14px; flex-wrap: wrap; }
   .caption { max-width: calc(100% - 28px); padding: 8px 12px; }
   .caption h2 { font-size: 17px; }
   .caption .sub { display: none; }
   .overlay .callout { display: none; }
   /* the play bar: pinned to the bottom of the screen, so play and the scrubber never scroll away */
-  .app { padding-bottom: calc(var(--playbar-h, 120px) + 12px); }
+  .app { padding-bottom: calc(var(--playbar-h, 120px) + var(--sheet-h, 0px) + 12px); }
+  /* focus and scrolled-to elements land clear of the play bar and the issue sheet */
+  html { scroll-padding-bottom: calc(var(--playbar-h, 120px) + var(--sheet-h, 0px) + 12px); }
   .playbar {
     display: flex; flex-direction: column; gap: 2px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
     padding: 2px max(12px, env(safe-area-inset-right, 0px)) max(6px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
@@ -458,6 +470,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   background: var(--ink); color: var(--card); box-shadow: 0 10px 24px -12px var(--shadow);
 }
 .toast.error { background: var(--bad); }
+.toast.warn { background: var(--warn); }
 .toast-msg { flex: 1; min-width: 0; font-size: 11.5px; line-height: 1.4; padding-top: 2px; overflow-wrap: anywhere; }
 .toast-x { flex: none; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: inherit; display: grid; place-items: center; padding: 0; }
 .toast-x:hover { background: rgba(255, 255, 255, 0.16); }
@@ -472,7 +485,6 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 @container hd (max-width: 480px) { .hd-elev { display: none; } }
 @container hd (max-width: 270px) { .hd-sec { display: none; } }
 @container hd (max-width: 150px) { .hd-north { display: none; } }
-@media (max-width: 1500px) { .status-icon { display: none; } }
 
 /* shorter windows (laptops, the artifact side panel) */
 @media (max-height: 940px) and (min-width: 1101px) {
@@ -512,6 +524,20 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .drawer .cats { font-size: 11px; color: var(--ink-2); margin: 4px 0; }
 .drawer .warn { font-size: 11.5px; color: var(--warn); margin-top: 6px; }
 .drawer .credit { font-size: 11px; color: var(--muted); margin-top: 8px; }
+/* what the import needs you to know: a cut-off file, assumed materials, why a load failed */
+.report-alert { margin: 10px 0 6px; padding: 9px 12px 10px; border: 1px solid var(--warn); border-left-width: 4px; border-radius: 10px; background: var(--card); }
+.report-alert.bad { border-color: var(--bad); }
+.report-alert b { display: block; font: 600 12.5px/1.35 var(--sans); color: var(--warn); }
+.report-alert.bad b { color: var(--bad); }
+.report-alert p { margin: 4px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--ink); }
+.report-of { margin: 14px 0 0; font: 600 12px var(--sans); color: var(--ink-2); overflow-wrap: anywhere; }
+.report-alert .types { font-size: 11px; color: var(--ink-2); overflow-wrap: anywhere; }
+.report-alert button { margin: 6px 0 2px; border: 1px solid var(--warn); background: var(--card); color: var(--warn); border-radius: 9px; padding: 4px 10px; font: 600 12px var(--sans); }
+.report-alert button:not([aria-pressed="true"]):hover { background: var(--brand-wash); }
+.report-alert button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--card); }
+.report-alert details { margin-top: 6px; font-size: 11px; color: var(--ink-2); }
+.report-alert summary { cursor: pointer; }
+.report-alert details p { overflow-wrap: anywhere; font-size: 11px; color: var(--ink-2); }
 .drop-hint {
   position: absolute; inset: 12px; z-index: 7; border: 2px dashed var(--brand); border-radius: 16px;
   background: var(--card-glass); display: grid; place-content: center; text-align: center; gap: 6px; pointer-events: none;
@@ -681,7 +707,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 /* ── Issue sheet (narrow screens) ─────────────────────────────────────── */
 /* the selected issue over the bottom of the screen, above the play bar; hidden on a wide screen, where the list shows it */
 .issue-sheet {
-  display: none; position: fixed; left: 8px; right: 8px; bottom: calc(var(--playbar-h, 120px) + 6px); z-index: 25;
+  display: none; position: fixed; left: 8px; right: 8px; bottom: calc(var(--playbar-h, 120px) + 6px); z-index: 25; max-width: 680px; margin-inline: auto;
   flex-direction: column; max-height: min(42vh, 360px); padding: 4px 8px 10px 12px; border-radius: 16px 16px 12px 12px;
   box-shadow: 0 -6px 26px -14px var(--shadow);
 }
@@ -704,6 +730,6 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 
 /* narrow screens, for rules that come after the narrow block above: the toast above the play bar, markers on the taller track */
 @media (max-width: 1100px) {
-  .toast { right: 12px; left: 12px; bottom: calc(var(--playbar-h, 120px) + 10px); max-width: none; }
+  .toast { right: 12px; left: 12px; bottom: calc(var(--playbar-h, 120px) + 10px); max-width: 680px; margin-inline: auto; }
   .iss-mark { top: 9px; width: 12px; height: 12px; margin-left: -6px; }
 }

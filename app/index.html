@@ -16,13 +16,18 @@
             <h1 class="wordmark" id="wordmark">ARBOR <em>BUILD</em></h1>
             <p class="tagline" id="tagline">HYBRID MASS TIMBER · 32 STOREYS · INSTALL ORDER</p>
           </div>
+          <!-- in both views: the presentation view in and out, and the shortcut sheet -->
+          <div class="brand-actions">
+            <button class="hbtn" id="btnPresent" title="Presentation view: the model and the plain toggles only (P)" aria-keyshortcuts="P" data-icon="present"><span id="presentLabel">Present</span></button>
+            <button class="hbtn icon-only" id="btnHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-keyshortcuts="?" aria-haspopup="dialog" aria-controls="helpSheet">?</button>
+          </div>
         </div>
         <div class="header-drawing" id="headerDrawing" aria-hidden="true"></div>
         <div class="status card">
           <span class="status-icon" data-icon="crane" aria-hidden="true"></span>
           <div class="status-main">
             <div class="status-phase" id="statusPhase">GROUNDWORKS</div>
-            <div class="status-step mono" id="statusStep">STEP 000/000 · 0 PCS</div>
+            <div class="status-step mono"><span id="statusStep">STEP 000/000</span><span class="status-pcs" id="statusPcs"> · 0 PCS</span></div>
             <div class="bar"><i id="statusBar"></i></div>
           </div>
           <div class="status-stage"><b id="statusStage">1</b>/<span id="statusStageTotal">8</span></div>
@@ -30,6 +35,12 @@
             <div class="mono head" id="factHead">—</div>
             <div class="mono main" id="factMain">—</div>
             <div class="mono sub" id="factSub">—</div>
+          </div>
+          <!-- the whole build's carbon and its caveat, always in view -->
+          <div class="status-facts status-carbon" id="statusCarbon">
+            <div class="mono head" id="carbonHead">INDICATIVE A1–A3</div>
+            <div class="mono main"><span id="carbonTotal">—</span><small id="carbonUnit"></small></div>
+            <div class="mono sub" id="carbonSub">—</div>
           </div>
         </div>
       </header>
@@ -67,10 +78,11 @@
               <option value="paint">Paint</option>
             </select>
           </label>
-          <button class="chip toggle on" id="btnGhost" aria-pressed="true">Ghost</button>
-          <button class="chip toggle on" id="btnCrane" aria-pressed="true">Crane</button>
+          <button class="chip toggle on" id="btnGhost" title="Unbuilt parts as ghost lines (G)" aria-pressed="true"><span class="for-expert">Ghost</span><span class="for-client">Show unbuilt</span></button>
+          <button class="chip toggle for-client" id="btnMaterials" title="Material colours (C)" aria-pressed="false">Material colours</button>
+          <button class="chip toggle on" id="btnCrane" aria-pressed="true"><span class="for-expert">Crane</span><span class="for-client">Show crane</span></button>
           <button class="chip toggle icon-only" id="btnCranePlan" title="Crane plan: the reach from above (L)" aria-label="Crane plan" aria-pressed="false" data-icon="reach"></button>
-          <button class="chip toggle on" id="btnFlags" title="Hatch elements with critical or major issues (FLAGGED)" aria-pressed="true">Flags</button>
+          <button class="chip toggle on" id="btnFlags" title="Hatch elements with critical or major issues (FLAGGED)" aria-pressed="true"><span class="for-expert">Flags</span><span class="for-client">Mark issues</span></button>
         </div>
 
         <section class="caption" id="caption">
@@ -87,7 +99,7 @@
           <div class="tb-row tb-scale"><label>SCALE</label><span class="mono" id="tbScale">1:500</span></div>
           <div class="tb-row"><label>PHASE</label><span class="mono red" id="tbPhase">GROUNDWORKS</span></div>
           <div class="tb-row tb-sheet"><label>SHEET</label><span class="mono" id="tbSheet">1 / 8</span></div>
-          <div class="tb-row full"><label>CAMERA</label><span class="mono" id="tbCamera">AZ 28° · EL +16° · 52 mm</span></div>
+          <div class="tb-row full tb-camera"><label>CAMERA</label><span class="mono" id="tbCamera">AZ 28° · EL +16° · 52 mm</span></div>
         </section>
 
         <div class="scalebar" id="scaleBar">
@@ -109,15 +121,18 @@
             <button class="tbtn icon" id="btnNext" title="Next stage" aria-label="Next stage" data-icon="next"></button>
             <div class="timecode mono" id="timecode">00:00.0 /<br />00:00</div>
             <span class="sep" aria-hidden="true"></span>
-            <button class="tkey" id="btnRebuild" title="Rebuild from the start (R)" aria-keyshortcuts="R">REBUILD<small aria-hidden="true">R</small></button>
-            <button class="tkey on" id="btnRotate" title="Auto-rotate (A)" aria-label="Auto-rotate" aria-pressed="true" aria-keyshortcuts="A">AUTO-<br />ROTATE<small aria-hidden="true">A</small></button>
-            <button class="tkey" id="btnColour" title="Material colours (C)" aria-label="Colour" aria-pressed="false" aria-keyshortcuts="C">COLOUR<small aria-hidden="true">C</small></button>
-            <button class="tkey" id="btnFrame" title="Keep the model framed (X)" aria-label="Frame" aria-pressed="false" aria-keyshortcuts="X">FRAME<small aria-hidden="true">X</small></button>
-            <button class="tkey" id="btnSection" title="Cut the model (S) · settings under Section in the rail" aria-label="Section" aria-pressed="false" aria-keyshortcuts="S">SECTION<small aria-hidden="true">S</small></button>
-            <button class="tkey" id="btnSpeed" title="Playback speed (F)" aria-label="Speed ×1" aria-keyshortcuts="F">SPEED<br /><span id="speedVal">×1</span><small aria-hidden="true">F</small></button>
-            <button class="tkey" id="btnView" title="Next view (V)" aria-label="View" aria-keyshortcuts="V">VIEW<small aria-hidden="true">V</small></button>
+            <button class="tkey" id="btnRebuild" title="Rebuild from the start (R)" aria-keyshortcuts="R"><span class="for-expert">REBUILD</span><span class="for-client">START<br />AGAIN</span><small aria-hidden="true">R</small></button>
+            <button class="tkey on" id="btnRotate" title="Auto-rotate (A)" aria-label="Auto-rotate" aria-pressed="true" aria-keyshortcuts="A"><span class="for-expert">AUTO-<br />ROTATE</span><span class="for-client">ROTATE</span><small aria-hidden="true">A</small></button>
+            <button class="tkey for-expert" id="btnColour" title="Material colours (C)" aria-label="Colour" aria-pressed="false" aria-keyshortcuts="C">COLOUR<small aria-hidden="true">C</small></button>
+            <button class="tkey for-expert" id="btnFrame" title="Keep the model framed (X)" aria-label="Frame" aria-pressed="false" aria-keyshortcuts="X">FRAME<small aria-hidden="true">X</small></button>
+            <button class="tkey for-expert" id="btnSection" title="Cut the model (S) · settings under Section in the rail" aria-label="Section" aria-pressed="false" aria-keyshortcuts="S">SECTION<small aria-hidden="true">S</small></button>
+            <button class="tkey for-expert" id="btnSpeed" title="Playback speed (F)" aria-label="Speed ×1" aria-keyshortcuts="F">SPEED<br /><span id="speedVal">×1</span><small aria-hidden="true">F</small></button>
+            <button class="tkey for-expert" id="btnView" title="Next view (V)" aria-label="View" aria-keyshortcuts="V">VIEW<small aria-hidden="true">V</small></button>
           </div>
         </div>
+
+        <!-- the opening frame: the finished model, paused; this runs the build from the start -->
+        <button class="hero-play" id="heroPlay" aria-describedby="heroSub" hidden><span class="hp-ico" data-icon="play" aria-hidden="true"></span><span class="hp-text"><b>Play the build</b><small id="heroSub"></small></span></button>
 
         <div class="lift-banner card" id="liftBanner" role="alert" hidden>
           <div class="lb-text"><b id="liftBannerHead">Pick over the crane's chart</b><span id="liftBannerBody"></span></div>
@@ -240,6 +255,22 @@
         </div>
         <div class="sheet-body" id="sheetBody"></div>
       </section>
+
+      <!-- first visit: what this is, how to play it, how to bring your own model (dismissed once per browser) -->
+      <section class="intro card" id="intro" aria-labelledby="introTitle" hidden>
+        <h2 class="intro-title" id="introTitle">Getting started</h2>
+        <div class="intro-cards" id="introCards"></div>
+        <button class="intro-close" id="introClose" title="Close (Esc)">Got it</button>
+      </section>
+
+      <!-- every keyboard shortcut: the ? key and the ? button in the header -->
+      <dialog class="help card" id="helpSheet" aria-labelledby="helpTitle">
+        <div class="help-head">
+          <h2 id="helpTitle">Keyboard shortcuts</h2>
+          <button class="help-x" id="helpClose" aria-label="Close the shortcut list" title="Close (Esc)" data-icon="close"></button>
+        </div>
+        <div class="help-body" id="helpBody"></div>
+      </dialog>
 
       <!-- messages: imports, saves, exports -->
       <div class="toast" id="toast" hidden>

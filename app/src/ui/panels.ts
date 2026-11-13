@@ -268,7 +268,8 @@ export class SequenceUI {
     const pres = s.presentation;
     // status card + caption + title block
     $('statusPhase').textContent = pres.kind ? st.title : s.complete ? 'TOPPED OUT ✓' : st.title;
-    $('statusStep').textContent = `STEP ${String(s.stepsDone).padStart(3, '0')}/${p.steps.length} · ${fmtInt(s.partsPlaced)} PCS`;
+    $('statusStep').textContent = `STEP ${String(s.stepsDone).padStart(3, '0')}/${p.steps.length}`;
+    $('statusPcs').textContent = ` · ${fmtInt(s.partsPlaced)} PCS`;
     $('statusBar').style.width = `${(s.stepsDone / p.steps.length) * 100}%`;
     $('statusStage').textContent = String(s.stage);
     $('capStep').textContent = `STEP ${step ? step.id : '000'} / ${p.steps.length}`;

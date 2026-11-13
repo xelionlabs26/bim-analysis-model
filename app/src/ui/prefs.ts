@@ -102,6 +102,8 @@ export interface ViewPrefs {
   autoRotate: boolean;
   flags: boolean;
   resolution: number;
+  /** The presentation view (P or ?mode=client): the model and the plain toggles, the expert chrome put away. */
+  client: boolean;
 }
 
 const STYLES: RenderStyle[] = ['ink', 'ink+paint', 'paint'];
@@ -113,7 +115,7 @@ export function sanitiseView(raw: unknown): Partial<ViewPrefs> {
   const r = raw as Record<string, unknown>;
   const out: Partial<ViewPrefs> = {};
   if (STYLES.includes(r.style as RenderStyle)) out.style = r.style as RenderStyle;
-  for (const k of ['colour', 'ghost', 'crane', 'autoRotate', 'flags'] as const) if (typeof r[k] === 'boolean') out[k] = r[k] as boolean;
+  for (const k of ['colour', 'ghost', 'crane', 'autoRotate', 'flags', 'client'] as const) if (typeof r[k] === 'boolean') out[k] = r[k] as boolean;
   if (RESOLUTIONS.includes(r.resolution as number)) out.resolution = r.resolution as number;
   return out;
 }

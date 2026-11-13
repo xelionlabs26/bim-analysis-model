@@ -77,7 +77,7 @@ coordinates). The reference data is in `tests/fixtures/`; regenerate it with `sc
 - Non-convex polygonal bounded half-spaces are applied as unbounded. Boolean differences with a solid, rather than half-space, second operand keep the first operand. Both count as approximated.
 - An opening is left uncut, and reported, if none of the three methods fits. Examples: openings in Brep or surface-model hosts, recesses that don't go through, walls with more than 24 profile points.
 - Not drawn, and listed: advanced Breps and NURBS surfaces, and sweeps along curves other than swept disks. Swept disks (rails, rebar) are drawn as square tubes. Tapered extrusions use their start profile throughout.
-- Densities and carbon factors are generic. Elements with no material get one by type, and the report gives the count.
+- Densities and carbon factors are generic. Elements with no material get one by type. The report puts this first as a warning, with the share of mass and carbon resting on those defaults, and **Show these elements** draws them in red on the whole model (Esc clears them). A file that ends early (a cut-off download) loads with a warning, and a file that cannot be read says why and what to try, with the technical detail folded away.
 - Railings, windows and fixtures exported as open surface models get an estimated volume.
 
 ## Buildability checks and issues (milestone 7)
@@ -138,6 +138,7 @@ and run the checks again.
 - The camera looks at it from outside the building, framed in the part of the viewport the caption, title block and controls leave clear. On a small screen the caption steps aside while the issue is framed.
 - Its elements show in x-ray: red at fault, blue what they conflict with or wait for. Its lines (open edges, clearances, lift paths) and a pin are drawn too.
 - The ‹ › buttons above the list, or `[` and `]`, step through the issues shown, and `Esc` clears the selection. Turning off a filter that hides the selected issue clears it, and running the checks again keeps the filters.
+- On a narrow screen (a phone or a portrait tablet, up to 1100 px wide) the page scrolls up to the model, and the issue's detail opens in a sheet above the play bar. The sheet steps through the issues, folds down to its title line and closes with ×, which clears the selection.
 
 Elements in critical and major issues are hatched **FLAGGED** once they are placed (toggle with **Flags**). Scrubber markers, stage-card counts, Gantt pills and the **CHECKS** row of the active operation show where issues arise.
 
@@ -189,8 +190,9 @@ The crane's reach is drawn on the ground, as on a site logistics plan, while the
 `Space` play/pause · `←/→` step · `Home` start · `R` rebuild · `A` auto-rotate · `C` material colours ·
 `X` re-frame / resume fly-through · `F` speed · `V` view preset · `G` ghost · `K` crane · `L` crane plan · `S` section · `1–7` rail · `I` import IFC · `[` / `]` previous / next issue · `Shift+D` performance overlay · `Esc` dismiss the over-chart banner, then clear the issue, then close the drawer.
 `Space` plays only from the page, the model or the scrubber. On a focused button, checkbox, tab or disclosure, `Space` and `Enter` press that control, so the Layers checkboxes and the toolbar work from the keyboard. The panel tabs move with the arrow keys. The scrubber is a slider: arrows step, `Page Up` / `Page Down` jump a stage, `Home` / `End` go to either end. A drawer opened from the rail with the keyboard takes the focus, and `Esc` hands it back.
+On a narrow screen (up to 1100 px wide) the play bar stays pinned to the bottom of the screen while the page scrolls, and with Orbit Cam off a swipe over the model scrolls the page. Below about 1420 px wide the title block folds to one line under the toolbar. Messages show at the foot of the panel, or above the play bar on a narrow screen; an import error stays until it is dismissed, and the Import drawer keeps it too.
 The view toggles and the check thresholds are kept in this browser between visits; Settings (`6`) has **Reset to defaults**. Paused with a still camera, the viewer stops drawing until something changes.
-The frame rate, draw calls and triangle count stay hidden unless `?debug` is in the address, the Settings drawer turns on **Performance overlay**, or `Shift+D` is pressed. The status card shows the project's sheet, height and floor area. The build log starts collapsed. The product name in the header comes from `DEFAULT_BRAND` in `src/ui/brand.ts`, or from `?brand=Name` for a white-label demo.
+The frame rate, draw calls and triangle count stay hidden unless `?debug` is in the address, the Settings drawer turns on **Performance overlay**, or `Shift+D` is pressed. The status card shows the project's sheet, height and floor area, and the whole build's indicative A1–A3 carbon with its intensity per m² GIA; hover it for the basis and the caveats. The build log starts collapsed. The product name in the header comes from `DEFAULT_BRAND` in `src/ui/brand.ts`, or from `?brand=Name` for a white-label demo.
 "Save the sequence as JSON" exports steps, lifts, mass and carbon (with each element's IFC GlobalId for imported models). In the hosted page this goes through the
 viewer's save prompt.
 

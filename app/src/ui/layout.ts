@@ -62,10 +62,13 @@ export class ScrubDrag {
   }
 }
 
-export type ToastKind = 'info' | 'error';
+export type ToastKind = 'info' | 'warn' | 'error';
 
-/** How long a toast stays, in ms: a failure stays until it is dismissed or replaced (null). */
-export const toastLife = (kind: ToastKind): number | null => (kind === 'error' ? null : 4200);
+/**
+ * How long a toast stays, in ms: a failure, or a warning that the model on
+ * show is incomplete, stays until it is dismissed or replaced (null).
+ */
+export const toastLife = (kind: ToastKind): number | null => (kind === 'info' ? 4200 : null);
 
 /**
  * How far to scroll the page so the model's top edge sits just under the top

@@ -21,7 +21,8 @@ import type { CutState } from './engine/presentation';
 import { ALL_STAGES, CONTEXT_STAGE, VIEW_PRESETS, Viewer, type IssueSpec, type RenderStyle } from './scene/viewer';
 import { Overlays, drawingScale, scaleBarLength } from './ui/overlays';
 import { SequenceUI } from './ui/panels';
-import { projectFacts, renderHeaderDrawing } from './ui/header';
+import { carbonFacts, projectFacts, renderHeaderDrawing } from './ui/header';
+import { defaultedSummary, defaultedText, endsEarly, importError, loadedMessage, type DefaultedSummary, type LoadStage } from './ui/report';
 import { hydrateIcons, ICONS, setIcon } from './ui/icons';
 import { readIfc } from './ifc/model';
 import { projectFromIfc } from './ifc/sequence';
@@ -39,6 +40,8 @@ import type { CameraPose } from './engine/presentation';
 import { nextTab, routeKey } from './ui/keys';
 import { applyBrand, brandName } from './ui/brand';
 import { moreSides, NARROW_QUERY, orbitTouchAction, revealScroll, ScrubDrag, toastLife, type ToastKind } from './ui/layout';
+import { keyAction, shortcutSheetHtml, type ActionId } from './ui/shortcuts';
+import { heroLine, introCards, markIntroSeen, openingPlan, presentButton, showIntro, startsInClientMode } from './ui/present';
 import { browserStore, clearPrefs, loadPrefs, readThresholds, RESOLUTIONS, sameSettings, savePrefs, THRESHOLD_FIELDS, thresholdValue, type ViewPrefs } from './ui/prefs';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -67,11 +70,26 @@ let project: Project = (sampleFirst ? undefined : buildProject()) as Project;
 let mounted = false;
 let timeline: Timeline;
 const playback = new Playback(project?.duration ?? 1);
+/** The large Play button over the opening frame; it goes once the sequence plays or moves. */
+let hero = false;
+/**
+ * Where the page opens: a ?t= link at its moment (playing unless ?paused=1),
+ * ?play=1 from the start, otherwise paused on the finished, coloured model
+ * with the large Play button.
+ */
 const openPlayback = (p: Project) => {
-  if (linkTime !== null) playback.seek(linkTime);
-  else if (reduceMotion) playback.seek(p.duration); // open on the finished model, paused
-  if (params.get('paused') === '1' || (reduceMotion && linkTime === null)) playback.toggle(false);
+  const plan = openingPlan({ linkTime, paused: params.get('paused') === '1', autoplay: params.get('play') === '1', duration: p.duration });
+  playback.seek(plan.t);
+  playback.toggle(plan.playing);
+  hero = plan.hero;
+  syncHero();
 };
+/** The large Play button shown or hidden, with what it plays. */
+function syncHero() {
+  const b = $('heroPlay');
+  b.hidden = !hero || !project;
+  if (project) $('heroSub').textContent = heroLine(project.steps.length, project.duration);
+}
 if (project) openPlayback(project);
 
 hydrateIcons();
@@ -86,7 +104,7 @@ let ui: SequenceUI;
 const store = browserStore();
 const saved = loadPrefs(store);
 const autoRotateDefault = params.get('rotate') !== '0' && !reduceMotion;
-const VIEW_DEFAULTS: ViewPrefs = { style: 'ink+paint', colour: false, ghost: true, crane: true, autoRotate: autoRotateDefault, flags: true, resolution: 1.5 };
+const VIEW_DEFAULTS: ViewPrefs = { style: 'ink+paint', colour: false, ghost: true, crane: true, autoRotate: autoRotateDefault, flags: true, resolution: 1.5, client: false };
 const viewStart: ViewPrefs = { ...VIEW_DEFAULTS, ...saved.view };
 // a link that asks for no rotation, or reduced motion, wins over a saved preference
 if (!autoRotateDefault) viewStart.autoRotate = false;
@@ -110,6 +128,8 @@ const view = {
   cranePlan: false,
   /** The performance overlay (frame rate, draw calls): off unless ?debug, Settings or Shift+D turns it on. */
   perf: params.has('debug') && params.get('debug') !== '0',
+  /** The presentation view (P, the Present button or ?mode=client): expert chrome put away, toggles in plain words. */
+  client: startsInClientMode(params.get('mode'), saved.view?.client),
 };
 let issuesUI: IssuesUI | undefined;
 let report: CheckReport | null = null;
@@ -136,6 +156,7 @@ viewer.setResolution(view.resolution);
 viewer.setAutoRotate(view.autoRotate);
 applyViewLook();
 $('gpuCard').hidden = !view.perf;
+applyMode();
 
 /** Push the view toggles that live in the viewer's shaders and layers. */
 function applyViewLook() {
@@ -147,12 +168,88 @@ function applyViewLook() {
 
 // auto-rotate forced off by the link or reduced motion is not the user's choice: keep the saved one
 let rotatePref = saved.view?.autoRotate ?? true;
+// likewise a link that opens in one view or the other: only P or the Present button change the saved choice
+let clientPref = saved.view?.client ?? false;
 /** The view toggles worth keeping between visits. */
-const viewPrefs = (): ViewPrefs => ({ style: view.style, colour: view.colour, ghost: view.ghost, crane: view.crane, autoRotate: rotatePref, flags: view.flags, resolution: view.resolution });
+const viewPrefs = (): ViewPrefs => ({ style: view.style, colour: view.colour, ghost: view.ghost, crane: view.crane, autoRotate: rotatePref, flags: view.flags, resolution: view.resolution, client: clientPref });
 /** Save what the user chose: called from the controls, never from code that only shows state. */
 function savePreferences() {
   savePrefs(store, { checks: checkSettings, view: viewPrefs() });
 }
+
+/**
+ * The presentation view on or off. It hides the expert chrome (the rail with
+ * its telemetry, the build log, the exports, the thresholds, the drawing
+ * controls) and names the toggles that stay for what they do; the stylesheet
+ * does the work from the class on #app. `save` is false when a link asked.
+ */
+function setClient(on: boolean, save = true) {
+  if (save) {
+    clientPref = on;
+    savePreferences();
+  }
+  if (on === view.client) return;
+  view.client = on;
+  applyMode();
+  if (on && save) toast('Presentation view. Press P or Exit presentation for the full view.');
+}
+function applyMode() {
+  $('app').classList.toggle('client', view.client);
+  const b = presentButton(view.client);
+  $('presentLabel').textContent = b.label;
+  $('btnPresent').title = b.title;
+  viewer.invalidate();
+}
+
+// ── Opening: first-run cards and the shortcut sheet ────────────────────────
+/** The first-run cards are up (until dismissed; then not again in this browser). */
+let introOpen = showIntro(store, params.get('intro'));
+function renderIntro() {
+  const el = $('intro');
+  el.hidden = !introOpen || !project;
+  if (el.hidden) return;
+  const [what, play, own] = introCards(project.name);
+  const card = (c: { title: string; body: string }, action = '') => `<article class="intro-card"><h3>${esc(c.title)}</h3><p>${esc(c.body)}</p>${action}</article>`;
+  $('introCards').innerHTML =
+    card(what) +
+    card(play, '<button class="intro-act primary" id="introPlay">Play the build</button>') +
+    card(own, '<button class="intro-act" id="introOpen">Open IFC file…</button>');
+  $('introPlay').addEventListener('click', playFromStart);
+  $('introOpen').addEventListener('click', () => {
+    dismissIntro();
+    $<HTMLInputElement>('fileIfc').click();
+  });
+}
+/** Put the cards away for good in this browser (storage permitting). */
+function dismissIntro() {
+  if (!introOpen) return;
+  introOpen = false;
+  $('intro').hidden = true;
+  markIntroSeen(store);
+}
+/** The large Play button and the first card's: the build from the first step. */
+function playFromStart() {
+  dismissIntro();
+  hero = false;
+  syncHero();
+  playback.seek(0);
+  playback.toggle(true);
+}
+const help = $<HTMLDialogElement>('helpSheet');
+$('helpBody').innerHTML = shortcutSheetHtml();
+function openHelp() {
+  if (help.open) return;
+  if (typeof help.showModal === 'function') help.showModal();
+  else help.setAttribute('open', '');
+}
+function closeHelp() {
+  if (typeof help.close === 'function') help.close();
+  else help.removeAttribute('open');
+}
+// a click on the shade round the sheet closes it
+help.addEventListener('click', (e) => {
+  if (e.target === help) closeHelp();
+});
 
 /** Bounds of the model in plan, for the section slider. */
 function planBounds(p: Project) {
@@ -205,6 +302,15 @@ function mount(p: Project) {
   $('factMain').textContent = facts.main;
   $('factSub').textContent = facts.sub;
   $('statusFacts').title = facts.label;
+  // carbon and its caveat beside them, so it never sits below the fold
+  defaulted = defaultedSummary(p);
+  showingDefaulted = false;
+  const carbon = carbonFacts(p, defaulted?.count ?? 0);
+  $('carbonHead').textContent = carbon.head;
+  $('carbonTotal').textContent = carbon.main;
+  $('carbonUnit').textContent = carbon.unit;
+  $('carbonSub').textContent = carbon.sub;
+  $('statusCarbon').title = carbon.label;
   document.querySelector('.watermark')!.textContent = p.meta.watermark;
   view.section = { on: false, plane: 'A', d: +p.presentation.cut.at.toFixed(1) };
   press('btnSection', false);
@@ -215,6 +321,8 @@ function mount(p: Project) {
   // an open drawer shows the new model's stages, section range and import report
   renderDrawer();
   syncButtons();
+  syncHero();
+  renderIntro();
 }
 
 function newIssuesUI(p: Project) {
@@ -246,6 +354,7 @@ function syncButtons() {
   viewer.invalidate();
   press('btnRotate', view.autoRotate);
   press('btnColour', view.colour);
+  press('btnMaterials', view.colour);
   press('btnGhost', view.ghost);
   const noCrane = !!project && !project.crane;
   press('btnCrane', view.crane && !noCrane);
@@ -295,6 +404,11 @@ playback.onChange(() => {
   // pressing play hands the camera back to the sequence, and the over-chart banner has had its moment
   if (playback.playing && focusPose) focusPose = null;
   if (playback.playing) hideOverBanner();
+  // the opening frame's Play button has done its job once the sequence plays or moves
+  if (hero && (playback.playing || playback.t < project.duration)) {
+    hero = false;
+    syncHero();
+  }
   syncButtons();
 });
 
@@ -474,21 +588,26 @@ function renderImportDrawer() {
     const byCat = (r.byCategory ?? {}) as Record<string, number>;
     const skipped = Object.entries((r.skippedItems ?? {}) as Record<string, number>);
     const warnings = (r.warnings ?? []) as string[];
+    // what matters most first: a cut-off file, then the materials the figures rest on
+    const cutOff = r.truncated ? warnings.find((w) => /ends early/.test(w)) ?? 'The file ends early: it looks cut off, so elements are probably missing.' : null;
+    const d = defaulted && defaultedText(defaulted);
     rows.push(
-      `<dl class="report mono">
+      `${cutOff ? `<div class="report-alert bad" role="note"><b>The file looks incomplete</b><p>${esc(cutOff)} Download or export it again to see the whole model.</p></div>` : ''}
+      ${d ? `<div class="report-alert" role="note"><b>${esc(d.head)}</b><button id="btnShowDefaulted" aria-pressed="${showingDefaulted}">${showingDefaulted ? 'Hide these elements' : 'Show these elements'}</button><p>${esc(d.body)}</p>${d.types ? `<p class="mono types">${esc(d.types)}</p>` : ''}</div>` : ''}
+      <dl class="report mono">
         <dt>File</dt><dd>${esc(project.meta.fileName ?? '')}</dd>
         <dt>Schema</dt><dd>${esc(String(r.schema))} · ${esc(String(r.application || '—'))}</dd>
         <dt>Units</dt><dd>${esc(String(r.lengthUnit))}</dd>
         <dt>Elements</dt><dd>${fmtInt(Number(r.meshed))} meshed${Number(r.noGeometry) ? ` · ${r.noGeometry} without body geometry` : ''}</dd>
         <dt>Openings</dt><dd>${r.openingsCut} cut${Number(r.openingsSkipped) ? ` · ${r.openingsSkipped} not cut` : ''}${Number(r.openingsOutside) ? ` · ${r.openingsOutside} clear of host` : ''}</dd>
         <dt>Clips</dt><dd>${r.clipsApplied} applied${Number(r.booleansApproximated) ? ` · ${r.booleansApproximated} approximated` : ''}</dd>
-        <dt>Materials</dt><dd>${Number(r.defaultedMaterials) ? `${r.defaultedMaterials} defaulted by element type` : 'all from the file'}</dd>
+        <dt>Materials</dt><dd>${defaulted ? `${fmtInt(defaulted.count)} assumed by element type` : 'all from the file'}</dd>
         <dt>Steps</dt><dd>${project.steps.length} in ${project.stages.filter((s) => s.kind === 'assembly').length} stages</dd>
         ${r.lifting ? `<dt>Lifting</dt><dd>${esc(sentenceStart(String(r.lifting)))}</dd>` : ''}
       </dl>
       <p class="cats mono">${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${v}`).join(' · ')}</p>
       ${skipped.length ? `<p class="warn">Not drawn: ${skipped.map(([k, v]) => `${esc(k.replace(/^IFC/, 'Ifc'))} × ${v}`).join(', ')}</p>` : ''}
-      ${warnings.map((w) => `<p class="warn">${esc(w)}</p>`).join('')}`,
+      ${warnings.filter((w) => w !== cutOff).map((w) => `<p class="warn">${esc(w)}</p>`).join('')}`,
     );
   }
   drawer.innerHTML = `<h5>IMPORT IFC</h5>
@@ -499,11 +618,13 @@ function renderImportDrawer() {
       <button id="btnArbor">Arbor House</button>
     </div>
     <p class="muted">Or drop an .ifc file onto the model.</p>
-    ${importFailure ? `<p class="warn import-error"><b>Not loaded.</b> ${esc(importFailure)} The model below is the one still open.</p>` : ''}
+    ${importFailure ? `<div class="report-alert bad import-error" role="note"><b>Not loaded</b><p>${esc(/[.!?]$/.test(importFailure.message) ? importFailure.message : `${importFailure.message}.`)} The model on show has not changed.</p>${importFailure.detail ? `<details><summary>Technical detail</summary><p class="mono">${esc(importFailure.detail)}</p></details>` : ''}</div>` : ''}
+    ${importFailure && rows.length ? `<h6 class="report-of">On show: ${esc(project.meta.fileName ?? project.name)}</h6>` : ''}
     ${rows.join('')}
     ${project.meta.fileName === SAMPLE_NAME ? `<p class="credit">${esc(SAMPLE_CREDIT)}</p>` : ''}`;
   $('btnOpenIfc').addEventListener('click', () => $<HTMLInputElement>('fileIfc').click());
   $('btnSampleIfc').addEventListener('click', () => void loadSample());
+  document.getElementById('btnShowDefaulted')?.addEventListener('click', () => setShowDefaulted(!showingDefaulted));
   $('btnArbor').addEventListener('click', () => {
     // supersedes any import still running; that import will no longer hide the card
     beginLoad();
@@ -518,12 +639,53 @@ function renderImportDrawer() {
 // ── IFC import ─────────────────────────────────────────────────────────────
 const loading = $('loading');
 /** Why the last import failed, kept in the Import drawer after the message is gone; cleared by the next model shown. */
-let importFailure: string | null = null;
-/** An import failed: say so in a message that stays until dismissed, and in the Import drawer. */
-function importFailed(msg: string) {
-  importFailure = msg;
-  toast(msg, 'error');
+let importFailure: { message: string; detail: string } | null = null;
+/** An import failed: say so in a message that stays until dismissed, and in the Import drawer (with the error itself folded away). */
+function importFailed(message: string, detail = '') {
+  importFailure = { message, detail };
+  toast(message, 'error');
   if (view.rail === 'import') renderDrawer();
+}
+/** A load failed at `stage`: say why in words, keep the error for the drawer and the console. */
+function loadFailed(fileName: string, err: unknown, stage: LoadStage, text?: string) {
+  console.error(err);
+  const e = importError(fileName, err, stage, text !== undefined && endsEarly(text));
+  importFailed(e.message, e.detail);
+}
+
+// ── Assumed materials: shown on the model on request ───────────────────────
+/** The model's elements with an assumed material (null when every material came from the file). */
+let defaulted: DefaultedSummary | null = null;
+/** Whether they are drawn in x-ray now. */
+let showingDefaulted = false;
+/**
+ * Show the elements with an assumed material in x-ray on the whole model, or
+ * stop. They share the issue x-ray, so an issue chosen afterwards replaces
+ * them, and Esc lets go of them as it lets go of an issue.
+ */
+function setShowDefaulted(on: boolean) {
+  on = on && !!defaulted?.parts.length;
+  if (on) {
+    issuesUI?.select(null);
+    hideOverBanner();
+    playback.toggle(false);
+    // the whole model as built, before the material pass washes over it, so every element shows in place
+    const built = project.stages.filter((st) => st.kind === 'assembly').at(-1);
+    playback.seek(built ? built.end - 1e-3 : project.duration);
+    viewer.setIssue({ primary: defaulted!.parts, secondary: [], lines: [] });
+    viewer.autoFrame = true;
+  } else if (showingDefaulted) viewer.setIssue(null);
+  showingDefaulted = on;
+  if (on) {
+    const n = defaulted!.count;
+    toast(`${n === 1 ? 'The element' : `${fmtInt(n)} elements`} with an assumed material ${n === 1 ? 'is' : 'are'} shown in red. Esc clears ${n === 1 ? 'it' : 'them'}.`);
+    // the drawer would cover them: close it, keeping the keyboard on its rail item
+    if (view.rail === 'import') {
+      const fromDrawer = drawer.contains(document.activeElement);
+      selectRail('model');
+      if (fromDrawer) railButton('import')?.focus();
+    }
+  } else if (view.rail === 'import') renderDrawer();
 }
 function showLoading(label: string, share: number) {
   loading.hidden = false;
@@ -562,14 +724,12 @@ async function importIfcText(text: string, fileName: string, gen = beginLoad()):
     mount(p);
     playback.seek(0);
     playback.toggle(true);
-    const s = ((performance.now() - t0) / 1000).toFixed(1);
-    const incomplete = (p.report as { truncated?: boolean } | undefined)?.truncated ? ' · file looks incomplete' : '';
-    toast(`Loaded ${fileName} · ${fmtInt(model.elements.length)} elements · ${s} s${incomplete}`);
+    const done = loadedMessage(fileName, model.elements.length, (performance.now() - t0) / 1000, p.report as { truncated?: boolean; defaultedMaterials?: number } | undefined);
+    toast(done.text, done.kind);
     return true;
   } catch (err) {
     if (err instanceof Superseded || gen !== loadGen) return false;
-    console.error(err);
-    importFailed(`Could not read ${fileName}: ${(err as Error).message ?? err}`);
+    loadFailed(fileName, err, 'read', text);
     return false;
   } finally {
     if (gen === loadGen) loading.hidden = true;
@@ -589,7 +749,7 @@ async function importFile(file: File) {
   } catch (err) {
     if (gen !== loadGen) return;
     loading.hidden = true;
-    importFailed(`Could not open ${file.name}: ${(err as Error).message ?? err}`);
+    loadFailed(file.name, err, 'open');
     return;
   }
   if (gen !== loadGen) return;
@@ -610,7 +770,7 @@ async function loadSample(): Promise<boolean> {
   } catch (err) {
     if (gen !== loadGen) return false;
     loading.hidden = true;
-    importFailed(`Could not load the sample (${(err as Error).message}).`);
+    loadFailed(SAMPLE_NAME, err, 'sample');
     return false;
   }
 }
@@ -763,6 +923,12 @@ bind('btnNext', actions.next);
 bind('btnRebuild', actions.rebuild);
 bind('btnRotate', actions.rotate);
 bind('btnColour', actions.colour);
+bind('btnMaterials', actions.colour);
+bind('btnPresent', () => setClient(!view.client));
+bind('btnHelp', openHelp);
+bind('helpClose', closeHelp);
+bind('heroPlay', playFromStart);
+bind('introClose', dismissIntro);
 bind('btnFrame', actions.frame);
 bind('btnSpeed', actions.speed);
 bind('btnView', actions.view);
@@ -831,12 +997,16 @@ viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncBu
   const toolbar = document.querySelector<HTMLElement>('.toolbar')!;
   const bar = $('playbar');
   const transport = $('transport');
+  const sheet = $('issueSheet');
   const measure = () => {
     $('viewport').style.setProperty('--toolbar-bottom', `${toolbar.offsetTop + toolbar.offsetHeight}px`);
     // the play bar has no box of its own on a wide screen
     const h = bar.getBoundingClientRect().height;
     if (h > 0) document.documentElement.style.setProperty('--playbar-h', `${Math.ceil(h)}px`);
     else document.documentElement.style.removeProperty('--playbar-h');
+    // the open issue sheet covers the foot of the page too: the page grows by it so its end can still be read
+    const sh = sheet.getBoundingClientRect().height;
+    document.documentElement.style.setProperty('--sheet-h', `${sh > 0 ? Math.ceil(sh) + 6 : 0}px`);
   };
   // the transport scrolls sideways on a phone, where the scrollbar is hidden: a fade marks the side with more
   const fade = () => {
@@ -851,7 +1021,7 @@ viewer.renderer.domElement.addEventListener('wheel', () => queueMicrotask(syncBu
       measure();
       fade();
     });
-    for (const el of [toolbar, bar, transport]) ro.observe(el);
+    for (const el of [toolbar, bar, transport, sheet]) ro.observe(el);
   }
   narrow?.addEventListener('change', () => {
     measure();
@@ -893,6 +1063,7 @@ function toast(msg: string, kind: ToastKind = 'info') {
   // a failure interrupts; anything else waits its turn
   text.setAttribute('role', kind === 'error' ? 'alert' : 'status');
   el.classList.toggle('error', kind === 'error');
+  el.classList.toggle('warn', kind === 'warn');
   el.hidden = false;
   clearTimeout(toastTimer);
   const life = toastLife(kind);
@@ -936,8 +1107,38 @@ bind('btnDownload', () => {
 });
 
 // ── Keyboard ───────────────────────────────────────────────────────────────
+/** What each page shortcut does (the keys are in ui/shortcuts.ts, which also writes the shortcut sheet). */
+const keyActions: Record<ActionId, () => void> = {
+  play: actions.play,
+  rebuild: actions.rebuild,
+  rotate: actions.rotate,
+  colour: actions.colour,
+  frame: actions.frame,
+  speed: actions.speed,
+  view: actions.view,
+  ghost: actions.ghost,
+  crane: actions.crane,
+  cranePlan: actions.cranePlan,
+  section: actions.section,
+  import: () => selectRail('import'),
+  nextIssue: () => issuesUI?.step(1),
+  prevIssue: () => issuesUI?.step(-1),
+  stepBack: () => jumpStep(-1),
+  stepOn: () => jumpStep(1),
+  start: () => playback.seek(0),
+  present: () => setClient(!view.client),
+  help: openHelp,
+};
 window.addEventListener('keydown', (e) => {
   if (!mounted) return; // the first model is still loading
+  // the shortcut sheet is modal: it takes Esc itself, and ? closes it again
+  if (help.open) {
+    if (e.key === '?') {
+      e.preventDefault();
+      closeHelp();
+    }
+    return;
+  }
   const k = e.key.toLowerCase();
   const target = e.target as HTMLElement;
   // the focused control's own keys come first: Space and Enter press a button or tick a box,
@@ -955,6 +1156,8 @@ window.addEventListener('keydown', (e) => {
     (document.activeElement as HTMLElement | null)?.blur();
     if (bannerPick) hideOverBanner();
     else if (issuesUI?.selected) issuesUI.select(null);
+    else if (showingDefaulted) setShowDefaulted(false);
+    else if (introOpen) dismissIntro();
     else selectRail('model');
     return;
   }
@@ -989,28 +1192,10 @@ window.addEventListener('keydown', (e) => {
     setPerf(!view.perf);
     return;
   }
-  const map: Record<string, () => void> = {
-    ' ': actions.play,
-    r: actions.rebuild,
-    a: actions.rotate,
-    c: actions.colour,
-    x: actions.frame,
-    f: actions.speed,
-    v: actions.view,
-    g: actions.ghost,
-    k: actions.crane,
-    l: actions.cranePlan,
-    s: actions.section,
-    i: () => selectRail('import'),
-    ']': () => issuesUI?.step(1),
-    '[': () => issuesUI?.step(-1),
-    arrowleft: () => jumpStep(-1),
-    arrowright: () => jumpStep(1),
-    home: () => playback.seek(0),
-  };
-  if (map[k]) {
+  const id = keyAction(k);
+  if (id) {
     e.preventDefault();
-    map[k]();
+    keyActions[id]();
   } else if (/^[1-7]$/.test(k)) selectRail(RAIL[Number(k) - 1].id);
 });
 
@@ -1209,9 +1394,14 @@ function issueDrawing(i: Issue, p: Project = project): IssueSpec {
 
 function selectIssue(i: Issue | null) {
   if (!i) {
-    viewer.setIssue(null);
+    // letting go of an issue leaves the assumed materials alone when they are what is on show
+    if (!showingDefaulted) viewer.setIssue(null);
     focusPose = null;
     return;
+  }
+  if (showingDefaulted) {
+    showingDefaulted = false;
+    if (view.rail === 'import') renderDrawer();
   }
   playback.toggle(false);
   playback.seek(timeForStep(i.step));
@@ -1409,8 +1599,10 @@ function rerunChecks() {
 function resetPreferences() {
   clearPrefs(store);
   rotatePref = true;
+  clientPref = false;
   Object.assign(view, VIEW_DEFAULTS);
   applyViewLook();
+  applyMode();
   viewer.setAutoRotate(view.autoRotate);
   viewer.setResolution(view.resolution);
   updateRail();

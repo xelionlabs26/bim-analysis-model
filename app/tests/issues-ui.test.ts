@@ -367,3 +367,75 @@ describe('framing an issue clear of the viewport cards (F46)', () => {
     expect(edge.x + size.w).toBeLessThan(700);
   });
 });
+
+describe('the issue sheet on a narrow screen (phone first aid)', () => {
+  function compactPanel(compact: boolean) {
+    const picked: (Issue | null)[] = [];
+    const ui = new IssuesUI(project, viewer, (s) => s, { select: (i) => picked.push(i), exportBcf: () => {}, exportCsv: () => {}, compact: () => compact });
+    ui.setReport(report(ISSUES));
+    return { ui, picked };
+  }
+
+  it('opens on a selection with the issue in it, and closes with the selection', () => {
+    const { ui, picked } = compactPanel(true);
+    expect(byId('issueSheet').hidden).toBe(true);
+    ui.selectById('RCH-01');
+    expect(byId('issueSheet').hidden).toBe(false);
+    expect(byId('issueSheet').className).toContain('sev-major');
+    expect(byId('sheetId').textContent).toBe('RCH-01');
+    expect(byId('sheetBody').children.map((c) => c.className)).toEqual(['iss-body']);
+    // its close button lets the issue go, highlight, pin and all
+    byId('sheetClose').click();
+    expect(ui.selected).toBeNull();
+    expect(picked.at(-1)).toBeNull();
+    expect(byId('issueSheet').hidden).toBe(true);
+  });
+
+  it('steps through the issues from the sheet', () => {
+    const { ui } = compactPanel(true);
+    ui.selectById('EDG-01');
+    byId('sheetNext').click();
+    expect(ui.selected?.id).toBe('RCH-01');
+    expect(byId('sheetId').textContent).toBe('RCH-01');
+    byId('sheetPrev').click();
+    expect(ui.selected?.id).toBe('EDG-01');
+  });
+
+  it('folds to its title line, keeps the fold while stepping, and opens out on a fresh selection', () => {
+    const { ui } = compactPanel(true);
+    ui.selectById('EDG-01');
+    byId('sheetToggle').click();
+    expect(byId('issueSheet').className).toContain('folded');
+    expect(byId('sheetToggle').attrs.get('aria-expanded')).toBe('false');
+    byId('sheetNext').click();
+    expect(byId('issueSheet').className).toContain('folded');
+    ui.select(null);
+    ui.selectById('HND-01');
+    expect(byId('issueSheet').className).not.toContain('folded');
+    expect(byId('sheetToggle').attrs.get('aria-expanded')).toBe('true');
+  });
+
+  it('does not scroll the page down to the list on a narrow screen, and still does on a wide one', () => {
+    const scrolled: string[] = [];
+    const row = { scrollIntoView: () => scrolled.push('row') };
+    const list = byId('issList') as unknown as { querySelector: () => unknown };
+    const was = list.querySelector;
+    list.querySelector = () => row;
+    try {
+      compactPanel(true).ui.selectById('RCH-02');
+      expect(scrolled).toEqual([]);
+      compactPanel(false).ui.selectById('RCH-02');
+      expect(scrolled).toEqual(['row']);
+    } finally {
+      list.querySelector = was;
+    }
+  });
+
+  it('starts hidden for a new model or a fresh run of the checks', () => {
+    const { ui } = compactPanel(true);
+    ui.selectById('RCH-01');
+    expect(byId('issueSheet').hidden).toBe(false);
+    compactPanel(true);
+    expect(byId('issueSheet').hidden).toBe(true);
+  });
+});

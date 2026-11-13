@@ -19,6 +19,7 @@ export const ICONS: Record<string, string> = {
   language: s('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.6 2.4 3.8 5.2 3.8 8.5S14.6 18.1 12 20.5C9.4 18.1 8.2 15.3 8.2 12S9.4 5.9 12 3.5Z"/>'),
   reach: s('<circle cx="12" cy="12" r="8.5" stroke-dasharray="2.4 2"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 12l5.2-4.6"/><circle cx="17.6" cy="7" r="1.3"/>'),
   menu: s('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  present: s('<path d="M3 4.5h18"/><path d="M4.5 4.5v10h15v-10"/><path d="M12 14.5v3"/><path d="m8.5 21 3.5-3.5 3.5 3.5"/><path d="m10.5 7.5 4 2-4 2z" fill="currentColor"/>'),
   upload: s('<path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>'),
   prev: s('<path d="M6 5v14"/><path d="M18 5 9 12l9 7V5Z" fill="currentColor"/>'),
   next: s('<path d="M18 5v14"/><path d="M6 5l9 7-9 7V5Z" fill="currentColor"/>'),

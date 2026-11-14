@@ -51,7 +51,7 @@ describe('the crane plan says which way the crane is when the playhead leaves it
   });
 
   it('is wired: each frame with the plan open picks the note by side, and a model loaded with the plan open plays from the first lift', () => {
-    expect(MAIN).toMatch(/const side = timeline\.craneSide\(state\.t\);\s*const note = planLeaveNote\(planSide, side\);\s*if \(note\) toast\(cranePlanNote\(/);
+    expect(MAIN).toMatch(/const side = timeline\.craneSide\(state\.t\);\s*const note = planLeaveNote\(planSide, side\);\s*if \(note\) \{\s*planToast = cranePlanNote\(/);
     expect(MAIN).not.toMatch(/cranePlanNote\([^)]*'gone'\)/);
     const play = fn(MAIN, /function playLoaded\(\) \{/);
     expect(play).toMatch(/view\.cranePlan \? timeline\.planTime\(0\) : null/);
@@ -160,5 +160,29 @@ describe('the scale bar reads over the model (X4)', () => {
     expect(CSS).toMatch(/\.sb-bar \{[^}]*background: var\(--paper\);/);
     // the filled segments stay ink
     expect(CSS).toMatch(/\.sb-bar i:nth-child\(odd\) \{ background: var\(--ink\); \}/);
+  });
+});
+
+describe('round-five final findings', () => {
+  const MAIN5 = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const OVER5 = readFileSync(new URL('../src/ui/overlays.ts', import.meta.url), 'utf8');
+  const VIEW5 = readFileSync(new URL('../src/scene/viewer.ts', import.meta.url), 'utf8');
+  const CSS5 = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  it('Rebuild goes through playLoaded, so the crane plan starts from the first lift', () => {
+    expect(MAIN5).toMatch(/rebuild: \(\) => playLoaded\(\),/);
+  });
+  it('takes the crane plan note down once the playhead is back in the crane\'s time', () => {
+    expect(MAIN5).toMatch(/side === 'up' && planSide !== 'up' && planToast[\s\S]{0,120}hideToast\(\)/);
+  });
+  it('fades a level datum a crane label came to rest on', () => {
+    expect(OVER5).toMatch(/this\.clearDatumsUnderLabels\(host\);/);
+    expect(OVER5).toMatch(/this\.datumRows = rows\.map\(\(r\) => r\.box\);/);
+  });
+  it('frames a step placed below grade (piles)', () => {
+    expect(MAIN5).toMatch(/stepBelow\(state\)\);/);
+    expect(VIEW5).toMatch(/this\.fitDistance\(frameTop \+ deep, half\)/);
+  });
+  it('keeps a long zone name apart from its count', () => {
+    expect(CSS5).toMatch(/\.zones div \{[^}]*gap: 8px/);
   });
 });

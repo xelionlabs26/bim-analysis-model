@@ -14,7 +14,7 @@ import './styles.css';
 
 import { buildProject } from './data/project';
 import type { Project, Vec3 } from './data/types';
-import { Timeline, type CraneSide, type CraneState } from './engine/timeline';
+import { Timeline, type CraneSide, type CraneState, type SequenceState } from './engine/timeline';
 import { Playback } from './engine/playback';
 import type { CutState } from './engine/presentation';
 import { ALL_STAGES, CONTEXT_STAGE, VIEW_PRESETS, Viewer, type IssueSpec, type RenderStyle } from './scene/viewer';
@@ -293,6 +293,8 @@ let planPose: CameraPose | null = null;
 let planFrame: { aim: { x: number; y: number }; hideCaption: boolean; w: number; h: number } | null = null;
 /** Which side of the crane's time on site the last frame drawn with the crane plan on was: a playhead that leaves it says why the plan empties. */
 let planSide: CraneSide | null = 'up';
+/** The crane plan's last 'out of the crane's time' note, taken down when the playhead comes back into it. */
+let planToast: string | null = null;
 /** The view preset to go back to when the crane plan is turned off. */
 let presetBeforePlan = 0;
 /** Stops playback once per playthrough on the first pick over the crane's chart. */
@@ -401,8 +403,7 @@ function playFromStart() {
   dismissIntro();
   hero = false;
   syncHero();
-  playback.seek(0);
-  playback.toggle(true);
+  playLoaded();
 }
 const help = $<HTMLDialogElement>('helpSheet');
 function openHelp() {
@@ -444,6 +445,13 @@ function modelShape(p: Project) {
 }
 
 let firstFrame = true;
+
+/** How far below grade the step being placed reaches (piles), m; 0 for a step at or above it, or one under a metre down. */
+function stepBelow(s: SequenceState): number {
+  const step = s.complete ? null : s.step;
+  const d = step ? -step.bottom : 0;
+  return d >= 1 ? d : 0;
+}
 
 /** Show a project: engine, viewer, overlays, panels, labels. */
 function mount(p: Project) {
@@ -512,6 +520,8 @@ function mount(p: Project) {
  * gives it nothing to show.
  */
 function playLoaded() {
+  // a crane plan note about where the playhead was no longer holds
+  if (planToast && !$('toast').hidden && $('toastText').textContent === planToast) hideToast();
   const at = view.cranePlan ? timeline.planTime(0) : null;
   if (view.cranePlan && at === null) setCranePlan(false);
   playback.seek(at ?? 0);
@@ -1117,10 +1127,8 @@ const actions: Record<string, () => void> = {
   play: () => playback.toggle(),
   prev: () => jumpStage(-1),
   next: () => jumpStage(1),
-  rebuild: () => {
-    playback.seek(0);
-    playback.toggle(true);
-  },
+  // with the crane plan open, from the crane's first lift (playLoaded)
+  rebuild: () => playLoaded(),
   rotate: () => {
     view.autoRotate = rotatePref = !view.autoRotate;
     syncRotate();
@@ -1655,7 +1663,7 @@ function loop(now: number) {
   const pose = focusPose ?? planPose ?? state.presentation.pose;
   // the reach ring, its label and the operation panel name the piece the crane check names
   const crane = riggedCrane(state.crane);
-  viewer.frame(state.t, state.builtTop, state.builtHalf, craneShown(craneView()) ? crane : { ...crane, visible: false }, camDt, firstFrame || ((!!focusPose || !!planPose) && reduceMotion), pose, focusPose ? 9 : 3.2);
+  viewer.frame(state.t, state.builtTop, state.builtHalf, craneShown(craneView()) ? crane : { ...crane, visible: false }, camDt, firstFrame || ((!!focusPose || !!planPose) && reduceMotion), pose, focusPose ? 9 : 3.2, stepBelow(state));
   if (focusPose && !viewer.autoFrame) focusPose = null; // the view was dragged away
   if (planPose && !viewer.autoFrame) planPose = null;
   syncCaption();
@@ -1665,7 +1673,10 @@ function loop(now: number) {
   if (view.cranePlan) {
     const side = timeline.craneSide(state.t);
     const note = planLeaveNote(planSide, side);
-    if (note) toast(cranePlanNote(project.crane?.id ?? 'The crane', note));
+    if (note) {
+      planToast = cranePlanNote(project.crane?.id ?? 'The crane', note);
+      toast(planToast);
+    } else if (side === 'up' && planSide !== 'up' && planToast && !$('toast').hidden && $('toastText').textContent === planToast) hideToast();
     planSide = side;
   }
   // the member callouts step aside while an issue is explained, and datums across it fade
@@ -1902,7 +1913,8 @@ function setCranePlan(on: boolean) {
     const before = playback.t < timeline.erectT;
     playback.toggle(false);
     playback.seek(at);
-    toast(cranePlanNote(project.crane!.id, before ? 'before' : 'struck', timeline.stepIndexAt(at) + 1));
+    planToast = cranePlanNote(project.crane!.id, before ? 'before' : 'struck', timeline.stepIndexAt(at) + 1);
+    toast(planToast);
   }
   if (on) {
     presetBeforePlan = view.presetIndex;
@@ -1979,7 +1991,9 @@ function syncRestBox(): boolean {
   // a tall model whose top the usual framing would draw under the caption takes the clear box beside or below it, smaller, so the
   // step being placed is never drawn behind the caption (on a phone the caption spans the model's width: the model goes below it;
   // for the opening frame the caption steps aside there, and the model keeps its full size)
-  const box = isNarrow() && hero ? restFrame(bounds, chrome, caption, model) : restFrameClear(bounds, chrome, caption, model, w > 700 ? 0.57 : 0.5);
+  // on a wide screen a model framed beside the caption keeps off the level datums down the right side, as the opening frame's does
+  const restChrome = isNarrow() ? chrome : [...chrome, datumStrip(w, h)];
+  const box = isNarrow() && hero ? restFrame(bounds, chrome, caption, model) : restFrameClear(bounds, restChrome, caption, model, w > 700 ? 0.57 : 0.5);
   viewer.setRestBox(box && { x0: q(box.x0 / w), y0: q(box.y0 / h), x1: q(box.x1 / w), y1: q(box.y1 / h) });
   placeHero();
   return false;

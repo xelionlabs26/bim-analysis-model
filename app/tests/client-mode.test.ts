@@ -151,7 +151,9 @@ describe('opening frame', () => {
   it('starts the build from the beginning when pressed, and goes once the sequence plays or moves', () => {
     expect(HTML).toMatch(/<button class="hero-play" id="heroPlay"[^>]*hidden>/);
     const play = MAIN.match(/function playFromStart\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
-    expect(play).toMatch(/playback\.seek\(0\);\s*playback\.toggle\(true\);/);
+    expect(play).toMatch(/playLoaded\(\);/);
+    // from the start, or from the crane's first lift with the crane plan open
+    expect(MAIN).toMatch(/function playLoaded\(\) \{[\s\S]*?playback\.seek\(at \?\? 0\);[\s\S]*?playback\.toggle\(true\);/);
     expect(MAIN).toMatch(/if \(hero && \(playback\.playing \|\| playback\.t < project\.duration\)\)/);
     expect(MAIN).toMatch(/bind\('heroPlay', playFromStart\)/);
   });

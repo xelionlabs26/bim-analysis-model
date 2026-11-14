@@ -596,7 +596,7 @@ export class Viewer {
   }
 
   /** Per-frame: update sequence time, crane, auto-frame, orbit, render. */
-  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false, pose: CameraPose | null = null, poseRate = 3.2) {
+  frame(t: number, builtTop: number, builtHalf: number, crane: CraneState, dt: number, snap = false, pose: CameraPose | null = null, poseRate = 3.2, below = 0) {
     if (this.fillMat.uniforms.uTime.value !== t) this.invalidate();
     this.fillMat.uniforms.uTime.value = t;
     this.fillMat.uniforms.uDpr.value = this.renderer.getPixelRatio();
@@ -629,9 +629,11 @@ export class Viewer {
       const minFrame = Math.max(6, Math.min(28, H * 0.25 + 4));
       let frameTop = Math.min(Math.max(builtTop * 1.12 + margin, minFrame), H * 1.08 + 4);
       if (crane.visible) frameTop = Math.max(frameTop, tall ? crane.mastTop + 4 : Math.min(crane.mastTop + 2, frameTop * 1.45));
-      const desiredY = Math.max(tall ? 3 : 1.5, Math.min(frameTop * 0.5, builtTop * 0.55 + (tall ? 4 : 1.5)));
+      // a step being placed below grade (piles) is framed too: the shot reaches down to it, its middle lowered by half the depth
+      const deep = Math.max(0, below);
+      const desiredY = Math.max(tall ? 3 : 1.5, Math.min(frameTop * 0.5, builtTop * 0.55 + (tall ? 4 : 1.5))) - deep / 2;
       const half = tall ? Math.max(builtHalf, crane.visible ? Math.max(this.footprint, 26) : Math.min(this.footprint, 17)) : Math.max(builtHalf, this.footprint * 0.95);
-      const desiredD = this.fitDistance(frameTop, half);
+      const desiredD = this.fitDistance(frameTop + deep, half);
       const k = snap ? 1 : 1 - Math.exp(-dt * 2.2);
       const off = this.camera.position.clone().sub(this.controls.target);
       this.target.y += (desiredY - this.target.y) * k;

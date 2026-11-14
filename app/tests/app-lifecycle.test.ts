@@ -363,7 +363,9 @@ describe('the default framing keeps the model clear of the cards (R68)', () => {
     expect(fn).toMatch(/const bounds = \{ x0: 0, y0: 0, x1: w, y1: h \}, chrome = chromeBoxes\(\$\('viewport'\), FRAME_CHROME, 8, document\);/);
     expect(fn).toMatch(/let caption = captionBox\(\);/);
     // a wide screen also keeps a tall model's crown off the caption (Z7)
-    expect(fn).toMatch(/isNarrow\(\) && hero \? restFrame\(bounds, chrome, caption, model\) : restFrameClear\(bounds, chrome, caption, model, /);
+    expect(fn).toMatch(/isNarrow\(\) && hero \? restFrame\(bounds, chrome, caption, model\) : restFrameClear\(bounds, restChrome, caption, model, /);
+    // on a wide screen the framing keeps off the level datum strip
+    expect(fn).toMatch(/const restChrome = isNarrow\(\) \? chrome : \[\.\.\.chrome, datumStrip\(w, h\)\];/);
     expect(fn).toMatch(/viewer\.setRestBox\(/);
     expect(MAIN).toMatch(/const rest = new ResizeObserver\(\(\) => syncRestBox\(\)\);/);
     for (const id of ['viewport', 'caption', 'titleBlock', 'drawer']) expect(MAIN).toMatch(new RegExp(`'${id}'[^\\n]*\\]\\) rest\\.observe`));

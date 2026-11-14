@@ -218,6 +218,6 @@ describe('a tall model and the caption card (Z7)', () => {
   });
 
   it("main uses it everywhere but a phone's opening frame (which keeps the model full size while the caption steps aside)", () => {
-    expect(MAIN).toMatch(/const box = isNarrow\(\) && hero \? restFrame\(bounds, chrome, caption, model\) : restFrameClear\(bounds, chrome, caption, model, w > 700 \? 0\.57 : 0\.5\);/);
+    expect(MAIN).toMatch(/const box = isNarrow\(\) && hero \? restFrame\(bounds, chrome, caption, model\) : restFrameClear\(bounds, restChrome, caption, model, w > 700 \? 0\.57 : 0\.5\);/);
   });
 });

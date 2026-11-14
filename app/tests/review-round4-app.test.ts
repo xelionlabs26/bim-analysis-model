@@ -215,7 +215,7 @@ describe('the crane plan never shows an empty site (Y3)', () => {
     const fn = MAIN.match(/function setCranePlan\(on: boolean\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(fn).toMatch(/timeline\.planTime\(playback\.t\)/);
     expect(fn).toMatch(/playback\.toggle\(false\);\s*playback\.seek\(at\);/);
-    expect(MAIN).toMatch(/if \(note\) toast\(cranePlanNote\(/);
+    expect(MAIN).toMatch(/if \(note\) \{\s*planToast = cranePlanNote\(/);
   });
 });
 

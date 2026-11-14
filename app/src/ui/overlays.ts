@@ -320,6 +320,32 @@ export class Overlays {
     // the member callouts give way to a plan and to the issue being explained
     this.updateCallouts(state, w, h, plan || !!this.issueBox);
     this.updateReach(state.crane, craneShown, w, h, state.builtTop);
+    this.clearDatumsUnderLabels(host);
+  }
+
+  /** The datum rows the last update drew, for clearDatumsUnderLabels. */
+  private datumRows: Box[] = [];
+
+  /**
+   * A level datum the crane's labels came to rest on gives way to them (the
+   * labels only keep off datums where they can; the two never overprint).
+   */
+  private clearDatumsUnderLabels(host: DOMRect) {
+    const labels: Box[] = [];
+    for (const el of [this.pickEl, this.reachEl]) {
+      if (!el || el.hidden || el.style.opacity === '0') continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      labels.push({ x0: r.left - host.left - 2, y0: r.top - host.top - 2, x1: r.right - host.left + 2, y1: r.bottom - host.top + 2 });
+    }
+    if (!labels.length) return;
+    this.datumEls.forEach((d, i) => {
+      const box = this.datumRows[i];
+      if (!box || !labels.some((l) => hits(box, l))) return;
+      d.code.style.opacity = '0';
+      d.tick.style.opacity = '0';
+      d.dash.style.opacity = '0';
+    });
   }
 
   /** A world box's extent on screen, or null when part of it is behind the camera. */
@@ -343,6 +369,7 @@ export class Overlays {
       return { y: p.y, box: { x0: x - DATUM_HALF, y0: p.y - 9, x1: x + DATUM_HALF, y1: p.y + 8 }, op: !visible ? 0 : reached ? 1 : 0.28 };
     });
     const ops = datumOpacity(rows, { plan, blocked: chrome, issue });
+    this.datumRows = rows.map((r) => r.box);
     let topY = Infinity;
     let botY = -Infinity;
     this.datumEls.forEach((d, i) => {

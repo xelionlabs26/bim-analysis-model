@@ -91,6 +91,9 @@ interface Lift {
   radius: number;
 }
 
+/** Where a moment falls against the tower crane's time on site (Timeline.craneSide). */
+export type CraneSide = 'before' | 'up' | 'gone';
+
 export class Timeline {
   readonly events: LogEvent[];
   private readonly eventT: number[];
@@ -242,6 +245,12 @@ export class Timeline {
   /** Whether the tower crane stands at `t` with its jib on: erected, and not yet being struck. */
   craneUp(t: number): boolean {
     return !!this.project.crane && t >= this.erectT && t < this.presentation.strikeT;
+  }
+
+  /** Which side of the crane's standing time `t` is on: not yet erected, standing, or struck (null without a tower crane). */
+  craneSide(t: number): CraneSide | null {
+    if (!this.project.crane) return null;
+    return t < this.erectT ? 'before' : t < this.presentation.strikeT ? 'up' : 'gone';
   }
 
   /**

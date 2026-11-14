@@ -25,6 +25,12 @@ export function scaleBarLength(pxPerMetre: number): number {
 export const PLAN_ELEVATION = 70;
 /** A datum label's height in pixels: datums closer together than this would print over each other. */
 export const DATUM_GAP = 15;
+/** The level datums' rows: each centred this far in from the viewport's right side (px) … */
+export const DATUM_RIGHT = 96;
+/** … and running this far either side of that (the code, the tick, the value and the dash). */
+export const DATUM_HALF = 74;
+/** The strip down the viewport's right side (`w` wide, `h` tall) that the datum rows take, their full extent padded by `pad`. */
+export const datumStrip = (w: number, h: number, pad = 6): Box => ({ x0: w - DATUM_RIGHT - DATUM_HALF - pad, y0: 0, x1: w, y1: h });
 /** How long the boxes of the viewport's cards and controls are reused before they are measured again (ms). */
 export const CHROME_TTL = 250;
 
@@ -328,13 +334,13 @@ export class Overlays {
   }
 
   private updateDatums(state: SequenceState, w: number, h: number, chrome: Box[], plan: boolean, issue: Box | null) {
-    const x = w - 96;
+    const x = w - DATUM_RIGHT;
     const rows = this.datumEls.map((d) => {
       const p = this.viewer.project([0, d.y, 0]);
       const reached = d.level === 'TOP' ? state.complete || state.builtTop >= d.y - 0.01 : state.builtTop >= d.y - 0.05;
       const visible = !p.behind && p.y > 70 && p.y < h - 150;
       // the code, the tick and the value, as drawn below
-      return { y: p.y, box: { x0: x - 74, y0: p.y - 9, x1: x + 74, y1: p.y + 8 }, op: !visible ? 0 : reached ? 1 : 0.28 };
+      return { y: p.y, box: { x0: x - DATUM_HALF, y0: p.y - 9, x1: x + DATUM_HALF, y1: p.y + 8 }, op: !visible ? 0 : reached ? 1 : 0.28 };
     });
     const ops = datumOpacity(rows, { plan, blocked: chrome, issue });
     let topY = Infinity;
@@ -348,7 +354,7 @@ export class Overlays {
       d.code.style.transform = `translate(${x - 66}px, ${y - 9}px)`;
       d.code.style.width = '140px';
       d.tick.setAttribute('d', `M${x - 6} ${y + 6}L${x + 6} ${y - 6}M${x - 7} ${y}H${x + 7}`);
-      d.dash.setAttribute('x1', String(x - 74));
+      d.dash.setAttribute('x1', String(x - DATUM_HALF));
       d.dash.setAttribute('x2', String(x - 10));
       d.dash.setAttribute('y1', String(y));
       d.dash.setAttribute('y2', String(y));

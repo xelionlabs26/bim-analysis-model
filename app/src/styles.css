@@ -210,11 +210,15 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .tb-row span { font-size: 12.5px; white-space: nowrap; }
 .scalebar { position: absolute; left: 30px; bottom: 150px; z-index: 3; }
 .sb-labels { position: relative; height: 14px; font-size: 11px; }
-.sb-labels span { position: absolute; transform: translateX(-30%); white-space: nowrap; }
-.sb-bar { display: flex; height: 6px; border: 1px solid var(--ink); width: var(--sbw, 140px); }
+/* the model may be drawn behind the scale bar (on a phone it often is): its words and its open segments are backed with paper, which is invisible on the paper around them */
+.scalebar { --sb-halo: -1px 0 var(--paper), 1px 0 var(--paper), 0 -1px var(--paper), 0 1px var(--paper), 0 0 3px var(--paper), 0 0 3px var(--paper); }
+.sb-labels span { position: absolute; transform: translateX(-30%); white-space: nowrap; text-shadow: var(--sb-halo); }
+.sb-bar { display: flex; height: 6px; border: 1px solid var(--ink); width: var(--sbw, 140px); background: var(--paper); box-shadow: 0 0 0 1px var(--paper); }
 .sb-bar i { flex: 1; }
 .sb-bar i:nth-child(odd) { background: var(--ink); }
-.sb-scale { font-size: 11px; margin-top: 4px; letter-spacing: 0.1em; }
+.sb-scale { font-size: 11px; margin-top: 4px; letter-spacing: 0.1em; text-shadow: var(--sb-halo); }
+/* a cramped opening frame puts the large Play button where the scale bar is: the bar steps aside until the model moves (main.ts scaleUnderHero) */
+.scalebar.under-hero { visibility: hidden; }
 
 /* the play bar has no box of its own on a wide screen: the scrubber and transport sit over the model */
 .playbar { display: contents; }

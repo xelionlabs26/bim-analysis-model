@@ -6,6 +6,7 @@
  * Pure, so each rule is tested without a page.
  */
 import type { PrefsStore } from './prefs';
+import type { CraneSide } from '../engine/timeline';
 
 // ── presentation view ─────────────────────────────────────────────────────────
 
@@ -71,13 +72,27 @@ export function heroLine(steps: number, seconds: number): string {
 
 /**
  * What the crane plan says when it moves the playhead to a moment the crane
- * stands (`before`: it was not up yet, so its first lift; else it had been
- * struck, so its last), and when playback carries the plan past the strike.
+ * stands (`before`: it was not up yet, so its first lift; `struck`: it had
+ * been struck, so its last), and when the playhead leaves the time the crane
+ * stands with the plan open (`early`: back to before it goes up; `gone`: on
+ * past the strike).
  */
-export function cranePlanNote(crane: string, kind: 'before' | 'struck' | 'gone', step = 0): string {
+export function cranePlanNote(crane: string, kind: 'before' | 'struck' | 'early' | 'gone', step = 0): string {
   if (kind === 'before') return `${crane} is not up yet at this point: the plan shows its first lift, step ${step}.`;
   if (kind === 'struck') return `${crane} is struck by this point: the plan shows its last lift, step ${step}.`;
+  if (kind === 'early') return `${crane} is not up yet here, so the plan has no reach to show. Step forward to see it.`;
   return `${crane} is struck here, so the plan has no reach to show. Step back to see it.`;
+}
+
+/**
+ * Whether the open crane plan has something to say as the playhead moves from
+ * `was` to `now` against the crane's time on site: nothing while the crane
+ * stands or the side is unchanged; else why the reach has gone, by the side
+ * the playhead is now on.
+ */
+export function planLeaveNote(was: CraneSide | null, now: CraneSide | null): 'early' | 'gone' | null {
+  if (!now || now === 'up' || now === was) return null;
+  return now === 'before' ? 'early' : 'gone';
 }
 
 // ── first-run cards ───────────────────────────────────────────────────────────

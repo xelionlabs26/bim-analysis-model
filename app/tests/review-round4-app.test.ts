@@ -128,7 +128,7 @@ describe('the opening frame puts the large Play button beside the model (Y2)', (
     expect(MAIN).toMatch(/Math\.max\(0, \.\.\.seen\.map\(\(m\) => overlapDepth\(m, hb\)\)\)/);
     expect(MAIN).toMatch(/heroShrunk\.clear = was \+ Math\.ceil\(depth\) \+ 8;/);
     expect(MAIN.match(/function syncRestBox\(\)[\s\S]*?\n\}/)?.[0]).toMatch(/0\.3, 0\.9, heroShrunk!\.clear\)/);
-    expect(MAIN.match(/function syncRestBox\(\)[\s\S]*?\n\}/)?.[0]).toMatch(/heroLayout\(bounds, chromeBoxes\(\$\('viewport'\), HERO_CHROME, 8, document\)/);
+    expect(MAIN.match(/function syncRestBox\(\)[\s\S]*?\n\}/)?.[0]).toMatch(/heroLayout\(bounds, button, /);
     expect(VIEWER).toMatch(/modelOutline\(\): \{/);
     expect(OVERLAYS).toMatch(/#liftBanner, #heroPlay'\)/);
     // the button keeps its own width wherever it is put
@@ -215,7 +215,7 @@ describe('the crane plan never shows an empty site (Y3)', () => {
     const fn = MAIN.match(/function setCranePlan\(on: boolean\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(fn).toMatch(/timeline\.planTime\(playback\.t\)/);
     expect(fn).toMatch(/playback\.toggle\(false\);\s*playback\.seek\(at\);/);
-    expect(MAIN).toMatch(/if \(planCraneUp && !up\) toast\(cranePlanNote\(/);
+    expect(MAIN).toMatch(/if \(note\) toast\(cranePlanNote\(/);
   });
 });
 
